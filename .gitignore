@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+.vscode/
+.idea/
+output/
+dist/
+build/
+*.log
+*.tmp
+generated_datapacks/
+test_outputs/
+
+# Keep only the tiny demo file by default. Do not publish NBS files unless you
+# have the rights to distribute them.
+examples/*.nbs
+!examples/demo.nbs
