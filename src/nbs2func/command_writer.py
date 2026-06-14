@@ -12,6 +12,7 @@ from .layout_models import (
     NoteBasedStereoRailLayoutPreview,
     SlotAssignment,
 )
+from .minecraft_version import JAVA_1_16_5, MinecraftVersionProfile, write_pack_mcmeta
 from .layout_geometry import (
     DIRECTION_VECTORS,
     BlockPosition,
@@ -46,6 +47,7 @@ class CommandWriterConfig:
     split_functions: bool = True
     function_namespace: str = "nbs"
     build_function_dir: str = "build"
+    minecraft_version_profile: MinecraftVersionProfile = JAVA_1_16_5
     max_commands_per_build_part: int = 500
     schedule_delay_ticks_between_parts: int = 10
     build_player_name: str = "Alex842036"
@@ -244,11 +246,13 @@ class BasicMcfunctionWriter:
         lines: list[str],
         output_path: Path,
     ) -> PlayerTpBuildDebug:
+        datapack_root = _datapack_root_from_output_path(output_path)
+        write_pack_mcmeta(datapack_root, self.config.minecraft_version_profile)
         build_dir = (
-            output_path.parent
+            datapack_root
             / "data"
             / self.config.function_namespace
-            / "functions"
+            / self.config.minecraft_version_profile.function_dir_name
             / self.config.build_function_dir
         )
         build_dir.mkdir(parents=True, exist_ok=True)
@@ -923,6 +927,12 @@ def _schedule_function(
     delay_ticks: int,
 ) -> str:
     return f"schedule function {namespace}:{build_function_dir}/{function_path} {delay_ticks}t"
+
+
+def _datapack_root_from_output_path(output_path: Path) -> Path:
+    if output_path.suffix == ".mcfunction":
+        return output_path.parent
+    return output_path
 
 
 def _unknown_instruments(layout: LayoutResult) -> tuple[int, ...]:

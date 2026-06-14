@@ -5,11 +5,13 @@ import cProfile
 import io
 from pathlib import Path
 import pstats
+import re
 
 from .command_writer import CommandWriterConfig, write_mcfunction
 from .layout import build_layout_strategy, layout_song
 from .layout_geometry import BlockPosition, LayoutError
 from .layout_models import StereoLayoutConfig
+from .minecraft_version import get_version_profile, write_pack_mcmeta
 from .nbs_reader import read_nbs
 from .playback_assist_module import (
     PlaybackAssistModuleConfig,
@@ -18,7 +20,7 @@ from .playback_assist_module import (
 )
 
 DEFAULT_NBS_PATH = Path("examples/demo.nbs")
-DEFAULT_OUTPUT_PATH = Path("output/generated.mcfunction")
+DEFAULT_OUTPUT_PATH = Path("output")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -35,7 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-o",
         "--output",
         default=str(DEFAULT_OUTPUT_PATH),
-        help="Path for the generated .mcfunction file. Defaults to output/generated.mcfunction.",
+        help="Parent directory for the generated datapack. Defaults to output.",
     )
     parser.add_argument("--origin-x", type=int, default=0, help="World origin X.")
     parser.add_argument("--origin-y", type=int, default=128, help="World origin Y.")
@@ -593,6 +595,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     path = Path(args.file)
+    version_profile = get_version_profile("1.16.5")
 
     if not path.exists():
         print(f"Error: NBS file not found: {path}")
@@ -983,10 +986,22 @@ def main() -> int:
             f"{_format_position(playback_debug.command_module_origin)}"
         )
 
-    output_path = Path(args.output)
+    output_root = Path(args.output)
+    datapack_root = output_root / sanitize_datapack_name(path.stem)
+    writer_output_path = datapack_root
+    if args.no_split_functions:
+        write_pack_mcmeta(datapack_root, version_profile)
+        writer_output_path = (
+            datapack_root
+            / "data"
+            / args.function_namespace
+            / version_profile.function_dir_name
+            / args.build_function_dir
+            / "start.mcfunction"
+        )
     write_result = write_mcfunction(
         layout,
-        output_path,
+        writer_output_path,
         CommandWriterConfig(
             enable_starter_module=(
                 args.enable_starter_module or args.enable_playback_assist
@@ -1002,6 +1017,7 @@ def main() -> int:
             split_functions=not args.no_split_functions,
             function_namespace=args.function_namespace,
             build_function_dir=args.build_function_dir,
+            minecraft_version_profile=version_profile,
             max_commands_per_build_part=args.max_commands_per_build_part,
             schedule_delay_ticks_between_parts=(
                 args.schedule_delay_ticks_between_parts
@@ -1044,15 +1060,22 @@ def main() -> int:
 
     print()
     if args.no_split_functions:
-        print(f"Generated mcfunction: {output_path}")
+        print(f"Generated datapack: {datapack_root}")
+        print(f"Generated mcfunction: {writer_output_path}")
     else:
-        print(f"Generated mcfunction output under: {output_path.parent}")
+        print(f"Generated datapack: {datapack_root}")
         print(
             "If split output was needed, run "
             f"/function {args.function_namespace}:{args.build_function_dir}/start"
         )
 
     return 0
+
+
+def sanitize_datapack_name(name: str) -> str:
+    sanitized = re.sub(r"[^a-z0-9._-]+", "_", name.lower())
+    sanitized = re.sub(r"_+", "_", sanitized).strip("_")
+    return sanitized or "nbs_song"
 
 
 def _notes_by_track(notes):
