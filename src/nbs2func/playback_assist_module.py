@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .layout import DIRECTION_VECTORS, BlockPosition, LayoutResult, normalize_direction
+from .layout_geometry import DIRECTION_VECTORS, BlockPosition, normalize_direction
+from .layout_models import LayoutResult
 
 DEFAULT_START_MUSIC_COUNT = 10
 VEHICLE_STEP_DISTANCE = 1

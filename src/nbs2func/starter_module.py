@@ -2,14 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .layout import (
+from .layout_geometry import (
     DIRECTION_VECTORS,
     BlockPosition,
-    LayoutCell,
-    LayoutResult,
     below,
     opposite_direction,
 )
+from .layout_models import LayoutCell, LayoutResult
 
 
 @dataclass(frozen=True)

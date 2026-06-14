@@ -6,13 +6,17 @@ import warnings
 
 from .instrument_mapping import get_instrument_block, has_instrument_mapping
 from .instrument_mapping import get_required_support_block
-from .layout import (
-    DIRECTION_VECTORS,
-    BlockPosition,
+from .layout_models import (
     LayoutCell,
     LayoutResult,
     NoteBasedStereoRailLayoutPreview,
     SlotAssignment,
+)
+from .layout_geometry import (
+    DIRECTION_VECTORS,
+    BlockPosition,
+    _right_hand_lateral_vector,
+    _scale_vector,
     add_vector,
     add_y,
     below,
@@ -677,16 +681,6 @@ def _note_based_position(
 
 def _repeater_facing(report: NoteBasedStereoRailLayoutPreview) -> str:
     return opposite_direction(report.track_direction)
-
-
-def _right_hand_lateral_vector(track_direction: str) -> tuple[int, int]:
-    dx, dz = DIRECTION_VECTORS[track_direction]
-    return -dz, dx
-
-
-def _scale_vector(vector: tuple[int, int], amount: int) -> tuple[int, int]:
-    dx, dz = vector
-    return dx * amount, dz * amount
 
 
 def _join_lines(lines: list[str]) -> str:

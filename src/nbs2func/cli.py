@@ -7,13 +7,9 @@ from pathlib import Path
 import pstats
 
 from .command_writer import CommandWriterConfig, write_mcfunction
-from .layout import (
-    BlockPosition,
-    LayoutError,
-    StereoLayoutConfig,
-    build_layout_strategy,
-    layout_song,
-)
+from .layout import build_layout_strategy, layout_song
+from .layout_geometry import BlockPosition, LayoutError
+from .layout_models import StereoLayoutConfig
 from .nbs_reader import read_nbs
 from .playback_assist_module import (
     PlaybackAssistModuleConfig,
