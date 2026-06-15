@@ -12,6 +12,28 @@ from .models import NoteEvent
 
 
 PERCUSSION_INSTRUMENTS = frozenset({2, 3, 4})
+WINDOW_TEXTURE_GUESSES = (
+    "empty",
+    "percussion_like",
+    "single_line_like",
+    "layered_or_chord_like",
+    "repeated_pattern_like",
+    "sustain_texture_like",
+    "effect_or_transition_like",
+    "mixed_like",
+    "unknown",
+)
+SUSTAIN_PATTERN_GUESSES = (
+    "none",
+    "inline_alternating_tail_like",
+    "inline_decay_tail_like",
+    "inline_stable_tail_like",
+    "split_tail_like",
+    "split_sustain_like",
+    "pan_region_tail_like",
+    "mixed_tail_like",
+    "unknown",
+)
 STANDARD_GROUPING_MODES = frozenset(
     {
         "midi_instrument",
@@ -73,6 +95,23 @@ WINDOW_TEXTURE_SINGLE_LINE_MAX_MULTI_TICK_RATIO = 0.1
 WINDOW_TEXTURE_MIXED_DOMINANT_LAYER_RATIO = 0.85
 WINDOW_TEXTURE_MIXED_MIN_INSTRUMENTS = 2
 WINDOW_TEXTURE_MIXED_MIN_ACTIVE_LAYERS = 2
+BOUNDARY_COMPONENT_WEIGHTS = {
+    "activity": 2.0,
+    "texture": 1.5,
+    "sustain": 1.2,
+    "density": 1.0,
+    "pitch": 0.6,
+    "volume": 0.6,
+    "pan": 0.6,
+    "rhythm": 0.8,
+}
+BOUNDARY_CANDIDATE_MAX_COUNT = 50
+BOUNDARY_CANDIDATE_MIN_SCORE = 0.5
+BOUNDARY_DENSITY_SCALE = 1.0
+BOUNDARY_NOTES_PER_ACTIVE_TICK_SCALE = 4.0
+BOUNDARY_PITCH_SCALE = 24.0
+BOUNDARY_VOLUME_SCALE = 100.0
+BOUNDARY_PAN_SCALE = 100.0
 SUSTAIN_PATTERN_TAIL_ACTIVITY_RATIO = 0.1
 SUSTAIN_PATTERN_INLINE_GROUPING_MODES = frozenset(
     {
@@ -156,6 +195,14 @@ class LayerGroupConfig:
         object.__setattr__(self, "layer_parts", normalized_layer_parts)
 
 
+@dataclass(frozen=True)
+class WindowFeatureVector:
+    group_name: str
+    tick_start: int
+    tick_end: int
+    values: dict[str, float]
+
+
 def load_group_config(path: str | Path) -> tuple[LayerGroupConfig, ...]:
     """Load user-provided layer group configuration."""
 
@@ -231,6 +278,146 @@ def analysis_report_to_jsonable(report: Any) -> Any:
     if isinstance(report, (list, tuple)):
         return [analysis_report_to_jsonable(value) for value in report]
     return report
+
+
+def window_report_to_feature_vector(
+    group_report: dict[str, Any],
+    window_report: dict[str, Any],
+) -> WindowFeatureVector:
+    """Convert one window report into a numeric feature vector."""
+
+    values = {
+        "note_density": _safe_float(
+            window_report["density"]["note_density"]
+        ),
+        "mean_notes_per_active_tick": _safe_float(
+            window_report["density"]["mean_notes_per_active_tick"]
+        ),
+        "multi_note_tick_ratio": _safe_float(
+            window_report["simultaneity"]["multi_note_tick_ratio"]
+        ),
+        "pitch_mean": _safe_float(window_report["pitch"]["mean"]),
+        "pitch_std": _safe_float(window_report["pitch"]["std"]),
+        "volume_mean": _safe_float(window_report["volume"]["mean"]),
+        "volume_std": _safe_float(window_report["volume"]["std"]),
+        "pan_mean": _safe_float(window_report["pan"]["mean"]),
+        "pan_std": _safe_float(window_report["pan"]["std"]),
+        "regularity_score": _safe_float(
+            window_report["rhythm"]["regularity_score"]
+        ),
+        "group_active": 1.0 if window_report["note_count"] > 0 else 0.0,
+    }
+    values.update(
+        _one_hot_values(
+            "texture",
+            WINDOW_TEXTURE_GUESSES,
+            window_report["window_texture_guess"],
+        )
+    )
+    values.update(
+        _one_hot_values(
+            "sustain",
+            SUSTAIN_PATTERN_GUESSES,
+            window_report["sustain_pattern_guess"],
+        )
+    )
+
+    return WindowFeatureVector(
+        group_name=group_report["name"],
+        tick_start=window_report["tick_start"],
+        tick_end=window_report["tick_end"],
+        values=values,
+    )
+
+
+def compute_window_feature_vectors(
+    group_reports: list[dict[str, Any]],
+) -> list[WindowFeatureVector]:
+    return [
+        window_report_to_feature_vector(group_report, window_report)
+        for group_report in group_reports
+        for window_report in group_report["windows"]
+    ]
+
+
+def compute_adjacent_change_scores(
+    vectors: list[WindowFeatureVector],
+) -> list[dict[str, Any]]:
+    change_scores: list[dict[str, Any]] = []
+    vectors_by_group: dict[str, list[WindowFeatureVector]] = {}
+    for vector in vectors:
+        vectors_by_group.setdefault(vector.group_name, []).append(vector)
+
+    for group_name, group_vectors in sorted(vectors_by_group.items()):
+        sorted_vectors = sorted(
+            group_vectors,
+            key=lambda vector: vector.tick_start,
+        )
+        for left, right in zip(sorted_vectors, sorted_vectors[1:]):
+            components = _adjacent_change_components(left, right)
+            score = sum(
+                components[name] * BOUNDARY_COMPONENT_WEIGHTS[name]
+                for name in BOUNDARY_COMPONENT_WEIGHTS
+            )
+            change_scores.append(
+                {
+                    "group": group_name,
+                    "tick": right.tick_start,
+                    "left_tick_start": left.tick_start,
+                    "right_tick_start": right.tick_start,
+                    "score": score,
+                    "components": components,
+                }
+            )
+
+    return change_scores
+
+
+def detect_boundary_candidates(
+    change_scores: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    candidates_by_tick: dict[int, list[dict[str, Any]]] = {}
+    for change_score in change_scores:
+        if change_score["score"] < BOUNDARY_CANDIDATE_MIN_SCORE:
+            continue
+        candidates_by_tick.setdefault(change_score["tick"], []).append(change_score)
+
+    candidates: list[dict[str, Any]] = []
+    for tick, tick_scores in candidates_by_tick.items():
+        group_scores = {
+            change_score["group"]: change_score["score"]
+            for change_score in sorted(
+                tick_scores,
+                key=lambda score: score["group"],
+            )
+        }
+        component_scores = {
+            component: max(
+                change_score["components"][component]
+                for change_score in tick_scores
+            )
+            for component in BOUNDARY_COMPONENT_WEIGHTS
+        }
+        top_components = dict(
+            sorted(
+                component_scores.items(),
+                key=lambda item: (-item[1], item[0]),
+            )[:2]
+        )
+        candidates.append(
+            {
+                "tick": tick,
+                "score": max(group_scores.values()),
+                "groups": list(group_scores),
+                "group_scores": group_scores,
+                "top_components": top_components,
+            }
+        )
+
+    return sorted(
+        candidates,
+        key=lambda candidate: (-candidate["score"], candidate["tick"]),
+    )[:BOUNDARY_CANDIDATE_MAX_COUNT]
 
 
 def compute_group_windows(
@@ -444,6 +631,11 @@ def _build_summary_report(
             _build_group_summary(group_report)
             for group_report in group_reports
         ],
+        "boundary_candidates": detect_boundary_candidates(
+            compute_adjacent_change_scores(
+                compute_window_feature_vectors(group_reports)
+            )
+        ),
     }
 
 
@@ -496,6 +688,117 @@ def _count_runs(values: Iterable[str]) -> int:
             run_count += 1
             previous_value = value
     return run_count
+
+
+def _safe_float(value: Any) -> float:
+    if value is None:
+        return 0.0
+    return float(value)
+
+
+def _one_hot_values(
+    prefix: str,
+    names: tuple[str, ...],
+    active_name: str,
+) -> dict[str, float]:
+    return {
+        f"{prefix}_{name}": 1.0 if name == active_name else 0.0
+        for name in names
+    }
+
+
+def _adjacent_change_components(
+    left: WindowFeatureVector,
+    right: WindowFeatureVector,
+) -> dict[str, float]:
+    return {
+        "activity": _absolute_difference(left, right, "group_active"),
+        "texture": _one_hot_difference(
+            left,
+            right,
+            "texture",
+            WINDOW_TEXTURE_GUESSES,
+        ),
+        "sustain": _one_hot_difference(
+            left,
+            right,
+            "sustain",
+            SUSTAIN_PATTERN_GUESSES,
+        ),
+        "density": _average_scaled_difference(
+            left,
+            right,
+            (
+                ("note_density", BOUNDARY_DENSITY_SCALE),
+                (
+                    "mean_notes_per_active_tick",
+                    BOUNDARY_NOTES_PER_ACTIVE_TICK_SCALE,
+                ),
+            ),
+        ),
+        "pitch": _average_scaled_difference(
+            left,
+            right,
+            (
+                ("pitch_mean", BOUNDARY_PITCH_SCALE),
+                ("pitch_std", BOUNDARY_PITCH_SCALE),
+            ),
+        ),
+        "volume": _average_scaled_difference(
+            left,
+            right,
+            (
+                ("volume_mean", BOUNDARY_VOLUME_SCALE),
+                ("volume_std", BOUNDARY_VOLUME_SCALE),
+            ),
+        ),
+        "pan": _average_scaled_difference(
+            left,
+            right,
+            (
+                ("pan_mean", BOUNDARY_PAN_SCALE),
+                ("pan_std", BOUNDARY_PAN_SCALE),
+            ),
+        ),
+        "rhythm": _absolute_difference(left, right, "regularity_score"),
+    }
+
+
+def _absolute_difference(
+    left: WindowFeatureVector,
+    right: WindowFeatureVector,
+    field_name: str,
+) -> float:
+    return abs(right.values[field_name] - left.values[field_name])
+
+
+def _one_hot_difference(
+    left: WindowFeatureVector,
+    right: WindowFeatureVector,
+    prefix: str,
+    names: tuple[str, ...],
+) -> float:
+    return sum(
+        abs(
+            right.values[f"{prefix}_{name}"]
+            - left.values[f"{prefix}_{name}"]
+        )
+        for name in names
+    ) / 2
+
+
+def _average_scaled_difference(
+    left: WindowFeatureVector,
+    right: WindowFeatureVector,
+    fields: tuple[tuple[str, float], ...],
+) -> float:
+    return sum(
+        min(
+            1.0,
+            _absolute_difference(left, right, field_name) / scale,
+        )
+        for field_name, scale in fields
+    ) / len(fields)
 
 
 def _build_window_report(

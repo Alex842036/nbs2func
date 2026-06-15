@@ -5,11 +5,16 @@ import pytest
 
 from nbs2func.models import NoteEvent
 from nbs2func.note_stereo_analyzer import (
+    BOUNDARY_CANDIDATE_MAX_COUNT,
     LayerGroupConfig,
     analysis_report_to_jsonable,
     analyze_note_stereo,
+    compute_adjacent_change_scores,
     compute_group_windows,
+    compute_window_feature_vectors,
+    detect_boundary_candidates,
     load_group_config,
+    window_report_to_feature_vector,
 )
 
 
@@ -30,6 +35,68 @@ def _note(
         final_volume=final_volume,
         final_panning=final_panning,
     )
+
+
+def _window_report(
+    *,
+    tick_start: int,
+    note_count: int,
+    texture: str = "single_line_like",
+    sustain: str = "none",
+    note_density: float = 0.1,
+    mean_notes_per_active_tick: float = 1.0,
+    multi_note_tick_ratio: float = 0.0,
+    pitch_mean: float | None = 45.0,
+    pitch_std: float | None = 0.0,
+    volume_mean: float | None = 100.0,
+    volume_std: float | None = 0.0,
+    pan_mean: float | None = 100.0,
+    pan_std: float | None = 0.0,
+    regularity_score: float | None = 1.0,
+) -> dict:
+    return {
+        "tick_start": tick_start,
+        "tick_end": tick_start + 64,
+        "note_count": note_count,
+        "density": {
+            "note_density": note_density,
+            "active_tick_count": note_count,
+            "mean_notes_per_active_tick": mean_notes_per_active_tick,
+        },
+        "instrument_counts": {},
+        "volume": {
+            "mean": volume_mean,
+            "std": volume_std,
+            "min": volume_mean,
+            "max": volume_mean,
+        },
+        "pan": {
+            "mean": pan_mean,
+            "std": pan_std,
+            "min": pan_mean,
+            "max": pan_mean,
+        },
+        "pitch": {
+            "mean": pitch_mean,
+            "std": pitch_std,
+            "min": pitch_mean,
+            "max": pitch_mean,
+            "dominant_pitch": pitch_mean,
+        },
+        "rhythm": {
+            "avg_tick_gap": None,
+            "median_tick_gap": None,
+            "most_common_tick_gap": None,
+            "regularity_score": regularity_score,
+        },
+        "layer_activity": [],
+        "simultaneity": {
+            "max_notes_per_tick": note_count,
+            "multi_note_tick_ratio": multi_note_tick_ratio,
+        },
+        "window_texture_guess": texture,
+        "sustain_pattern_guess": sustain,
+    }
 
 
 def test_load_group_config_reads_valid_new_schema(tmp_path: Path) -> None:
@@ -1212,7 +1279,198 @@ def test_analyze_note_stereo_outputs_summary() -> None:
             "missing_layers": [3],
         },
     ]
+    assert summary["boundary_candidates"] == []
     assert "windows" not in summary["groups"][0]
+
+
+def test_window_report_to_feature_vector_sets_one_hot_and_activity() -> None:
+    group_report = {"name": "lead"}
+    active_vector = window_report_to_feature_vector(
+        group_report,
+        _window_report(
+            tick_start=0,
+            note_count=1,
+            texture="single_line_like",
+            sustain="none",
+        ),
+    )
+    empty_vector = window_report_to_feature_vector(
+        group_report,
+        _window_report(
+            tick_start=64,
+            note_count=0,
+            texture="empty",
+            sustain="none",
+            pitch_mean=None,
+            pitch_std=None,
+            volume_mean=None,
+            volume_std=None,
+            pan_mean=None,
+            pan_std=None,
+            regularity_score=None,
+        ),
+    )
+
+    assert active_vector.group_name == "lead"
+    assert active_vector.values["texture_single_line_like"] == 1.0
+    assert active_vector.values["texture_empty"] == 0.0
+    assert active_vector.values["sustain_none"] == 1.0
+    assert active_vector.values["group_active"] == 1.0
+    assert empty_vector.values["group_active"] == 0.0
+    assert empty_vector.values["pitch_mean"] == 0.0
+
+
+def test_compute_window_feature_vectors_flattens_group_windows() -> None:
+    group_reports = [
+        {
+            "name": "lead",
+            "windows": [
+                _window_report(tick_start=0, note_count=1),
+                _window_report(tick_start=64, note_count=0, texture="empty"),
+            ],
+        }
+    ]
+
+    vectors = compute_window_feature_vectors(group_reports)
+
+    assert [vector.tick_start for vector in vectors] == [0, 64]
+    assert [vector.group_name for vector in vectors] == ["lead", "lead"]
+
+
+def test_adjacent_change_scores_detect_activity_change() -> None:
+    group_report = {"name": "lead"}
+    vectors = [
+        window_report_to_feature_vector(
+            group_report,
+            _window_report(tick_start=0, note_count=0, texture="empty"),
+        ),
+        window_report_to_feature_vector(
+            group_report,
+            _window_report(tick_start=64, note_count=1),
+        ),
+    ]
+
+    change = compute_adjacent_change_scores(vectors)[0]
+
+    assert change["group"] == "lead"
+    assert change["tick"] == 64
+    assert change["components"]["activity"] > 0
+    assert change["score"] > 0
+
+
+def test_adjacent_change_scores_detect_label_changes() -> None:
+    group_report = {"name": "lead"}
+    vectors = [
+        window_report_to_feature_vector(
+            group_report,
+            _window_report(
+                tick_start=0,
+                note_count=1,
+                texture="single_line_like",
+                sustain="none",
+            ),
+        ),
+        window_report_to_feature_vector(
+            group_report,
+            _window_report(
+                tick_start=64,
+                note_count=1,
+                texture="repeated_pattern_like",
+                sustain="split_tail_like",
+            ),
+        ),
+    ]
+
+    change = compute_adjacent_change_scores(vectors)[0]
+
+    assert change["components"]["texture"] > 0
+    assert change["components"]["sustain"] > 0
+
+
+def test_adjacent_change_scores_detect_numeric_component_changes() -> None:
+    group_report = {"name": "lead"}
+    vectors = [
+        window_report_to_feature_vector(
+            group_report,
+            _window_report(tick_start=0, note_count=1),
+        ),
+        window_report_to_feature_vector(
+            group_report,
+            _window_report(
+                tick_start=64,
+                note_count=1,
+                note_density=0.8,
+                mean_notes_per_active_tick=3.0,
+                pitch_mean=69.0,
+                pitch_std=12.0,
+                volume_mean=40.0,
+                volume_std=20.0,
+                pan_mean=150.0,
+                pan_std=30.0,
+                regularity_score=0.2,
+            ),
+        ),
+    ]
+
+    components = compute_adjacent_change_scores(vectors)[0]["components"]
+
+    assert components["density"] > 0
+    assert components["pitch"] > 0
+    assert components["volume"] > 0
+    assert components["pan"] > 0
+    assert components["rhythm"] > 0
+
+
+def test_detect_boundary_candidates_limits_count() -> None:
+    change_scores = [
+        {
+            "group": f"group_{index}",
+            "tick": index * 64,
+            "left_tick_start": index * 64 - 64,
+            "right_tick_start": index * 64,
+            "score": 1.0 + index / 100,
+            "components": {
+                "activity": 1.0,
+                "texture": 0.0,
+                "sustain": 0.0,
+                "density": 0.0,
+                "pitch": 0.0,
+                "volume": 0.0,
+                "pan": 0.0,
+                "rhythm": 0.0,
+            },
+        }
+        for index in range(BOUNDARY_CANDIDATE_MAX_COUNT + 5)
+    ]
+
+    candidates = detect_boundary_candidates(change_scores)
+
+    assert len(candidates) == BOUNDARY_CANDIDATE_MAX_COUNT
+    assert candidates[0]["score"] >= candidates[-1]["score"]
+    assert candidates[0]["top_components"] == {"activity": 1.0, "density": 0.0}
+
+
+def test_summary_includes_boundary_candidates() -> None:
+    report = analyze_note_stereo(
+        [
+            _note(tick=0, layer=1, key=45),
+            _note(tick=16, layer=1, key=47),
+            _note(tick=128, layer=1, instrument=2, key=45),
+            _note(tick=144, layer=1, instrument=3, key=45),
+        ],
+        group_configs=[
+            LayerGroupConfig(name="group", layers=(1,)),
+        ],
+        window_size=64,
+        hop_size=64,
+    )
+
+    candidates = report["summary"]["boundary_candidates"]
+
+    assert candidates
+    assert "tick" in candidates[0]
+    assert "group" not in candidates[0]
+    assert candidates[0]["groups"] == ["group"]
 
 
 def test_analyzer_does_not_modify_input_notes() -> None:
