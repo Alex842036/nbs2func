@@ -69,6 +69,9 @@ WINDOW_TEXTURE_REPEATED_MIN_ACTIVE_TICKS = 4
 WINDOW_TEXTURE_REPEATED_REGULARITY_SCORE = 0.8
 WINDOW_TEXTURE_SINGLE_LINE_MAX_MEAN_NOTES_PER_ACTIVE_TICK = 1.15
 WINDOW_TEXTURE_SINGLE_LINE_MAX_MULTI_TICK_RATIO = 0.1
+WINDOW_TEXTURE_MIXED_DOMINANT_LAYER_RATIO = 0.85
+WINDOW_TEXTURE_MIXED_MIN_INSTRUMENTS = 2
+WINDOW_TEXTURE_MIXED_MIN_ACTIVE_LAYERS = 2
 SUSTAIN_PATTERN_TAIL_ACTIVITY_RATIO = 0.1
 SUSTAIN_PATTERN_INLINE_GROUPING_MODES = frozenset(
     {
@@ -427,6 +430,24 @@ def _build_window_report(
     rhythm = _rhythm_summary(notes)
     layer_activity = _layer_activity(layers, notes)
     simultaneity = _simultaneity_summary(notes)
+    sustain_pattern_guess = _guess_sustain_pattern(
+        group_config,
+        notes,
+        volume=volume,
+        pitch=pitch,
+        rhythm=rhythm,
+        layer_activity=layer_activity,
+    )
+    window_texture_guess = _guess_window_texture(
+        group_config,
+        notes,
+        density=density,
+        instrument_counts=instrument_counts,
+        rhythm=rhythm,
+        layer_activity=layer_activity,
+        simultaneity=simultaneity,
+        sustain_pattern_guess=sustain_pattern_guess,
+    )
 
     return {
         "tick_start": tick_start,
@@ -440,24 +461,8 @@ def _build_window_report(
         "rhythm": rhythm,
         "layer_activity": layer_activity,
         "simultaneity": simultaneity,
-        "window_texture_guess": _guess_window_texture(
-            group_config,
-            notes,
-            density=density,
-            instrument_counts=instrument_counts,
-            pitch=pitch,
-            rhythm=rhythm,
-            layer_activity=layer_activity,
-            simultaneity=simultaneity,
-        ),
-        "sustain_pattern_guess": _guess_sustain_pattern(
-            group_config,
-            notes,
-            volume=volume,
-            pitch=pitch,
-            rhythm=rhythm,
-            layer_activity=layer_activity,
-        ),
+        "window_texture_guess": window_texture_guess,
+        "sustain_pattern_guess": sustain_pattern_guess,
     }
 
 
@@ -497,10 +502,10 @@ def _guess_window_texture(
     *,
     density: dict[str, float | int],
     instrument_counts: dict[str, int],
-    pitch: dict[str, float | int | None],
     rhythm: dict[str, float | int | None],
     layer_activity: list[dict[str, float | int]],
     simultaneity: dict[str, float | int],
+    sustain_pattern_guess: str,
 ) -> str:
     note_count = len(notes)
     if note_count == 0:
@@ -516,14 +521,16 @@ def _guess_window_texture(
     sustain_like = _is_sustain_texture(
         group_config,
         density,
-        pitch,
         layer_activity,
         note_count,
+        sustain_pattern_guess,
+    )
+    mixed_like = _is_mixed_texture(
+        instrument_counts,
+        layer_activity,
+        simultaneity,
     )
     single_line_like = _is_single_line_texture(density, simultaneity)
-
-    if layered_like and repeated_like and not sustain_like:
-        return "mixed_like"
 
     if percussion_like:
         return "percussion_like"
@@ -534,10 +541,12 @@ def _guess_window_texture(
     ):
         return "effect_or_transition_like"
 
-    if sustain_like:
-        return "sustain_texture_like"
+    if mixed_like:
+        return "mixed_like"
     if layered_like:
         return "layered_or_chord_like"
+    if sustain_like:
+        return "sustain_texture_like"
     if repeated_like:
         return "repeated_pattern_like"
     if single_line_like:
@@ -592,24 +601,47 @@ def _is_repeated_texture(
 def _is_sustain_texture(
     group_config: LayerGroupConfig,
     density: dict[str, float | int],
-    pitch: dict[str, float | int | None],
     layer_activity: list[dict[str, float | int]],
     note_count: int,
+    sustain_pattern_guess: str,
 ) -> bool:
     if note_count < WINDOW_TEXTURE_SUSTAIN_MIN_NOTE_COUNT:
         return False
 
-    pitch_std = pitch["std"]
-    pitch_is_stable = (
-        pitch_std is not None
-        and pitch_std <= WINDOW_TEXTURE_STABLE_PITCH_STD_MAX
-    )
+    if sustain_pattern_guess not in {"none", "unknown"}:
+        return True
+
     dense_enough = density["note_density"] >= WINDOW_TEXTURE_SUSTAIN_MIN_DENSITY
     tail_activity_ratio = _tail_activity_ratio(group_config, layer_activity)
 
     return (
-        (tail_activity_ratio >= WINDOW_TEXTURE_TAIL_ACTIVITY_RATIO and dense_enough)
-        or (pitch_is_stable and dense_enough)
+        tail_activity_ratio >= WINDOW_TEXTURE_TAIL_ACTIVITY_RATIO
+        and dense_enough
+    )
+
+
+def _is_mixed_texture(
+    instrument_counts: dict[str, int],
+    layer_activity: list[dict[str, float | int]],
+    simultaneity: dict[str, float | int],
+) -> bool:
+    active_layer_ratios = [
+        activity["ratio"]
+        for activity in layer_activity
+        if activity["note_count"] > 0
+    ]
+    if len(instrument_counts) < WINDOW_TEXTURE_MIXED_MIN_INSTRUMENTS:
+        return False
+    if len(active_layer_ratios) < WINDOW_TEXTURE_MIXED_MIN_ACTIVE_LAYERS:
+        return False
+
+    has_dominant_layer = (
+        max(active_layer_ratios) >= WINDOW_TEXTURE_MIXED_DOMINANT_LAYER_RATIO
+    )
+    return (
+        simultaneity["multi_note_tick_ratio"]
+        >= WINDOW_TEXTURE_LAYERED_MULTI_TICK_RATIO
+        or not has_dominant_layer
     )
 
 

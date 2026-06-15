@@ -827,17 +827,37 @@ def test_window_texture_guess_identifies_sustain_texture_like() -> None:
     assert windows[0]["window_texture_guess"] == "sustain_texture_like"
 
 
-def test_window_texture_guess_identifies_mixed_like() -> None:
+def test_window_texture_guess_keeps_stable_repeated_layers_as_layered() -> None:
     windows = compute_group_windows(
         [
-            _note(tick=0, layer=1, key=40),
-            _note(tick=0, layer=2, key=52),
-            _note(tick=16, layer=1, key=43),
-            _note(tick=16, layer=2, key=55),
-            _note(tick=32, layer=1, key=47),
-            _note(tick=32, layer=2, key=59),
-            _note(tick=48, layer=1, key=50),
-            _note(tick=48, layer=2, key=62),
+            _note(tick=0, layer=1, instrument=0, key=40),
+            _note(tick=0, layer=2, instrument=0, key=52),
+            _note(tick=16, layer=1, instrument=0, key=43),
+            _note(tick=16, layer=2, instrument=0, key=55),
+            _note(tick=32, layer=1, instrument=0, key=47),
+            _note(tick=32, layer=2, instrument=0, key=59),
+            _note(tick=48, layer=1, instrument=0, key=50),
+            _note(tick=48, layer=2, instrument=0, key=62),
+        ],
+        LayerGroupConfig(name="stable_layers", layers=(1, 2)),
+        window_size=128,
+        hop_size=128,
+    )
+
+    assert windows[0]["window_texture_guess"] == "layered_or_chord_like"
+
+
+def test_window_texture_guess_identifies_complex_mixed_like() -> None:
+    windows = compute_group_windows(
+        [
+            _note(tick=0, layer=1, instrument=0, key=40),
+            _note(tick=0, layer=2, instrument=5, key=52),
+            _note(tick=16, layer=1, instrument=0, key=43),
+            _note(tick=16, layer=2, instrument=5, key=55),
+            _note(tick=32, layer=1, instrument=6, key=47),
+            _note(tick=32, layer=2, instrument=5, key=59),
+            _note(tick=48, layer=1, instrument=0, key=50),
+            _note(tick=48, layer=2, instrument=6, key=62),
         ],
         LayerGroupConfig(name="mixed", layers=(1, 2)),
         window_size=128,
@@ -845,6 +865,29 @@ def test_window_texture_guess_identifies_mixed_like() -> None:
     )
 
     assert windows[0]["window_texture_guess"] == "mixed_like"
+
+
+def test_window_texture_guess_does_not_treat_stable_pitch_as_sustain_alone() -> None:
+    windows = compute_group_windows(
+        [
+            _note(tick=0, layer=1, key=45),
+            _note(tick=16, layer=1, key=45),
+            _note(tick=32, layer=1, key=46),
+            _note(tick=48, layer=1, key=45),
+            _note(tick=64, layer=1, key=46),
+            _note(tick=80, layer=1, key=45),
+        ],
+        LayerGroupConfig(
+            name="stable_manual",
+            layers=(1,),
+            grouping_mode="manual_mixed",
+        ),
+        window_size=128,
+        hop_size=128,
+    )
+
+    assert windows[0]["sustain_pattern_guess"] == "none"
+    assert windows[0]["window_texture_guess"] != "sustain_texture_like"
 
 
 def test_sustain_pattern_guess_identifies_inline_alternating_tail_like() -> None:
