@@ -9,12 +9,18 @@ from nbs2func.note_stereo_analyzer import (
     BOUNDARY_CLUSTER_MAX_TICK_GAP,
     BOUNDARY_FINAL_MAX_COUNT,
     BOUNDARY_LOW_RELIABILITY_SOLO_MIN_SCORE,
+    SSM_NOVELTY_PEAK_MAX_COUNT,
     LayerGroupConfig,
+    TrackFrameFeatureVector,
     analysis_report_to_jsonable,
     analyze_note_stereo,
     compute_adjacent_change_scores,
     compute_group_windows,
+    compute_novelty_curve_from_frames,
+    compute_self_similarity_summary,
+    compute_track_frame_feature_vectors,
     compute_window_feature_vectors,
+    detect_novelty_peaks,
     detect_boundary_candidates,
     load_group_config,
     window_report_to_feature_vector,
@@ -99,6 +105,25 @@ def _window_report(
         },
         "window_texture_guess": texture,
         "sustain_pattern_guess": sustain,
+    }
+
+
+def _group_report(
+    *,
+    name: str,
+    windows: list[dict],
+    grouping_mode: str = "manual_mixed",
+    layers: list[int] | None = None,
+) -> dict:
+    return {
+        "name": name,
+        "grouping_mode": grouping_mode,
+        "layers": layers or [1],
+        "note_count": sum(window["note_count"] for window in windows),
+        "tick_start": min((window["tick_start"] for window in windows), default=None),
+        "tick_end": max((window["tick_end"] for window in windows), default=None),
+        "missing_layers": [],
+        "windows": windows,
     }
 
 
@@ -1285,6 +1310,19 @@ def test_analyze_note_stereo_outputs_summary() -> None:
         },
     ]
     assert summary["boundary_candidates"] == []
+    assert summary["ssm"] == {
+        "frame_count": 1,
+        "tick_start": 0,
+        "tick_end": 64,
+        "similarity_method": "cosine",
+        "full_matrix_output": False,
+        "diagonal_mean": 1.0,
+        "off_diagonal_mean": 0.0,
+        "off_diagonal_max": 0.0,
+        "off_diagonal_min": 0.0,
+        "stats_truncated": False,
+    }
+    assert summary["novelty_peaks"] == []
     assert "windows" not in summary["groups"][0]
 
 
@@ -1340,6 +1378,204 @@ def test_compute_window_feature_vectors_flattens_group_windows() -> None:
 
     assert [vector.tick_start for vector in vectors] == [0, 64]
     assert [vector.group_name for vector in vectors] == ["lead", "lead"]
+
+
+def test_track_frame_vectors_aggregate_groups_at_same_tick() -> None:
+    group_reports = [
+        _group_report(
+            name="lead",
+            windows=[
+                _window_report(tick_start=0, note_count=4, note_density=0.2),
+            ],
+        ),
+        _group_report(
+            name="bass",
+            windows=[
+                _window_report(tick_start=0, note_count=4, note_density=0.6),
+            ],
+        ),
+    ]
+
+    frames = compute_track_frame_feature_vectors(group_reports)
+
+    assert len(frames) == 1
+    assert frames[0].tick_start == 0
+    assert frames[0].values["active_group_count"] == 2.0
+    assert frames[0].values["active_group_ratio"] == 1.0
+    assert frames[0].values["mean_note_density"] == 0.4
+    assert frames[0].values["texture_single_line_like_ratio"] == 1.0
+
+
+def test_track_frame_vectors_are_sorted_by_tick() -> None:
+    group_reports = [
+        _group_report(
+            name="lead",
+            windows=[
+                _window_report(tick_start=64, note_count=1),
+                _window_report(tick_start=0, note_count=1),
+            ],
+        ),
+    ]
+
+    frames = compute_track_frame_feature_vectors(group_reports)
+
+    assert [frame.tick_start for frame in frames] == [0, 64]
+
+
+def test_track_frame_vectors_count_inactive_windows() -> None:
+    group_reports = [
+        _group_report(
+            name="lead",
+            windows=[
+                _window_report(tick_start=0, note_count=0, texture="empty"),
+            ],
+        ),
+        _group_report(
+            name="bass",
+            windows=[
+                _window_report(tick_start=0, note_count=3),
+            ],
+        ),
+    ]
+
+    frames = compute_track_frame_feature_vectors(group_reports)
+
+    assert frames[0].values["active_group_count"] == 1.0
+    assert frames[0].values["active_group_ratio"] == 0.5
+    assert frames[0].values["texture_empty_ratio"] == 0.5
+    assert frames[0].values["texture_single_line_like_ratio"] == 0.5
+
+
+def test_self_similarity_summary_identical_nonzero_frames() -> None:
+    frames = [
+        TrackFrameFeatureVector(
+            tick_start=0,
+            tick_end=64,
+            values={
+                "active_group_ratio": 1.0,
+                "mean_note_density": 0.5,
+                "_group_count": 1.0,
+            },
+        ),
+        TrackFrameFeatureVector(
+            tick_start=64,
+            tick_end=128,
+            values={
+                "active_group_ratio": 1.0,
+                "mean_note_density": 0.5,
+                "_group_count": 1.0,
+            },
+        ),
+    ]
+
+    summary = compute_self_similarity_summary(frames)
+
+    assert summary["similarity_method"] == "cosine"
+    assert summary["full_matrix_output"] is False
+    assert summary["diagonal_mean"] == pytest.approx(1.0)
+    assert summary["off_diagonal_mean"] == pytest.approx(1.0)
+
+
+def test_self_similarity_summary_handles_zero_vectors() -> None:
+    frames = [
+        TrackFrameFeatureVector(
+            tick_start=0,
+            tick_end=64,
+            values={
+                "active_group_ratio": 0.0,
+                "mean_note_density": 0.0,
+                "_group_count": 1.0,
+            },
+        ),
+        TrackFrameFeatureVector(
+            tick_start=64,
+            tick_end=128,
+            values={
+                "active_group_ratio": 0.0,
+                "mean_note_density": 0.0,
+                "_group_count": 1.0,
+            },
+        ),
+    ]
+
+    summary = compute_self_similarity_summary(frames)
+
+    assert summary["off_diagonal_mean"] == 0.0
+    assert summary["off_diagonal_max"] == 0.0
+
+
+def test_novelty_score_is_low_for_identical_adjacent_frames() -> None:
+    frames = [
+        TrackFrameFeatureVector(
+            tick_start=0,
+            tick_end=64,
+            values={
+                "active_group_ratio": 1.0,
+                "mean_note_density": 0.5,
+                "_group_count": 1.0,
+            },
+        ),
+        TrackFrameFeatureVector(
+            tick_start=64,
+            tick_end=128,
+            values={
+                "active_group_ratio": 1.0,
+                "mean_note_density": 0.5,
+                "_group_count": 1.0,
+            },
+        ),
+    ]
+
+    novelty_curve = compute_novelty_curve_from_frames(frames)
+
+    assert novelty_curve[0]["score"] == pytest.approx(0.0)
+
+
+def test_novelty_score_is_high_for_changed_adjacent_frames() -> None:
+    frames = [
+        TrackFrameFeatureVector(
+            tick_start=0,
+            tick_end=64,
+            values={
+                "texture_empty_ratio": 1.0,
+                "_group_count": 1.0,
+            },
+        ),
+        TrackFrameFeatureVector(
+            tick_start=64,
+            tick_end=128,
+            values={
+                "texture_percussion_like_ratio": 1.0,
+                "_group_count": 1.0,
+            },
+        ),
+    ]
+
+    novelty_curve = compute_novelty_curve_from_frames(frames)
+
+    assert novelty_curve[0] == {
+        "tick": 64,
+        "score": 1.0,
+        "left_tick_start": 0,
+        "right_tick_start": 64,
+    }
+
+
+def test_novelty_peaks_are_capped() -> None:
+    novelty_curve = [
+        {
+            "tick": index * 64,
+            "score": 1.0 - index / 1000,
+            "left_tick_start": index * 64 - 64,
+            "right_tick_start": index * 64,
+        }
+        for index in range(SSM_NOVELTY_PEAK_MAX_COUNT + 5)
+    ]
+
+    peaks = detect_novelty_peaks(novelty_curve)
+
+    assert len(peaks) == SSM_NOVELTY_PEAK_MAX_COUNT
+    assert peaks[0]["score"] >= peaks[-1]["score"]
 
 
 def test_adjacent_change_scores_detect_activity_change() -> None:

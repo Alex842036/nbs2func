@@ -135,6 +135,10 @@ BOUNDARY_NOTES_PER_ACTIVE_TICK_SCALE = 4.0
 BOUNDARY_PITCH_SCALE = 24.0
 BOUNDARY_VOLUME_SCALE = 100.0
 BOUNDARY_PAN_SCALE = 100.0
+SSM_FULL_STAT_MAX_FRAMES = 2000
+SSM_NOVELTY_PEAK_MAX_COUNT = 50
+SSM_NOVELTY_MIN_SCORE = 0.25
+SSM_NOVELTY_MIN_DISTANCE_TICKS = 64
 SUSTAIN_PATTERN_TAIL_ACTIVITY_RATIO = 0.1
 SUSTAIN_PATTERN_INLINE_GROUPING_MODES = frozenset(
     {
@@ -221,6 +225,13 @@ class LayerGroupConfig:
 @dataclass(frozen=True)
 class WindowFeatureVector:
     group_name: str
+    tick_start: int
+    tick_end: int
+    values: dict[str, float]
+
+
+@dataclass(frozen=True)
+class TrackFrameFeatureVector:
     tick_start: int
     tick_end: int
     values: dict[str, float]
@@ -361,6 +372,212 @@ def compute_window_feature_vectors(
         for group_report in group_reports
         for window_report in group_report["windows"]
     ]
+
+
+def compute_track_frame_feature_vectors(
+    group_reports: list[dict[str, Any]],
+) -> list[TrackFrameFeatureVector]:
+    """Aggregate all group windows at the same tick into track-level frames."""
+
+    total_group_count = len(group_reports)
+    if total_group_count == 0:
+        return []
+
+    group_weights = {
+        group_report["name"]: _build_group_summary(group_report)["boundary_weight"]
+        for group_report in group_reports
+    }
+    vectors_by_tick: dict[int, list[WindowFeatureVector]] = {}
+    for vector in compute_window_feature_vectors(group_reports):
+        vectors_by_tick.setdefault(vector.tick_start, []).append(vector)
+
+    frame_vectors: list[TrackFrameFeatureVector] = []
+    for tick_start in sorted(vectors_by_tick):
+        vectors = vectors_by_tick[tick_start]
+        tick_end = max(vector.tick_end for vector in vectors)
+        active_group_count = sum(
+            1
+            for vector in vectors
+            if vector.values["group_active"] > 0.0
+        )
+        values = {
+            "active_group_ratio": active_group_count / total_group_count,
+            "active_group_count": float(active_group_count),
+            "mean_note_density": _track_weighted_mean(
+                vectors,
+                group_weights,
+                "note_density",
+            ),
+            "mean_multi_note_tick_ratio": _track_weighted_mean(
+                vectors,
+                group_weights,
+                "multi_note_tick_ratio",
+            ),
+            "mean_pitch_mean": _track_weighted_mean(
+                vectors,
+                group_weights,
+                "pitch_mean",
+            ),
+            "mean_pitch_std": _track_weighted_mean(
+                vectors,
+                group_weights,
+                "pitch_std",
+            ),
+            "mean_volume_mean": _track_weighted_mean(
+                vectors,
+                group_weights,
+                "volume_mean",
+            ),
+            "mean_volume_std": _track_weighted_mean(
+                vectors,
+                group_weights,
+                "volume_std",
+            ),
+            "mean_pan_mean": _track_weighted_mean(
+                vectors,
+                group_weights,
+                "pan_mean",
+            ),
+            "mean_pan_std": _track_weighted_mean(
+                vectors,
+                group_weights,
+                "pan_std",
+            ),
+            "mean_regularity_score": _track_weighted_mean(
+                vectors,
+                group_weights,
+                "regularity_score",
+            ),
+        }
+        values.update(
+            _track_label_ratios(
+                vectors,
+                total_group_count,
+                "texture",
+                WINDOW_TEXTURE_GUESSES,
+            )
+        )
+        values.update(
+            _track_label_ratios(
+                vectors,
+                total_group_count,
+                "sustain",
+                SUSTAIN_PATTERN_GUESSES,
+            )
+        )
+        values["_group_count"] = float(total_group_count)
+        frame_vectors.append(
+            TrackFrameFeatureVector(
+                tick_start=tick_start,
+                tick_end=tick_end,
+                values=values,
+            )
+        )
+
+    return frame_vectors
+
+
+def compute_self_similarity_summary(
+    frame_vectors: list[TrackFrameFeatureVector],
+) -> dict[str, Any]:
+    frame_count = len(frame_vectors)
+    summary = {
+        "frame_count": frame_count,
+        "tick_start": min(
+            (frame.tick_start for frame in frame_vectors),
+            default=None,
+        ),
+        "tick_end": max(
+            (frame.tick_end for frame in frame_vectors),
+            default=None,
+        ),
+        "similarity_method": "cosine",
+        "full_matrix_output": False,
+        "diagonal_mean": 1.0 if frame_count == 0 else 0.0,
+        "off_diagonal_mean": 0.0,
+        "off_diagonal_max": 0.0,
+        "off_diagonal_min": 0.0,
+        "stats_truncated": frame_count > SSM_FULL_STAT_MAX_FRAMES,
+    }
+    if frame_count == 0:
+        return summary
+
+    normalized_frames = [
+        _normalize_track_frame_values(frame.values)
+        for frame in frame_vectors
+    ]
+    diagonal_scores = [
+        _cosine_similarity(values, values)
+        for values in normalized_frames
+    ]
+    summary["diagonal_mean"] = sum(diagonal_scores) / len(diagonal_scores)
+
+    if summary["stats_truncated"]:
+        return summary
+
+    off_diagonal_scores: list[float] = []
+    for left_index, left_values in enumerate(normalized_frames):
+        for right_values in normalized_frames[left_index + 1:]:
+            off_diagonal_scores.append(
+                _cosine_similarity(left_values, right_values)
+            )
+
+    if off_diagonal_scores:
+        summary["off_diagonal_mean"] = (
+            sum(off_diagonal_scores) / len(off_diagonal_scores)
+        )
+        summary["off_diagonal_max"] = max(off_diagonal_scores)
+        summary["off_diagonal_min"] = min(off_diagonal_scores)
+
+    return summary
+
+
+def compute_novelty_curve_from_frames(
+    frame_vectors: list[TrackFrameFeatureVector],
+) -> list[dict[str, Any]]:
+    sorted_frames = sorted(frame_vectors, key=lambda frame: frame.tick_start)
+    normalized_frames = [
+        _normalize_track_frame_values(frame.values)
+        for frame in sorted_frames
+    ]
+    novelty_curve: list[dict[str, Any]] = []
+    for index in range(1, len(sorted_frames)):
+        similarity = _cosine_similarity(
+            normalized_frames[index - 1],
+            normalized_frames[index],
+        )
+        novelty_curve.append(
+            {
+                "tick": sorted_frames[index].tick_start,
+                "score": 1.0 - similarity,
+                "left_tick_start": sorted_frames[index - 1].tick_start,
+                "right_tick_start": sorted_frames[index].tick_start,
+            }
+        )
+
+    return novelty_curve
+
+
+def detect_novelty_peaks(
+    novelty_curve: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    peaks: list[dict[str, Any]] = []
+    for point in sorted(
+        novelty_curve,
+        key=lambda item: (-item["score"], item["tick"]),
+    ):
+        if point["score"] < SSM_NOVELTY_MIN_SCORE:
+            continue
+        if any(
+            abs(point["tick"] - kept["tick"]) < SSM_NOVELTY_MIN_DISTANCE_TICKS
+            for kept in peaks
+        ):
+            continue
+        peaks.append(point)
+        if len(peaks) >= SSM_NOVELTY_PEAK_MAX_COUNT:
+            break
+
+    return sorted(peaks, key=lambda item: (-item["score"], item["tick"]))
 
 
 def compute_adjacent_change_scores(
@@ -676,6 +893,8 @@ def _build_summary_report(
         _build_group_summary(group_report)
         for group_report in group_reports
     ]
+    window_vectors = compute_window_feature_vectors(group_reports)
+    frame_vectors = compute_track_frame_feature_vectors(group_reports)
 
     return {
         "overview": {
@@ -697,10 +916,12 @@ def _build_summary_report(
         ),
         "groups": group_summaries,
         "boundary_candidates": detect_boundary_candidates(
-            compute_adjacent_change_scores(
-                compute_window_feature_vectors(group_reports)
-            ),
+            compute_adjacent_change_scores(window_vectors),
             group_summaries,
+        ),
+        "ssm": compute_self_similarity_summary(frame_vectors),
+        "novelty_peaks": detect_novelty_peaks(
+            compute_novelty_curve_from_frames(frame_vectors)
         ),
     }
 
@@ -1003,6 +1224,117 @@ def _safe_float(value: Any) -> float:
     if value is None:
         return 0.0
     return float(value)
+
+
+def _track_weighted_mean(
+    vectors: list[WindowFeatureVector],
+    group_weights: dict[str, float],
+    field_name: str,
+) -> float:
+    if not vectors:
+        return 0.0
+
+    total_weight = sum(
+        group_weights.get(vector.group_name, 1.0)
+        for vector in vectors
+    )
+    if total_weight <= 0.0:
+        return 0.0
+
+    return (
+        sum(
+            vector.values[field_name] * group_weights.get(vector.group_name, 1.0)
+            for vector in vectors
+        )
+        / total_weight
+    )
+
+
+def _track_label_ratios(
+    vectors: list[WindowFeatureVector],
+    total_group_count: int,
+    prefix: str,
+    names: tuple[str, ...],
+) -> dict[str, float]:
+    if total_group_count <= 0:
+        return {
+            f"{prefix}_{name}_ratio": 0.0
+            for name in names
+        }
+
+    return {
+        f"{prefix}_{name}_ratio": (
+            sum(
+                1
+                for vector in vectors
+                if vector.values[f"{prefix}_{name}"] > 0.0
+            )
+            / total_group_count
+        )
+        for name in names
+    }
+
+
+def _normalize_track_frame_values(values: dict[str, float]) -> dict[str, float]:
+    group_count = max(1.0, values.get("_group_count", 1.0))
+    normalized: dict[str, float] = {}
+    for key, value in values.items():
+        if key == "_group_count":
+            continue
+        safe_value = _safe_float(value)
+        if key == "active_group_count":
+            normalized[key] = _clamp(safe_value / group_count, 0.0, 1.0)
+        elif key == "mean_pitch_mean":
+            normalized[key] = _clamp(safe_value / 100.0, 0.0, 1.0)
+        elif key == "mean_pitch_std":
+            normalized[key] = _clamp(safe_value / BOUNDARY_PITCH_SCALE, 0.0, 1.0)
+        elif key == "mean_volume_mean":
+            normalized[key] = _clamp(safe_value / 100.0, 0.0, 1.0)
+        elif key == "mean_volume_std":
+            normalized[key] = _clamp(safe_value / BOUNDARY_VOLUME_SCALE, 0.0, 1.0)
+        elif key == "mean_pan_mean":
+            normalized[key] = _clamp(safe_value / 200.0, 0.0, 1.0)
+        elif key == "mean_pan_std":
+            normalized[key] = _clamp(safe_value / BOUNDARY_PAN_SCALE, 0.0, 1.0)
+        elif key in {
+            "active_group_ratio",
+            "mean_note_density",
+            "mean_multi_note_tick_ratio",
+            "mean_regularity_score",
+        } or key.endswith("_ratio"):
+            normalized[key] = _clamp(safe_value, 0.0, 1.0)
+        else:
+            normalized[key] = _clamp(safe_value, 0.0, 1.0)
+
+    return normalized
+
+
+def _cosine_similarity(
+    left_values: dict[str, float],
+    right_values: dict[str, float],
+) -> float:
+    keys = set(left_values) | set(right_values)
+    if not keys:
+        return 0.0
+
+    dot_product = sum(
+        left_values.get(key, 0.0) * right_values.get(key, 0.0)
+        for key in keys
+    )
+    left_magnitude = sqrt(
+        sum(value * value for value in left_values.values())
+    )
+    right_magnitude = sqrt(
+        sum(value * value for value in right_values.values())
+    )
+    if left_magnitude == 0.0 or right_magnitude == 0.0:
+        return 0.0
+
+    return _clamp(
+        dot_product / (left_magnitude * right_magnitude),
+        0.0,
+        1.0,
+    )
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:
