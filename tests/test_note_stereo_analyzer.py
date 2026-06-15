@@ -32,21 +32,38 @@ def _note(
     )
 
 
-def test_load_group_config_reads_valid_config(tmp_path: Path) -> None:
+def test_load_group_config_reads_valid_new_schema(tmp_path: Path) -> None:
     config_path = tmp_path / "groups.json"
     config_path.write_text(
         json.dumps(
             {
                 "groups": [
                     {
-                        "name": "percussion",
-                        "layers": [8, 9, 10],
-                        "role": "percussion",
+                        "name": "midi_flute",
+                        "layers": [1],
+                        "grouping_mode": "midi_instrument",
                     },
                     {
-                        "name": "harp_sustain",
-                        "layers": [1, 2, 3],
-                        "role": "sustain_group",
+                        "name": "manual_strings",
+                        "layers": [2, 3, 4],
+                        "grouping_mode": "instrument_split",
+                        "layer_parts": {
+                            "2": "head",
+                            "3": "left_tail",
+                            "4": "right_tail",
+                        },
+                    },
+                    {
+                        "name": "left_accompaniment",
+                        "layers": [7, 8, 9, 10],
+                        "grouping_mode": "pan_region",
+                        "pan_region": "left",
+                        "layer_parts": {
+                            "7": "main",
+                            "8": "main",
+                            "9": "outer_tail",
+                            "10": "inner_tail",
+                        },
                     },
                 ]
             }
@@ -58,30 +75,237 @@ def test_load_group_config_reads_valid_config(tmp_path: Path) -> None:
 
     assert groups == (
         LayerGroupConfig(
-            name="percussion",
-            layers=(8, 9, 10),
-            role="percussion",
+            name="midi_flute",
+            layers=(1,),
+            grouping_mode="midi_instrument",
         ),
         LayerGroupConfig(
-            name="harp_sustain",
-            layers=(1, 2, 3),
-            role="sustain_group",
+            name="manual_strings",
+            layers=(2, 3, 4),
+            grouping_mode="instrument_split",
+            layer_parts={
+                2: "head",
+                3: "left_tail",
+                4: "right_tail",
+            },
+        ),
+        LayerGroupConfig(
+            name="left_accompaniment",
+            layers=(7, 8, 9, 10),
+            grouping_mode="pan_region",
+            pan_region="left",
+            layer_parts={
+                7: "main",
+                8: "main",
+                9: "outer_tail",
+                10: "inner_tail",
+            },
         ),
     )
 
 
-def test_load_group_config_defaults_missing_role_to_unknown(tmp_path: Path) -> None:
+def test_load_group_config_defaults_grouping_mode_to_manual_mixed(
+    tmp_path: Path,
+) -> None:
     config_path = tmp_path / "groups.json"
     config_path.write_text(
-        json.dumps({"groups": [{"name": "default_role", "layers": [1]}]}),
+        json.dumps({"groups": [{"name": "default_mode", "layers": [1]}]}),
         encoding="utf-8",
     )
 
     groups = load_group_config(config_path)
 
     assert groups == (
-        LayerGroupConfig(name="default_role", layers=(1,), role="unknown"),
+        LayerGroupConfig(
+            name="default_mode",
+            layers=(1,),
+            grouping_mode="manual_mixed",
+        ),
     )
+
+
+def test_load_group_config_rejects_invalid_grouping_mode(tmp_path: Path) -> None:
+    config_path = tmp_path / "groups.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "groups": [
+                    {
+                        "name": "bad",
+                        "layers": [1],
+                        "grouping_mode": "melodyish",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Unknown grouping_mode"):
+        load_group_config(config_path)
+
+
+def test_load_group_config_defaults_pan_region_to_unknown(tmp_path: Path) -> None:
+    config_path = tmp_path / "groups.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "groups": [
+                    {
+                        "name": "centerless",
+                        "layers": [1],
+                        "grouping_mode": "midi_instrument",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    groups = load_group_config(config_path)
+
+    assert groups[0].pan_region == "unknown"
+
+
+def test_load_group_config_rejects_invalid_pan_region(tmp_path: Path) -> None:
+    config_path = tmp_path / "groups.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "groups": [
+                    {
+                        "name": "bad_pan",
+                        "layers": [1],
+                        "grouping_mode": "pan_region",
+                        "pan_region": "slightly_leftish",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Unknown pan_region"):
+        load_group_config(config_path)
+
+
+def test_load_group_config_converts_layer_parts_keys_to_int(tmp_path: Path) -> None:
+    config_path = tmp_path / "groups.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "groups": [
+                    {
+                        "name": "parts",
+                        "layers": [1, 2],
+                        "grouping_mode": "instrument_split",
+                        "layer_parts": {
+                            "1": "head",
+                            "2": "support",
+                        },
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    groups = load_group_config(config_path)
+
+    assert groups[0].layer_parts == {
+        1: "head",
+        2: "support",
+    }
+
+
+def test_load_group_config_rejects_invalid_layer_part(tmp_path: Path) -> None:
+    config_path = tmp_path / "groups.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "groups": [
+                    {
+                        "name": "bad_part",
+                        "layers": [1],
+                        "layer_parts": {"1": "shadow"},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Unknown layer part"):
+        load_group_config(config_path)
+
+
+def test_load_group_config_rejects_layer_part_outside_group_layers(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "groups.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "groups": [
+                    {
+                        "name": "bad_layer",
+                        "layers": [1],
+                        "layer_parts": {"2": "support"},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="outside group"):
+        load_group_config(config_path)
+
+
+def test_load_group_config_rejects_empty_name_and_layers(tmp_path: Path) -> None:
+    name_path = tmp_path / "empty_name.json"
+    name_path.write_text(
+        json.dumps({"groups": [{"name": "", "layers": [1]}]}),
+        encoding="utf-8",
+    )
+    layers_path = tmp_path / "empty_layers.json"
+    layers_path.write_text(
+        json.dumps({"groups": [{"name": "empty_layers", "layers": []}]}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="name"):
+        load_group_config(name_path)
+    with pytest.raises(ValueError, match="layers"):
+        load_group_config(layers_path)
+
+
+def test_load_group_config_rejects_old_schema_fields(tmp_path: Path) -> None:
+    role_path = tmp_path / "old_role.json"
+    role_path.write_text(
+        json.dumps({"groups": [{"name": "old", "layers": [1], "role": "lead"}]}),
+        encoding="utf-8",
+    )
+    layer_roles_path = tmp_path / "old_layer_roles.json"
+    layer_roles_path.write_text(
+        json.dumps(
+            {
+                "groups": [
+                    {
+                        "name": "old",
+                        "layers": [1],
+                        "layer_roles": {"1": "head"},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="role"):
+        load_group_config(role_path)
+    with pytest.raises(ValueError, match="layer_roles"):
+        load_group_config(layer_roles_path)
 
 
 def test_load_group_config_raises_value_error_when_required_field_missing(
@@ -94,125 +318,6 @@ def test_load_group_config_raises_value_error_when_required_field_missing(
     )
 
     with pytest.raises(ValueError, match="missing: layers"):
-        load_group_config(config_path)
-
-
-def test_load_group_config_accepts_standard_group_roles(tmp_path: Path) -> None:
-    config_path = tmp_path / "groups.json"
-    config_path.write_text(
-        json.dumps(
-            {
-                "groups": [
-                    {"name": "lead", "layers": [1], "role": "lead"},
-                    {"name": "bass", "layers": [2], "role": "bass"},
-                    {"name": "effect", "layers": [3], "role": "effect"},
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    groups = load_group_config(config_path)
-
-    assert [group.role for group in groups] == ["lead", "bass", "effect"]
-
-
-def test_load_group_config_rejects_invalid_group_role(tmp_path: Path) -> None:
-    config_path = tmp_path / "groups.json"
-    config_path.write_text(
-        json.dumps(
-            {
-                "groups": [
-                    {"name": "bad", "layers": [1], "role": "melodyish"},
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="Unknown group role"):
-        load_group_config(config_path)
-
-
-def test_load_group_config_accepts_standard_layer_roles(tmp_path: Path) -> None:
-    config_path = tmp_path / "groups.json"
-    config_path.write_text(
-        json.dumps(
-            {
-                "groups": [
-                    {
-                        "name": "harp_sustain",
-                        "layers": [1, 2, 3],
-                        "role": "sustain_group",
-                        "layer_roles": {
-                            "1": "head",
-                            "2": "left_tail",
-                            "3": "right_tail",
-                        },
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    groups = load_group_config(config_path)
-
-    assert groups == (
-        LayerGroupConfig(
-            name="harp_sustain",
-            layers=(1, 2, 3),
-            role="sustain_group",
-            layer_roles={
-                1: "head",
-                2: "left_tail",
-                3: "right_tail",
-            },
-        ),
-    )
-
-
-def test_load_group_config_rejects_invalid_layer_role(tmp_path: Path) -> None:
-    config_path = tmp_path / "groups.json"
-    config_path.write_text(
-        json.dumps(
-            {
-                "groups": [
-                    {
-                        "name": "bad_layer_role",
-                        "layers": [1],
-                        "layer_roles": {"1": "shadow"},
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="Unknown layer role"):
-        load_group_config(config_path)
-
-
-def test_load_group_config_rejects_layer_role_outside_group_layers(
-    tmp_path: Path,
-) -> None:
-    config_path = tmp_path / "groups.json"
-    config_path.write_text(
-        json.dumps(
-            {
-                "groups": [
-                    {
-                        "name": "bad_layer",
-                        "layers": [1],
-                        "layer_roles": {"2": "support"},
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="outside group"):
         load_group_config(config_path)
 
 
@@ -335,7 +440,7 @@ def test_group_report_contains_aggregate_statistics() -> None:
             LayerGroupConfig(
                 name="drums",
                 layers=(1, 2),
-                role="percussion",
+                grouping_mode="percussion",
             )
         ],
     )
@@ -344,8 +449,9 @@ def test_group_report_contains_aggregate_statistics() -> None:
 
     assert group_report["name"] == "drums"
     assert group_report["layers"] == [1, 2]
-    assert group_report["role"] == "percussion"
-    assert group_report["layer_roles"] == {}
+    assert group_report["grouping_mode"] == "percussion"
+    assert group_report["pan_region"] == "unknown"
+    assert group_report["layer_parts"] == {}
     assert group_report["note_count"] == 3
     assert group_report["tick_start"] == 0
     assert group_report["tick_end"] == 8
@@ -364,22 +470,31 @@ def test_group_report_contains_aggregate_statistics() -> None:
     ]
 
 
-def test_group_report_does_not_overwrite_configured_role_with_role_guess() -> None:
+def test_group_report_outputs_grouping_mode_pan_region_and_layer_parts() -> None:
     report = analyze_note_stereo(
-        [_note(tick=0, layer=1, instrument=2)],
+        [_note(tick=0, layer=7, instrument=0)],
         group_configs=[
             LayerGroupConfig(
-                name="configured_lead",
-                layers=(1,),
-                role="lead",
+                name="left_accompaniment",
+                layers=(7, 8),
+                grouping_mode="pan_region",
+                pan_region="left",
+                layer_parts={
+                    7: "main",
+                    8: "outer_tail",
+                },
             )
         ],
     )
 
     group_report = report["groups"][0]
 
-    assert group_report["role"] == "lead"
-    assert group_report["role_guess"] == "percussion"
+    assert group_report["grouping_mode"] == "pan_region"
+    assert group_report["pan_region"] == "left"
+    assert group_report["layer_parts"] == {
+        7: "main",
+        8: "outer_tail",
+    }
 
 
 def test_group_report_lists_missing_layers() -> None:
@@ -389,7 +504,7 @@ def test_group_report_lists_missing_layers() -> None:
             LayerGroupConfig(
                 name="partial",
                 layers=(1, 2, 3),
-                role="sustain_group",
+                grouping_mode="instrument_split",
             )
         ],
     )
@@ -404,7 +519,7 @@ def test_empty_notes_report_has_no_layers_and_empty_group_statistics() -> None:
             LayerGroupConfig(
                 name="empty",
                 layers=(1, 2),
-                role="percussion",
+                grouping_mode="percussion",
             )
         ],
     )
@@ -628,7 +743,7 @@ def test_analysis_report_to_jsonable_converts_dataclasses_and_tuples() -> None:
             "group": LayerGroupConfig(
                 name="percussion",
                 layers=(1, 2),
-                role="percussion",
+                grouping_mode="percussion",
             )
         }
     )
@@ -637,7 +752,8 @@ def test_analysis_report_to_jsonable_converts_dataclasses_and_tuples() -> None:
         "group": {
             "name": "percussion",
             "layers": [1, 2],
-            "role": "percussion",
-            "layer_roles": {},
+            "grouping_mode": "percussion",
+            "pan_region": "unknown",
+            "layer_parts": {},
         }
     }

@@ -12,26 +12,37 @@ from .models import NoteEvent
 
 
 PERCUSSION_INSTRUMENTS = frozenset({2, 3, 4})
-STANDARD_GROUP_ROLES = frozenset(
+STANDARD_GROUPING_MODES = frozenset(
     {
+        "midi_instrument",
+        "instrument_mixed",
+        "instrument_split",
+        "pan_region",
         "percussion",
-        "lead",
-        "sustain_group",
-        "accompaniment",
-        "bass",
-        "arpeggio",
-        "effect",
+        "manual_mixed",
+    }
+)
+STANDARD_LAYER_PARTS = frozenset(
+    {
+        "head",
+        "main",
+        "support",
+        "tail",
+        "left_tail",
+        "right_tail",
+        "inner_tail",
+        "outer_tail",
         "unknown",
     }
 )
-STANDARD_LAYER_ROLES = frozenset(
+STANDARD_PAN_REGIONS = frozenset(
     {
-        "head",
-        "left_tail",
-        "right_tail",
-        "tail",
-        "main",
-        "support",
+        "far_left",
+        "left",
+        "center",
+        "right",
+        "far_right",
+        "wide",
         "unknown",
     }
 )
@@ -64,37 +75,44 @@ _INSTRUMENT_NAMES: dict[int, str] = {
 class LayerGroupConfig:
     name: str
     layers: tuple[int, ...]
-    role: str = "unknown"
-    layer_roles: dict[int, str] = field(default_factory=dict)
+    grouping_mode: str = "manual_mixed"
+    pan_region: str = "unknown"
+    layer_parts: dict[int, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         layers = tuple(self.layers)
-        if self.role not in STANDARD_GROUP_ROLES:
-            raise ValueError(f"Unknown group role: {self.role}")
+        if not self.name:
+            raise ValueError("Group name must not be empty")
+        if not layers:
+            raise ValueError("Group layers must not be empty")
+        if self.grouping_mode not in STANDARD_GROUPING_MODES:
+            raise ValueError(f"Unknown grouping_mode: {self.grouping_mode}")
+        if self.pan_region not in STANDARD_PAN_REGIONS:
+            raise ValueError(f"Unknown pan_region: {self.pan_region}")
 
-        normalized_layer_roles = _normalize_layer_roles(self.layer_roles)
-        unknown_layer_roles = [
-            role
-            for role in normalized_layer_roles.values()
-            if role not in STANDARD_LAYER_ROLES
+        normalized_layer_parts = _normalize_layer_parts(self.layer_parts)
+        unknown_layer_parts = [
+            part
+            for part in normalized_layer_parts.values()
+            if part not in STANDARD_LAYER_PARTS
         ]
-        if unknown_layer_roles:
-            raise ValueError(f"Unknown layer role: {unknown_layer_roles[0]}")
+        if unknown_layer_parts:
+            raise ValueError(f"Unknown layer part: {unknown_layer_parts[0]}")
 
         configured_layers = set(layers)
         unknown_layers = [
             layer
-            for layer in normalized_layer_roles
+            for layer in normalized_layer_parts
             if layer not in configured_layers
         ]
         if unknown_layers:
             raise ValueError(
-                "Layer role references layer outside group: "
+                "Layer part references layer outside group: "
                 f"{unknown_layers[0]}"
             )
 
         object.__setattr__(self, "layers", layers)
-        object.__setattr__(self, "layer_roles", normalized_layer_roles)
+        object.__setattr__(self, "layer_parts", normalized_layer_parts)
 
 
 def load_group_config(path: str | Path) -> tuple[LayerGroupConfig, ...]:
@@ -225,42 +243,56 @@ def _parse_group_config(raw_group: Any, index: int) -> LayerGroupConfig:
 
     name = raw_group["name"]
     layers = raw_group["layers"]
-    role = raw_group.get("role", "unknown")
-    layer_roles = raw_group.get("layer_roles", {})
+    grouping_mode = raw_group.get("grouping_mode", "manual_mixed")
+    pan_region = raw_group.get("pan_region", "unknown")
+    layer_parts = raw_group.get("layer_parts", {})
 
     if not isinstance(name, str) or not name:
         raise ValueError(f"Group config entry {index} field 'name' must be a string")
     if not isinstance(layers, list):
         raise ValueError(f"Group config entry {index} field 'layers' must be a list")
+    if not layers:
+        raise ValueError(f"Group config entry {index} field 'layers' must not be empty")
     if not all(isinstance(layer, int) for layer in layers):
         raise ValueError(
             f"Group config entry {index} field 'layers' must contain integers"
         )
-    if not isinstance(role, str) or not role:
-        raise ValueError(f"Group config entry {index} field 'role' must be a string")
-    if not isinstance(layer_roles, dict):
+    if "role" in raw_group:
+        raise ValueError("Group config field 'role' is no longer supported")
+    if "layer_roles" in raw_group:
+        raise ValueError("Group config field 'layer_roles' is no longer supported")
+    if not isinstance(grouping_mode, str) or not grouping_mode:
         raise ValueError(
-            f"Group config entry {index} field 'layer_roles' must be an object"
+            f"Group config entry {index} field 'grouping_mode' must be a string"
+        )
+    if not isinstance(pan_region, str) or not pan_region:
+        raise ValueError(
+            f"Group config entry {index} field 'pan_region' must be a string"
+        )
+    if not isinstance(layer_parts, dict):
+        raise ValueError(
+            f"Group config entry {index} field 'layer_parts' must be an object"
         )
 
     return LayerGroupConfig(
         name=name,
         layers=tuple(layers),
-        role=role,
-        layer_roles=layer_roles,
+        grouping_mode=grouping_mode,
+        pan_region=pan_region,
+        layer_parts=layer_parts,
     )
 
 
-def _normalize_layer_roles(layer_roles: dict[Any, str]) -> dict[int, str]:
+def _normalize_layer_parts(layer_parts: dict[Any, str]) -> dict[int, str]:
     normalized: dict[int, str] = {}
-    for raw_layer, role in layer_roles.items():
+    for raw_layer, part in layer_parts.items():
         try:
             layer = int(raw_layer)
         except (TypeError, ValueError) as exc:
-            raise ValueError(f"Layer role key must be an integer: {raw_layer}") from exc
-        if not isinstance(role, str) or not role:
-            raise ValueError(f"Layer role for layer {layer} must be a string")
-        normalized[layer] = role
+            raise ValueError(f"Layer part key must be an integer: {raw_layer}") from exc
+        if not isinstance(part, str) or not part:
+            raise ValueError(f"Layer part for layer {layer} must be a string")
+        normalized[layer] = part
     return normalized
 
 
@@ -302,8 +334,9 @@ def _build_group_report(
     return {
         "name": group_config.name,
         "layers": list(group_config.layers),
-        "role": group_config.role,
-        "layer_roles": dict(group_config.layer_roles),
+        "grouping_mode": group_config.grouping_mode,
+        "pan_region": group_config.pan_region,
+        "layer_parts": dict(group_config.layer_parts),
         "note_count": len(group_notes),
         "tick_start": min((note.tick for note in group_notes), default=None),
         "tick_end": max((note.tick for note in group_notes), default=None),
