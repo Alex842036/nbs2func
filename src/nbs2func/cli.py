@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import cProfile
 import io
+import json
 from pathlib import Path
 import pstats
 import re
@@ -13,6 +14,11 @@ from .layout_geometry import BlockPosition, LayoutError
 from .layout_models import StereoLayoutConfig
 from .minecraft_version import get_version_profile, write_pack_mcmeta
 from .nbs_reader import read_nbs
+from .note_stereo_analyzer import (
+    analysis_report_to_jsonable,
+    analyze_note_stereo,
+    load_group_config,
+)
 from .playback_assist_module import (
     PlaybackAssistModuleConfig,
     playback_assist_debug_info,
@@ -38,6 +44,33 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         default=str(DEFAULT_OUTPUT_PATH),
         help="Parent directory for the generated datapack. Defaults to output.",
+    )
+    parser.add_argument(
+        "--analyze-stereo",
+        action="store_true",
+        help="Analyze note stereo features and output a JSON report without building.",
+    )
+    parser.add_argument(
+        "--group-config",
+        default=None,
+        help="Optional layer group config JSON path for --analyze-stereo.",
+    )
+    parser.add_argument(
+        "--analysis-output",
+        default=None,
+        help="Optional output path for the --analyze-stereo JSON report.",
+    )
+    parser.add_argument(
+        "--analysis-window-size",
+        type=int,
+        default=128,
+        help="Window size in ticks for --analyze-stereo. Defaults to 128.",
+    )
+    parser.add_argument(
+        "--analysis-hop-size",
+        type=int,
+        default=32,
+        help="Hop size in ticks for --analyze-stereo. Defaults to 32.",
     )
     parser.add_argument("--origin-x", type=int, default=0, help="World origin X.")
     parser.add_argument("--origin-y", type=int, default=128, help="World origin Y.")
@@ -609,6 +642,9 @@ def main() -> int:
     song = read_nbs(path)
     note_count = sum(len(track.notes) for track in song.tracks)
 
+    if args.analyze_stereo:
+        return _run_analyze_stereo(args, song)
+
     print("Song")
     print(f"  file: {path}")
     print(f"  name: {song.name}")
@@ -1068,6 +1104,41 @@ def main() -> int:
             "If split output was needed, run "
             f"/function {args.function_namespace}:{args.build_function_dir}/start"
         )
+
+    return 0
+
+
+def _run_analyze_stereo(args, song) -> int:
+    try:
+        group_configs = (
+            load_group_config(args.group_config)
+            if args.group_config is not None
+            else None
+        )
+        report = analyze_note_stereo(
+            (
+                note
+                for track in song.tracks
+                for note in track.notes
+            ),
+            group_configs=group_configs,
+            window_size=args.analysis_window_size,
+            hop_size=args.analysis_hop_size,
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        return 1
+
+    json_text = json.dumps(
+        analysis_report_to_jsonable(report),
+        indent=2,
+    )
+    if args.analysis_output is not None:
+        output_path = Path(args.analysis_output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json_text + "\n", encoding="utf-8")
+    else:
+        print(json_text)
 
     return 0
 

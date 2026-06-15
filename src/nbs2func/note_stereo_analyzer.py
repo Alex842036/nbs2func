@@ -143,6 +143,8 @@ def load_group_config(path: str | Path) -> tuple[LayerGroupConfig, ...]:
 def analyze_note_stereo(
     notes: Iterable[NoteEvent],
     group_configs: Iterable[LayerGroupConfig] | None = None,
+    window_size: int = 128,
+    hop_size: int = 32,
 ) -> dict[str, Any]:
     """Analyze note events without changing layout or generated output."""
 
@@ -158,7 +160,13 @@ def analyze_note_stereo(
         for layer_id in sorted(notes_by_layer)
     ]
     group_reports = [
-        _build_group_report(group_config, note_events, notes_by_layer)
+        _build_group_report(
+            group_config,
+            note_events,
+            notes_by_layer,
+            window_size=window_size,
+            hop_size=hop_size,
+        )
         for group_config in groups
     ]
 
@@ -317,6 +325,9 @@ def _build_group_report(
     group_config: LayerGroupConfig,
     all_notes: tuple[NoteEvent, ...],
     notes_by_layer: dict[int, list[NoteEvent]],
+    *,
+    window_size: int,
+    hop_size: int,
 ) -> dict[str, Any]:
     configured_layers = set(group_config.layers)
     group_notes = [
@@ -349,7 +360,12 @@ def _build_group_report(
         "rhythm": _rhythm_summary(group_notes),
         "density": _density_summary(group_notes),
         "layer_activity": _layer_activity(group_config.layers, group_notes),
-        "windows": compute_group_windows(all_notes, group_config),
+        "windows": compute_group_windows(
+            all_notes,
+            group_config,
+            window_size=window_size,
+            hop_size=hop_size,
+        ),
     }
 
 
