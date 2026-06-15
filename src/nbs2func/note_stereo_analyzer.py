@@ -139,6 +139,11 @@ SSM_FULL_STAT_MAX_FRAMES = 2000
 SSM_NOVELTY_PEAK_MAX_COUNT = 50
 SSM_NOVELTY_MIN_SCORE = 0.25
 SSM_NOVELTY_MIN_DISTANCE_TICKS = 64
+GROUP_SSM_NOVELTY_MIN_SCORE = 0.08
+GROUP_SSM_NOVELTY_PEAK_MAX_COUNT = 20
+GROUP_SSM_NOVELTY_MIN_DISTANCE_TICKS = 64
+GROUP_SSM_MIN_ACTIVE_FRAMES = 2
+GROUP_NOVELTY_GLOBAL_MAX_COUNT = 50
 SUSTAIN_PATTERN_TAIL_ACTIVITY_RATIO = 0.1
 SUSTAIN_PATTERN_INLINE_GROUPING_MODES = frozenset(
     {
@@ -478,10 +483,12 @@ def compute_track_frame_feature_vectors(
 
 
 def compute_self_similarity_summary(
-    frame_vectors: list[TrackFrameFeatureVector],
+    frame_vectors: list[TrackFrameFeatureVector | WindowFeatureVector],
+    scope: str = "global_track_frame",
 ) -> dict[str, Any]:
     frame_count = len(frame_vectors)
     summary = {
+        "scope": scope,
         "frame_count": frame_count,
         "tick_start": min(
             (frame.tick_start for frame in frame_vectors),
@@ -503,7 +510,7 @@ def compute_self_similarity_summary(
         return summary
 
     normalized_frames = [
-        _normalize_track_frame_values(frame.values)
+        _normalize_feature_values(frame.values)
         for frame in frame_vectors
     ]
     diagonal_scores = [
@@ -535,13 +542,102 @@ def compute_self_similarity_summary(
 def compute_novelty_curve_from_frames(
     frame_vectors: list[TrackFrameFeatureVector],
 ) -> list[dict[str, Any]]:
+    return _compute_adjacent_novelty_curve(
+        frame_vectors,
+        ignore_inactive_pairs=False,
+    )
+
+
+def compute_group_ssm_summaries(
+    group_reports: list[dict[str, Any]],
+    group_summaries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    group_summary_by_name = {
+        group_summary["name"]: group_summary
+        for group_summary in group_summaries
+    }
+    group_ssm: list[dict[str, Any]] = []
+    for group_report in group_reports:
+        vectors = [
+            window_report_to_feature_vector(group_report, window_report)
+            for window_report in group_report["windows"]
+        ]
+        vectors = sorted(vectors, key=lambda vector: vector.tick_start)
+        group_summary = group_summary_by_name[group_report["name"]]
+        ssm_summary = compute_self_similarity_summary(vectors, scope="group")
+        novelty_peaks = detect_group_novelty_peaks(
+            _compute_adjacent_novelty_curve(
+                vectors,
+                ignore_inactive_pairs=True,
+            )
+        )
+        group_ssm.append(
+            {
+                "name": group_report["name"],
+                "grouping_mode": group_report["grouping_mode"],
+                "boundary_weight": group_summary["boundary_weight"],
+                **ssm_summary,
+                "novelty_peaks": novelty_peaks,
+            }
+        )
+
+    return group_ssm
+
+
+def flatten_group_novelty_peaks(
+    group_ssm_summaries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    flattened: list[dict[str, Any]] = []
+    for group_summary in group_ssm_summaries:
+        for peak in group_summary["novelty_peaks"]:
+            weighted_score = peak["score"] * group_summary["boundary_weight"]
+            flattened.append(
+                {
+                    "tick": peak["tick"],
+                    "score": peak["score"],
+                    "weighted_score": weighted_score,
+                    "group": group_summary["name"],
+                    "boundary_weight": group_summary["boundary_weight"],
+                    "left_tick_start": peak["left_tick_start"],
+                    "right_tick_start": peak["right_tick_start"],
+                }
+            )
+
+    return sorted(
+        flattened,
+        key=lambda peak: (-peak["weighted_score"], peak["tick"], peak["group"]),
+    )[:GROUP_NOVELTY_GLOBAL_MAX_COUNT]
+
+
+def detect_group_novelty_peaks(
+    novelty_curve: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return _detect_novelty_peaks(
+        novelty_curve,
+        min_score=GROUP_SSM_NOVELTY_MIN_SCORE,
+        max_count=GROUP_SSM_NOVELTY_PEAK_MAX_COUNT,
+        min_distance_ticks=GROUP_SSM_NOVELTY_MIN_DISTANCE_TICKS,
+    )
+
+
+def _compute_adjacent_novelty_curve(
+    frame_vectors: list[TrackFrameFeatureVector | WindowFeatureVector],
+    *,
+    ignore_inactive_pairs: bool,
+) -> list[dict[str, Any]]:
     sorted_frames = sorted(frame_vectors, key=lambda frame: frame.tick_start)
     normalized_frames = [
-        _normalize_track_frame_values(frame.values)
+        _normalize_feature_values(frame.values)
         for frame in sorted_frames
     ]
     novelty_curve: list[dict[str, Any]] = []
     for index in range(1, len(sorted_frames)):
+        if (
+            ignore_inactive_pairs
+            and sorted_frames[index - 1].values.get("group_active", 1.0) == 0.0
+            and sorted_frames[index].values.get("group_active", 1.0) == 0.0
+        ):
+            continue
         similarity = _cosine_similarity(
             normalized_frames[index - 1],
             normalized_frames[index],
@@ -561,20 +657,35 @@ def compute_novelty_curve_from_frames(
 def detect_novelty_peaks(
     novelty_curve: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    return _detect_novelty_peaks(
+        novelty_curve,
+        min_score=SSM_NOVELTY_MIN_SCORE,
+        max_count=SSM_NOVELTY_PEAK_MAX_COUNT,
+        min_distance_ticks=SSM_NOVELTY_MIN_DISTANCE_TICKS,
+    )
+
+
+def _detect_novelty_peaks(
+    novelty_curve: list[dict[str, Any]],
+    *,
+    min_score: float,
+    max_count: int,
+    min_distance_ticks: int,
+) -> list[dict[str, Any]]:
     peaks: list[dict[str, Any]] = []
     for point in sorted(
         novelty_curve,
         key=lambda item: (-item["score"], item["tick"]),
     ):
-        if point["score"] < SSM_NOVELTY_MIN_SCORE:
+        if point["score"] < min_score:
             continue
         if any(
-            abs(point["tick"] - kept["tick"]) < SSM_NOVELTY_MIN_DISTANCE_TICKS
+            abs(point["tick"] - kept["tick"]) < min_distance_ticks
             for kept in peaks
         ):
             continue
         peaks.append(point)
-        if len(peaks) >= SSM_NOVELTY_PEAK_MAX_COUNT:
+        if len(peaks) >= max_count:
             break
 
     return sorted(peaks, key=lambda item: (-item["score"], item["tick"]))
@@ -895,6 +1006,7 @@ def _build_summary_report(
     ]
     window_vectors = compute_window_feature_vectors(group_reports)
     frame_vectors = compute_track_frame_feature_vectors(group_reports)
+    group_ssm = compute_group_ssm_summaries(group_reports, group_summaries)
 
     return {
         "overview": {
@@ -923,6 +1035,8 @@ def _build_summary_report(
         "novelty_peaks": detect_novelty_peaks(
             compute_novelty_curve_from_frames(frame_vectors)
         ),
+        "group_ssm": group_ssm,
+        "group_novelty_peaks": flatten_group_novelty_peaks(group_ssm),
     }
 
 
@@ -1275,7 +1389,7 @@ def _track_label_ratios(
     }
 
 
-def _normalize_track_frame_values(values: dict[str, float]) -> dict[str, float]:
+def _normalize_feature_values(values: dict[str, float]) -> dict[str, float]:
     group_count = max(1.0, values.get("_group_count", 1.0))
     normalized: dict[str, float] = {}
     for key, value in values.items():
@@ -1284,23 +1398,28 @@ def _normalize_track_frame_values(values: dict[str, float]) -> dict[str, float]:
         safe_value = _safe_float(value)
         if key == "active_group_count":
             normalized[key] = _clamp(safe_value / group_count, 0.0, 1.0)
-        elif key == "mean_pitch_mean":
+        elif key in {"mean_pitch_mean", "pitch_mean"}:
             normalized[key] = _clamp(safe_value / 100.0, 0.0, 1.0)
-        elif key == "mean_pitch_std":
+        elif key in {"mean_pitch_std", "pitch_std"}:
             normalized[key] = _clamp(safe_value / BOUNDARY_PITCH_SCALE, 0.0, 1.0)
-        elif key == "mean_volume_mean":
+        elif key in {"mean_volume_mean", "volume_mean"}:
             normalized[key] = _clamp(safe_value / 100.0, 0.0, 1.0)
-        elif key == "mean_volume_std":
+        elif key in {"mean_volume_std", "volume_std"}:
             normalized[key] = _clamp(safe_value / BOUNDARY_VOLUME_SCALE, 0.0, 1.0)
-        elif key == "mean_pan_mean":
+        elif key in {"mean_pan_mean", "pan_mean"}:
             normalized[key] = _clamp(safe_value / 200.0, 0.0, 1.0)
-        elif key == "mean_pan_std":
+        elif key in {"mean_pan_std", "pan_std"}:
             normalized[key] = _clamp(safe_value / BOUNDARY_PAN_SCALE, 0.0, 1.0)
         elif key in {
             "active_group_ratio",
             "mean_note_density",
+            "note_density",
+            "group_active",
+            "mean_notes_per_active_tick",
             "mean_multi_note_tick_ratio",
+            "multi_note_tick_ratio",
             "mean_regularity_score",
+            "regularity_score",
         } or key.endswith("_ratio"):
             normalized[key] = _clamp(safe_value, 0.0, 1.0)
         else:

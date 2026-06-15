@@ -9,6 +9,8 @@ from nbs2func.note_stereo_analyzer import (
     BOUNDARY_CLUSTER_MAX_TICK_GAP,
     BOUNDARY_FINAL_MAX_COUNT,
     BOUNDARY_LOW_RELIABILITY_SOLO_MIN_SCORE,
+    GROUP_NOVELTY_GLOBAL_MAX_COUNT,
+    GROUP_SSM_NOVELTY_PEAK_MAX_COUNT,
     SSM_NOVELTY_PEAK_MAX_COUNT,
     LayerGroupConfig,
     TrackFrameFeatureVector,
@@ -18,10 +20,13 @@ from nbs2func.note_stereo_analyzer import (
     compute_group_windows,
     compute_novelty_curve_from_frames,
     compute_self_similarity_summary,
+    compute_group_ssm_summaries,
     compute_track_frame_feature_vectors,
+    detect_group_novelty_peaks,
     compute_window_feature_vectors,
     detect_novelty_peaks,
     detect_boundary_candidates,
+    flatten_group_novelty_peaks,
     load_group_config,
     window_report_to_feature_vector,
 )
@@ -1310,7 +1315,10 @@ def test_analyze_note_stereo_outputs_summary() -> None:
         },
     ]
     assert summary["boundary_candidates"] == []
-    assert summary["ssm"] == {
+    assert summary["ssm"] | {
+        "diagonal_mean": 1.0,
+    } == {
+        "scope": "global_track_frame",
         "frame_count": 1,
         "tick_start": 0,
         "tick_end": 64,
@@ -1322,7 +1330,13 @@ def test_analyze_note_stereo_outputs_summary() -> None:
         "off_diagonal_min": 0.0,
         "stats_truncated": False,
     }
+    assert summary["ssm"]["diagonal_mean"] == pytest.approx(1.0)
     assert summary["novelty_peaks"] == []
+    assert [group["name"] for group in summary["group_ssm"]] == [
+        "drums",
+        "missing_tail",
+    ]
+    assert summary["group_novelty_peaks"] == []
     assert "windows" not in summary["groups"][0]
 
 
@@ -1576,6 +1590,199 @@ def test_novelty_peaks_are_capped() -> None:
 
     assert len(peaks) == SSM_NOVELTY_PEAK_MAX_COUNT
     assert peaks[0]["score"] >= peaks[-1]["score"]
+
+
+def test_group_ssm_summary_contains_group_stats_and_peaks() -> None:
+    group_reports = [
+        _group_report(
+            name="lead",
+            windows=[
+                _window_report(
+                    tick_start=0,
+                    note_count=4,
+                    texture="single_line_like",
+                ),
+                _window_report(
+                    tick_start=64,
+                    note_count=4,
+                    texture="percussion_like",
+                ),
+            ],
+        ),
+    ]
+    group_summaries = [{"name": "lead", "boundary_weight": 1.1}]
+
+    group_ssm = compute_group_ssm_summaries(group_reports, group_summaries)
+
+    assert len(group_ssm) == 1
+    assert group_ssm[0]["name"] == "lead"
+    assert group_ssm[0]["scope"] == "group"
+    assert group_ssm[0]["frame_count"] == 2
+    assert group_ssm[0]["similarity_method"] == "cosine"
+    assert group_ssm[0]["full_matrix_output"] is False
+    assert group_ssm[0]["boundary_weight"] == 1.1
+    assert group_ssm[0]["novelty_peaks"]
+
+
+def test_group_novelty_detects_changed_group_when_other_group_is_unchanged() -> None:
+    group_reports = [
+        _group_report(
+            name="changed",
+            windows=[
+                _window_report(
+                    tick_start=0,
+                    note_count=4,
+                    texture="single_line_like",
+                ),
+                _window_report(
+                    tick_start=64,
+                    note_count=4,
+                    texture="percussion_like",
+                ),
+            ],
+        ),
+        _group_report(
+            name="unchanged",
+            windows=[
+                _window_report(
+                    tick_start=0,
+                    note_count=4,
+                    texture="single_line_like",
+                ),
+                _window_report(
+                    tick_start=64,
+                    note_count=4,
+                    texture="single_line_like",
+                ),
+            ],
+        ),
+    ]
+    group_summaries = [
+        {"name": "changed", "boundary_weight": 1.0},
+        {"name": "unchanged", "boundary_weight": 1.0},
+    ]
+
+    group_ssm = compute_group_ssm_summaries(group_reports, group_summaries)
+    peaks_by_group = {
+        group_summary["name"]: group_summary["novelty_peaks"]
+        for group_summary in group_ssm
+    }
+
+    assert peaks_by_group["changed"]
+    assert peaks_by_group["unchanged"] == []
+
+
+def test_group_novelty_ignores_empty_to_empty_transitions() -> None:
+    group_reports = [
+        _group_report(
+            name="silent",
+            windows=[
+                _window_report(tick_start=0, note_count=0, texture="empty"),
+                _window_report(tick_start=64, note_count=0, texture="empty"),
+            ],
+        )
+    ]
+    group_summaries = [{"name": "silent", "boundary_weight": 1.0}]
+
+    group_ssm = compute_group_ssm_summaries(group_reports, group_summaries)
+
+    assert group_ssm[0]["novelty_peaks"] == []
+
+
+def test_group_novelty_allows_empty_to_active_transition() -> None:
+    group_reports = [
+        _group_report(
+            name="entry",
+            windows=[
+                _window_report(tick_start=0, note_count=0, texture="empty"),
+                _window_report(
+                    tick_start=64,
+                    note_count=4,
+                    texture="single_line_like",
+                ),
+            ],
+        )
+    ]
+    group_summaries = [{"name": "entry", "boundary_weight": 1.0}]
+
+    group_ssm = compute_group_ssm_summaries(group_reports, group_summaries)
+
+    assert group_ssm[0]["novelty_peaks"][0]["tick"] == 64
+
+
+def test_flattened_group_novelty_peaks_include_weighted_score_and_sorting() -> None:
+    group_ssm = [
+        {
+            "name": "quiet",
+            "boundary_weight": 0.5,
+            "novelty_peaks": [
+                {
+                    "tick": 64,
+                    "score": 0.9,
+                    "left_tick_start": 0,
+                    "right_tick_start": 64,
+                }
+            ],
+        },
+        {
+            "name": "structural",
+            "boundary_weight": 1.2,
+            "novelty_peaks": [
+                {
+                    "tick": 128,
+                    "score": 0.5,
+                    "left_tick_start": 64,
+                    "right_tick_start": 128,
+                }
+            ],
+        },
+    ]
+
+    flattened = flatten_group_novelty_peaks(group_ssm)
+
+    assert flattened[0]["group"] == "structural"
+    assert flattened[0]["weighted_score"] == pytest.approx(0.6)
+    assert flattened[0]["boundary_weight"] == 1.2
+    assert flattened[1]["group"] == "quiet"
+
+
+def test_flattened_group_novelty_peaks_are_capped() -> None:
+    group_ssm = [
+        {
+            "name": f"group_{index}",
+            "boundary_weight": 1.0,
+            "novelty_peaks": [
+                {
+                    "tick": index * 64,
+                    "score": 1.0 - index / 1000,
+                    "left_tick_start": index * 64 - 64,
+                    "right_tick_start": index * 64,
+                }
+            ],
+        }
+        for index in range(GROUP_NOVELTY_GLOBAL_MAX_COUNT + 5)
+    ]
+
+    flattened = flatten_group_novelty_peaks(group_ssm)
+
+    assert len(flattened) == GROUP_NOVELTY_GLOBAL_MAX_COUNT
+    assert flattened[0]["weighted_score"] >= flattened[-1]["weighted_score"]
+
+
+def test_group_novelty_peaks_are_capped() -> None:
+    novelty_curve = [
+        {
+            "tick": index * 64,
+            "score": 1.0 - index / 1000,
+            "left_tick_start": index * 64 - 64,
+            "right_tick_start": index * 64,
+        }
+        for index in range(GROUP_SSM_NOVELTY_PEAK_MAX_COUNT + 5)
+    ]
+
+    peaks = detect_group_novelty_peaks(novelty_curve)
+
+    assert len(peaks) == GROUP_SSM_NOVELTY_PEAK_MAX_COUNT
 
 
 def test_adjacent_change_scores_detect_activity_change() -> None:
