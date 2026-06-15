@@ -107,6 +107,14 @@ BOUNDARY_COMPONENT_WEIGHTS = {
 }
 BOUNDARY_CANDIDATE_MAX_COUNT = 50
 BOUNDARY_CANDIDATE_MIN_SCORE = 0.5
+BOUNDARY_CLUSTER_MAX_TICK_GAP = 64
+BOUNDARY_CLUSTER_MAX_COUNT = 50
+BOUNDARY_GROUP_WEIGHT_MIN = 0.25
+BOUNDARY_GROUP_WEIGHT_MAX = 1.25
+BOUNDARY_GROUP_LOW_NOTE_COUNT = 4
+BOUNDARY_GROUP_HIGH_NOTE_COUNT = 32
+BOUNDARY_GROUP_FRAGMENTED_RUN_RATIO = 0.75
+BOUNDARY_GROUP_EFFECT_RATIO = 0.5
 BOUNDARY_DENSITY_SCALE = 1.0
 BOUNDARY_NOTES_PER_ACTIVE_TICK_SCALE = 4.0
 BOUNDARY_PITCH_SCALE = 24.0
@@ -375,15 +383,34 @@ def compute_adjacent_change_scores(
 
 def detect_boundary_candidates(
     change_scores: list[dict[str, Any]],
+    group_summaries: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    candidates_by_tick: dict[int, list[dict[str, Any]]] = {}
+    group_weights = {
+        summary["name"]: summary["boundary_weight"]
+        for summary in group_summaries or ()
+    }
+    raw_candidates_by_tick: dict[int, list[dict[str, Any]]] = {}
     for change_score in change_scores:
-        if change_score["score"] < BOUNDARY_CANDIDATE_MIN_SCORE:
+        raw_score = change_score["score"]
+        group_weight = group_weights.get(change_score["group"], 1.0)
+        weighted_score = raw_score * group_weight
+        if weighted_score < BOUNDARY_CANDIDATE_MIN_SCORE:
             continue
-        candidates_by_tick.setdefault(change_score["tick"], []).append(change_score)
+        raw_candidate = {
+            **change_score,
+            "raw_score": raw_score,
+            "score": weighted_score,
+            "component_scores": _weighted_component_scores(
+                change_score["components"],
+            ),
+        }
+        raw_candidates_by_tick.setdefault(
+            change_score["tick"],
+            [],
+        ).append(raw_candidate)
 
-    candidates: list[dict[str, Any]] = []
-    for tick, tick_scores in candidates_by_tick.items():
+    raw_candidates: list[dict[str, Any]] = []
+    for tick, tick_scores in raw_candidates_by_tick.items():
         group_scores = {
             change_score["group"]: change_score["score"]
             for change_score in sorted(
@@ -391,33 +418,36 @@ def detect_boundary_candidates(
                 key=lambda score: score["group"],
             )
         }
-        component_scores = {
-            component: max(
-                change_score["components"][component]
-                for change_score in tick_scores
+        group_raw_scores = {
+            change_score["group"]: change_score["raw_score"]
+            for change_score in sorted(
+                tick_scores,
+                key=lambda score: score["group"],
             )
-            for component in BOUNDARY_COMPONENT_WEIGHTS
         }
+        component_scores = _aggregate_component_scores(tick_scores)
         top_components = dict(
             sorted(
                 component_scores.items(),
                 key=lambda item: (-item[1], item[0]),
             )[:2]
         )
-        candidates.append(
+        raw_candidates.append(
             {
                 "tick": tick,
+                "tick_start": tick,
+                "tick_end": tick,
                 "score": max(group_scores.values()),
                 "groups": list(group_scores),
                 "group_scores": group_scores,
+                "group_raw_scores": group_raw_scores,
                 "top_components": top_components,
+                "component_scores": component_scores,
+                "member_count": 1,
             }
         )
 
-    return sorted(
-        candidates,
-        key=lambda candidate: (-candidate["score"], candidate["tick"]),
-    )[:BOUNDARY_CANDIDATE_MAX_COUNT]
+    return _cluster_boundary_candidates(raw_candidates)
 
 
 def compute_group_windows(
@@ -609,6 +639,11 @@ def _build_summary_report(
         for window in group_report["windows"]
     ]
 
+    group_summaries = [
+        _build_group_summary(group_report)
+        for group_report in group_reports
+    ]
+
     return {
         "overview": {
             "layer_count": len(layer_reports),
@@ -627,21 +662,19 @@ def _build_summary_report(
             all_windows,
             "sustain_pattern_guess",
         ),
-        "groups": [
-            _build_group_summary(group_report)
-            for group_report in group_reports
-        ],
+        "groups": group_summaries,
         "boundary_candidates": detect_boundary_candidates(
             compute_adjacent_change_scores(
                 compute_window_feature_vectors(group_reports)
-            )
+            ),
+            group_summaries,
         ),
     }
 
 
 def _build_group_summary(group_report: dict[str, Any]) -> dict[str, Any]:
     windows = group_report["windows"]
-    return {
+    summary = {
         "name": group_report["name"],
         "grouping_mode": group_report["grouping_mode"],
         "layers": group_report["layers"],
@@ -666,6 +699,136 @@ def _build_group_summary(group_report: dict[str, Any]) -> dict[str, Any]:
             for window in windows
         ),
         "missing_layers": group_report["missing_layers"],
+    }
+    summary["boundary_weight"] = _compute_group_boundary_weight(summary)
+    return summary
+
+
+def _compute_group_boundary_weight(group_summary: dict[str, Any]) -> float:
+    note_count = group_summary["note_count"]
+    window_count = group_summary["window_count"]
+    active_window_count = sum(group_summary["window_texture_counts"].values())
+    if active_window_count == 0:
+        return BOUNDARY_GROUP_WEIGHT_MIN
+
+    weight = 1.0
+    if note_count < BOUNDARY_GROUP_LOW_NOTE_COUNT:
+        weight -= 0.35
+    elif note_count >= BOUNDARY_GROUP_HIGH_NOTE_COUNT:
+        weight += 0.1
+
+    texture_run_ratio = group_summary["texture_run_count"] / active_window_count
+    sustain_run_ratio = group_summary["sustain_run_count"] / active_window_count
+    if texture_run_ratio >= BOUNDARY_GROUP_FRAGMENTED_RUN_RATIO:
+        weight -= 0.2
+    if sustain_run_ratio >= BOUNDARY_GROUP_FRAGMENTED_RUN_RATIO:
+        weight -= 0.1
+
+    noisy_window_count = (
+        group_summary["window_texture_counts"].get(
+            "effect_or_transition_like",
+            0,
+        )
+        + group_summary["window_texture_counts"].get("mixed_like", 0)
+    )
+    if noisy_window_count / active_window_count >= BOUNDARY_GROUP_EFFECT_RATIO:
+        weight -= 0.25
+
+    if group_summary["missing_layers"]:
+        weight -= min(0.3, 0.1 * len(group_summary["missing_layers"]))
+
+    if group_summary["grouping_mode"] == "percussion":
+        weight = max(1.0, weight)
+
+    return _clamp(
+        weight,
+        BOUNDARY_GROUP_WEIGHT_MIN,
+        BOUNDARY_GROUP_WEIGHT_MAX,
+    )
+
+
+def _weighted_component_scores(
+    components: dict[str, float],
+) -> dict[str, float]:
+    return {
+        component: components[component] * BOUNDARY_COMPONENT_WEIGHTS[component]
+        for component in BOUNDARY_COMPONENT_WEIGHTS
+    }
+
+
+def _aggregate_component_scores(
+    candidates: list[dict[str, Any]],
+) -> dict[str, float]:
+    return {
+        component: max(
+            candidate["component_scores"][component]
+            for candidate in candidates
+        )
+        for component in BOUNDARY_COMPONENT_WEIGHTS
+    }
+
+
+def _cluster_boundary_candidates(
+    raw_candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    clusters: list[list[dict[str, Any]]] = []
+    for candidate in sorted(raw_candidates, key=lambda item: item["tick"]):
+        if (
+            clusters
+            and candidate["tick"] - clusters[-1][-1]["tick"]
+            <= BOUNDARY_CLUSTER_MAX_TICK_GAP
+        ):
+            clusters[-1].append(candidate)
+        else:
+            clusters.append([candidate])
+
+    clustered_candidates = [
+        _build_boundary_cluster(cluster)
+        for cluster in clusters
+    ]
+    return sorted(
+        clustered_candidates,
+        key=lambda candidate: (-candidate["score"], candidate["tick"]),
+    )[: min(BOUNDARY_CANDIDATE_MAX_COUNT, BOUNDARY_CLUSTER_MAX_COUNT)]
+
+
+def _build_boundary_cluster(
+    cluster: list[dict[str, Any]],
+) -> dict[str, Any]:
+    best_member = max(cluster, key=lambda item: (item["score"], -item["tick"]))
+    group_scores: dict[str, float] = {}
+    group_raw_scores: dict[str, float] = {}
+    for member in cluster:
+        for group, score in member["group_scores"].items():
+            group_scores[group] = max(group_scores.get(group, 0.0), score)
+        for group, score in member["group_raw_scores"].items():
+            group_raw_scores[group] = max(group_raw_scores.get(group, 0.0), score)
+
+    component_scores = _aggregate_component_scores(cluster)
+    top_components = dict(
+        sorted(
+            component_scores.items(),
+            key=lambda item: (-item[1], item[0]),
+        )[:2]
+    )
+
+    return {
+        "tick": best_member["tick"],
+        "tick_start": min(member["tick_start"] for member in cluster),
+        "tick_end": max(member["tick_end"] for member in cluster),
+        "score": best_member["score"],
+        "groups": sorted(group_scores),
+        "group_scores": {
+            group: group_scores[group]
+            for group in sorted(group_scores)
+        },
+        "group_raw_scores": {
+            group: group_raw_scores[group]
+            for group in sorted(group_raw_scores)
+        },
+        "top_components": top_components,
+        "component_scores": component_scores,
+        "member_count": len(cluster),
     }
 
 
@@ -694,6 +857,10 @@ def _safe_float(value: Any) -> float:
     if value is None:
         return 0.0
     return float(value)
+
+
+def _clamp(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(upper, value))
 
 
 def _one_hot_values(

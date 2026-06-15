@@ -6,6 +6,7 @@ import pytest
 from nbs2func.models import NoteEvent
 from nbs2func.note_stereo_analyzer import (
     BOUNDARY_CANDIDATE_MAX_COUNT,
+    BOUNDARY_CLUSTER_MAX_TICK_GAP,
     LayerGroupConfig,
     analysis_report_to_jsonable,
     analyze_note_stereo,
@@ -1259,6 +1260,7 @@ def test_analyze_note_stereo_outputs_summary() -> None:
             "texture_run_count": 1,
             "sustain_run_count": 1,
             "missing_layers": [],
+            "boundary_weight": 1.0,
         },
         {
             "name": "missing_tail",
@@ -1277,6 +1279,7 @@ def test_analyze_note_stereo_outputs_summary() -> None:
             "texture_run_count": 1,
             "sustain_run_count": 1,
             "missing_layers": [3],
+            "boundary_weight": 0.25,
         },
     ]
     assert summary["boundary_candidates"] == []
@@ -1421,13 +1424,160 @@ def test_adjacent_change_scores_detect_numeric_component_changes() -> None:
     assert components["rhythm"] > 0
 
 
+def test_group_boundary_weight_reflects_stability_and_fragmentation() -> None:
+    report = analyze_note_stereo(
+        [
+            *[
+                _note(tick=tick * 4, layer=1, instrument=0, key=45)
+                for tick in range(40)
+            ],
+            _note(tick=0, layer=2, instrument=7, key=70),
+            _note(tick=256, layer=2, instrument=7, key=74),
+        ],
+        group_configs=[
+            LayerGroupConfig(name="stable", layers=(1,)),
+            LayerGroupConfig(name="bell", layers=(2,)),
+        ],
+        window_size=64,
+        hop_size=64,
+    )
+
+    summary_by_name = {
+        group_summary["name"]: group_summary
+        for group_summary in report["summary"]["groups"]
+    }
+
+    assert summary_by_name["stable"]["boundary_weight"] >= 1.0
+    assert summary_by_name["bell"]["boundary_weight"] < 1.0
+
+
+def test_group_boundary_weight_affects_candidate_score() -> None:
+    change_scores = [
+        {
+            "group": "bell",
+            "tick": 128,
+            "left_tick_start": 64,
+            "right_tick_start": 128,
+            "score": 4.0,
+            "components": {
+                "activity": 1.0,
+                "texture": 0.0,
+                "sustain": 0.0,
+                "density": 0.0,
+                "pitch": 0.0,
+                "volume": 0.0,
+                "pan": 0.0,
+                "rhythm": 0.0,
+            },
+        }
+    ]
+    group_summaries = [{"name": "bell", "boundary_weight": 0.5}]
+
+    candidates = detect_boundary_candidates(change_scores, group_summaries)
+
+    assert candidates[0]["group_scores"] == {"bell": 2.0}
+    assert candidates[0]["group_raw_scores"] == {"bell": 4.0}
+
+
+def test_nearby_boundary_candidates_are_clustered_and_merge_groups() -> None:
+    change_scores = [
+        {
+            "group": "piano",
+            "tick": 2080,
+            "left_tick_start": 2016,
+            "right_tick_start": 2080,
+            "score": 1.0,
+            "components": {
+                "activity": 1.0,
+                "texture": 0.0,
+                "sustain": 0.0,
+                "density": 0.0,
+                "pitch": 0.0,
+                "volume": 0.0,
+                "pan": 0.0,
+                "rhythm": 0.0,
+            },
+        },
+        {
+            "group": "bass",
+            "tick": 2080 + BOUNDARY_CLUSTER_MAX_TICK_GAP,
+            "left_tick_start": 2080,
+            "right_tick_start": 2080 + BOUNDARY_CLUSTER_MAX_TICK_GAP,
+            "score": 1.4,
+            "components": {
+                "activity": 0.0,
+                "texture": 1.0,
+                "sustain": 0.0,
+                "density": 0.0,
+                "pitch": 0.0,
+                "volume": 0.0,
+                "pan": 0.0,
+                "rhythm": 0.0,
+            },
+        },
+    ]
+
+    candidates = detect_boundary_candidates(change_scores)
+
+    assert len(candidates) == 1
+    assert candidates[0]["tick"] == 2080 + BOUNDARY_CLUSTER_MAX_TICK_GAP
+    assert candidates[0]["tick_start"] == 2080
+    assert candidates[0]["tick_end"] == 2080 + BOUNDARY_CLUSTER_MAX_TICK_GAP
+    assert candidates[0]["member_count"] == 2
+    assert candidates[0]["groups"] == ["bass", "piano"]
+    assert "component_scores" in candidates[0]
+
+
+def test_distant_boundary_candidates_remain_separate() -> None:
+    change_scores = [
+        {
+            "group": "piano",
+            "tick": 0,
+            "left_tick_start": -64,
+            "right_tick_start": 0,
+            "score": 1.0,
+            "components": {
+                "activity": 1.0,
+                "texture": 0.0,
+                "sustain": 0.0,
+                "density": 0.0,
+                "pitch": 0.0,
+                "volume": 0.0,
+                "pan": 0.0,
+                "rhythm": 0.0,
+            },
+        },
+        {
+            "group": "piano",
+            "tick": BOUNDARY_CLUSTER_MAX_TICK_GAP + 1,
+            "left_tick_start": 0,
+            "right_tick_start": BOUNDARY_CLUSTER_MAX_TICK_GAP + 1,
+            "score": 1.0,
+            "components": {
+                "activity": 1.0,
+                "texture": 0.0,
+                "sustain": 0.0,
+                "density": 0.0,
+                "pitch": 0.0,
+                "volume": 0.0,
+                "pan": 0.0,
+                "rhythm": 0.0,
+            },
+        },
+    ]
+
+    candidates = detect_boundary_candidates(change_scores)
+
+    assert len(candidates) == 2
+
+
 def test_detect_boundary_candidates_limits_count() -> None:
     change_scores = [
         {
             "group": f"group_{index}",
-            "tick": index * 64,
-            "left_tick_start": index * 64 - 64,
-            "right_tick_start": index * 64,
+            "tick": index * (BOUNDARY_CLUSTER_MAX_TICK_GAP + 1),
+            "left_tick_start": index * (BOUNDARY_CLUSTER_MAX_TICK_GAP + 1) - 64,
+            "right_tick_start": index * (BOUNDARY_CLUSTER_MAX_TICK_GAP + 1),
             "score": 1.0 + index / 100,
             "components": {
                 "activity": 1.0,
@@ -1447,7 +1597,7 @@ def test_detect_boundary_candidates_limits_count() -> None:
 
     assert len(candidates) == BOUNDARY_CANDIDATE_MAX_COUNT
     assert candidates[0]["score"] >= candidates[-1]["score"]
-    assert candidates[0]["top_components"] == {"activity": 1.0, "density": 0.0}
+    assert candidates[0]["top_components"] == {"activity": 2.0, "density": 0.0}
 
 
 def test_summary_includes_boundary_candidates() -> None:
