@@ -113,8 +113,18 @@ BOUNDARY_GROUP_WEIGHT_MIN = 0.25
 BOUNDARY_GROUP_WEIGHT_MAX = 1.25
 BOUNDARY_GROUP_LOW_NOTE_COUNT = 4
 BOUNDARY_GROUP_HIGH_NOTE_COUNT = 32
-BOUNDARY_GROUP_FRAGMENTED_RUN_RATIO = 0.75
-BOUNDARY_GROUP_EFFECT_RATIO = 0.5
+BOUNDARY_GROUP_FRAGMENTED_RUN_RATIO = 0.9
+BOUNDARY_GROUP_STRONGLY_FRAGMENTED_RUN_RATIO = 1.25
+BOUNDARY_GROUP_EFFECT_RATIO = 0.35
+BOUNDARY_GROUP_STRONG_EFFECT_RATIO = 0.65
+BOUNDARY_GROUP_EMPTY_RATIO = 0.5
+BOUNDARY_GROUP_STRUCTURE_MODES = frozenset(
+    {
+        "instrument_split",
+        "sustain_split",
+        "percussion",
+    }
+)
 BOUNDARY_DENSITY_SCALE = 1.0
 BOUNDARY_NOTES_PER_ACTIVE_TICK_SCALE = 4.0
 BOUNDARY_PITCH_SCALE = 24.0
@@ -707,7 +717,7 @@ def _build_group_summary(group_report: dict[str, Any]) -> dict[str, Any]:
 def _compute_group_boundary_weight(group_summary: dict[str, Any]) -> float:
     note_count = group_summary["note_count"]
     window_count = group_summary["window_count"]
-    active_window_count = sum(group_summary["window_texture_counts"].values())
+    active_window_count = _active_summary_window_count(group_summary)
     if active_window_count == 0:
         return BOUNDARY_GROUP_WEIGHT_MIN
 
@@ -719,9 +729,13 @@ def _compute_group_boundary_weight(group_summary: dict[str, Any]) -> float:
 
     texture_run_ratio = group_summary["texture_run_count"] / active_window_count
     sustain_run_ratio = group_summary["sustain_run_count"] / active_window_count
-    if texture_run_ratio >= BOUNDARY_GROUP_FRAGMENTED_RUN_RATIO:
+    if texture_run_ratio >= BOUNDARY_GROUP_STRONGLY_FRAGMENTED_RUN_RATIO:
+        weight -= 0.35
+    elif texture_run_ratio >= BOUNDARY_GROUP_FRAGMENTED_RUN_RATIO:
         weight -= 0.2
-    if sustain_run_ratio >= BOUNDARY_GROUP_FRAGMENTED_RUN_RATIO:
+    if sustain_run_ratio >= BOUNDARY_GROUP_STRONGLY_FRAGMENTED_RUN_RATIO:
+        weight -= 0.2
+    elif sustain_run_ratio >= BOUNDARY_GROUP_FRAGMENTED_RUN_RATIO:
         weight -= 0.1
 
     noisy_window_count = (
@@ -731,8 +745,27 @@ def _compute_group_boundary_weight(group_summary: dict[str, Any]) -> float:
         )
         + group_summary["window_texture_counts"].get("mixed_like", 0)
     )
-    if noisy_window_count / active_window_count >= BOUNDARY_GROUP_EFFECT_RATIO:
+    noisy_ratio = noisy_window_count / active_window_count
+    if noisy_ratio >= BOUNDARY_GROUP_STRONG_EFFECT_RATIO:
+        weight -= 0.35
+    elif noisy_ratio >= BOUNDARY_GROUP_EFFECT_RATIO:
         weight -= 0.25
+
+    empty_ratio = (
+        group_summary["window_texture_counts"].get("empty", 0)
+        / window_count
+        if window_count
+        else 0.0
+    )
+    if empty_ratio >= BOUNDARY_GROUP_EMPTY_RATIO:
+        weight -= 0.15
+
+    if _is_fragmented_boundary_group(group_summary):
+        weight -= 0.2
+
+    if group_summary["grouping_mode"] in BOUNDARY_GROUP_STRUCTURE_MODES:
+        if note_count >= BOUNDARY_GROUP_LOW_NOTE_COUNT and noisy_ratio < 0.5:
+            weight += 0.1
 
     if group_summary["missing_layers"]:
         weight -= min(0.3, 0.1 * len(group_summary["missing_layers"]))
@@ -744,6 +777,53 @@ def _compute_group_boundary_weight(group_summary: dict[str, Any]) -> float:
         weight,
         BOUNDARY_GROUP_WEIGHT_MIN,
         BOUNDARY_GROUP_WEIGHT_MAX,
+    )
+
+
+def _active_summary_window_count(group_summary: dict[str, Any]) -> int:
+    return (
+        sum(group_summary["window_texture_counts"].values())
+        - group_summary["window_texture_counts"].get("empty", 0)
+    )
+
+
+def _is_fragmented_boundary_group(group_summary: dict[str, Any]) -> bool:
+    active_window_count = _active_summary_window_count(group_summary)
+    if active_window_count == 0:
+        return False
+
+    texture_fragment_ratio = (
+        group_summary["texture_run_count"] / active_window_count
+    )
+    sustain_fragment_ratio = (
+        group_summary["sustain_run_count"] / active_window_count
+    )
+    effect_ratio = (
+        group_summary["window_texture_counts"].get(
+            "effect_or_transition_like",
+            0,
+        )
+        / active_window_count
+    )
+    mixed_ratio = (
+        group_summary["window_texture_counts"].get("mixed_like", 0)
+        / active_window_count
+    )
+
+    return (
+        (
+            active_window_count <= 3
+            and texture_fragment_ratio >= BOUNDARY_GROUP_FRAGMENTED_RUN_RATIO
+        )
+        or effect_ratio >= BOUNDARY_GROUP_STRONG_EFFECT_RATIO
+        or (
+            mixed_ratio >= BOUNDARY_GROUP_STRONG_EFFECT_RATIO
+            and group_summary["grouping_mode"] not in BOUNDARY_GROUP_STRUCTURE_MODES
+        )
+        or (
+            sustain_fragment_ratio >= BOUNDARY_GROUP_STRONGLY_FRAGMENTED_RUN_RATIO
+            and active_window_count <= 4
+        )
     )
 
 

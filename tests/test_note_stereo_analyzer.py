@@ -1449,6 +1449,129 @@ def test_group_boundary_weight_reflects_stability_and_fragmentation() -> None:
 
     assert summary_by_name["stable"]["boundary_weight"] >= 1.0
     assert summary_by_name["bell"]["boundary_weight"] < 1.0
+    assert (
+        summary_by_name["stable"]["boundary_weight"]
+        != summary_by_name["bell"]["boundary_weight"]
+    )
+
+
+def test_instrument_split_coherent_group_keeps_medium_high_weight() -> None:
+    report = analyze_note_stereo(
+        [
+            *[
+                _note(tick=tick * 8, layer=1, instrument=0, key=45)
+                for tick in range(20)
+            ],
+            *[
+                _note(tick=tick * 8, layer=2, instrument=5, key=57)
+                for tick in range(20)
+            ],
+        ],
+        group_configs=[
+            LayerGroupConfig(
+                name="split_colors",
+                layers=(1, 2),
+                grouping_mode="instrument_split",
+                layer_parts={
+                    1: "head",
+                    2: "support",
+                },
+            ),
+        ],
+        window_size=64,
+        hop_size=64,
+    )
+
+    weight = report["summary"]["groups"][0]["boundary_weight"]
+
+    assert weight >= 1.0
+
+
+def test_sustain_split_coherent_group_keeps_medium_high_weight() -> None:
+    report = analyze_note_stereo(
+        [
+            *[
+                _note(tick=tick * 8, layer=19, instrument=6, key=45)
+                for tick in range(20)
+            ],
+            *[
+                _note(tick=tick * 8 + 4, layer=20, instrument=6, key=45)
+                for tick in range(20)
+            ],
+        ],
+        group_configs=[
+            LayerGroupConfig(
+                name="flute_sustain",
+                layers=(19, 20),
+                grouping_mode="sustain_split",
+                layer_parts={
+                    19: "left_tail",
+                    20: "right_tail",
+                },
+            ),
+        ],
+        window_size=64,
+        hop_size=64,
+    )
+
+    weight = report["summary"]["groups"][0]["boundary_weight"]
+
+    assert weight >= 1.0
+
+
+def test_percussion_group_keeps_at_least_normal_weight() -> None:
+    report = analyze_note_stereo(
+        [
+            _note(tick=0, layer=1, instrument=2),
+            _note(tick=16, layer=1, instrument=3),
+        ],
+        group_configs=[
+            LayerGroupConfig(
+                name="drums",
+                layers=(1,),
+                grouping_mode="percussion",
+            ),
+        ],
+        window_size=64,
+        hop_size=64,
+    )
+
+    assert report["summary"]["groups"][0]["boundary_weight"] >= 1.0
+
+
+def test_missing_layers_reduce_boundary_weight() -> None:
+    report = analyze_note_stereo(
+        [
+            *[
+                _note(tick=tick * 8, layer=1, instrument=0, key=45)
+                for tick in range(12)
+            ],
+        ],
+        group_configs=[
+            LayerGroupConfig(
+                name="complete",
+                layers=(1,),
+                grouping_mode="instrument_split",
+            ),
+            LayerGroupConfig(
+                name="missing",
+                layers=(1, 2, 3),
+                grouping_mode="instrument_split",
+            ),
+        ],
+        window_size=64,
+        hop_size=64,
+    )
+
+    summary_by_name = {
+        group_summary["name"]: group_summary
+        for group_summary in report["summary"]["groups"]
+    }
+
+    assert (
+        summary_by_name["missing"]["boundary_weight"]
+        < summary_by_name["complete"]["boundary_weight"]
+    )
 
 
 def test_group_boundary_weight_affects_candidate_score() -> None:
