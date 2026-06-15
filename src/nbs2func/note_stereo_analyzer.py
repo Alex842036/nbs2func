@@ -69,6 +69,20 @@ WINDOW_TEXTURE_REPEATED_MIN_ACTIVE_TICKS = 4
 WINDOW_TEXTURE_REPEATED_REGULARITY_SCORE = 0.8
 WINDOW_TEXTURE_SINGLE_LINE_MAX_MEAN_NOTES_PER_ACTIVE_TICK = 1.15
 WINDOW_TEXTURE_SINGLE_LINE_MAX_MULTI_TICK_RATIO = 0.1
+SUSTAIN_PATTERN_TAIL_ACTIVITY_RATIO = 0.1
+SUSTAIN_PATTERN_INLINE_GROUPING_MODES = frozenset(
+    {
+        "midi_instrument",
+        "instrument_mixed",
+    }
+)
+SUSTAIN_PATTERN_MIN_INLINE_NOTES = 4
+SUSTAIN_PATTERN_STABLE_PITCH_STD_MAX = 1.5
+SUSTAIN_PATTERN_STABLE_VOLUME_STD_MAX = 4.0
+SUSTAIN_PATTERN_DECAY_SLOPE_MAX = -0.2
+SUSTAIN_PATTERN_ALTERNATING_PAN_MIN_SIDE_CHANGES = 2
+SUSTAIN_PATTERN_ALTERNATING_PAN_CENTER_DEADZONE = 10
+SUSTAIN_PATTERN_REGULARITY_SCORE = 0.7
 
 _INSTRUMENT_NAMES: dict[int, str] = {
     0: "harp",
@@ -407,6 +421,8 @@ def _build_window_report(
         tick_end=tick_end,
     )
     instrument_counts = _instrument_counts(notes)
+    volume = _numeric_summary(note.final_volume for note in notes)
+    pan = _numeric_summary(note.final_panning for note in notes)
     pitch = _pitch_summary(notes)
     rhythm = _rhythm_summary(notes)
     layer_activity = _layer_activity(layers, notes)
@@ -418,8 +434,8 @@ def _build_window_report(
         "note_count": len(notes),
         "density": density,
         "instrument_counts": instrument_counts,
-        "volume": _numeric_summary(note.final_volume for note in notes),
-        "pan": _numeric_summary(note.final_panning for note in notes),
+        "volume": volume,
+        "pan": pan,
         "pitch": pitch,
         "rhythm": rhythm,
         "layer_activity": layer_activity,
@@ -433,6 +449,14 @@ def _build_window_report(
             rhythm=rhythm,
             layer_activity=layer_activity,
             simultaneity=simultaneity,
+        ),
+        "sustain_pattern_guess": _guess_sustain_pattern(
+            group_config,
+            notes,
+            volume=volume,
+            pitch=pitch,
+            rhythm=rhythm,
+            layer_activity=layer_activity,
         ),
     }
 
@@ -618,6 +642,128 @@ def _tail_activity_ratio(
         for activity in layer_activity
         if activity["layer_id"] in tail_layers
     )
+
+
+def _guess_sustain_pattern(
+    group_config: LayerGroupConfig,
+    notes: list[NoteEvent],
+    *,
+    volume: dict[str, float | None],
+    pitch: dict[str, float | int | None],
+    rhythm: dict[str, float | int | None],
+    layer_activity: list[dict[str, float | int]],
+) -> str:
+    if not notes:
+        return "none"
+
+    tail_activity_ratio = _tail_activity_ratio(group_config, layer_activity)
+    has_tail_activity = tail_activity_ratio >= SUSTAIN_PATTERN_TAIL_ACTIVITY_RATIO
+
+    if group_config.grouping_mode == "pan_region" and has_tail_activity:
+        return "pan_region_tail_like"
+    if group_config.grouping_mode == "instrument_split" and has_tail_activity:
+        return "split_tail_like"
+
+    if group_config.grouping_mode not in SUSTAIN_PATTERN_INLINE_GROUPING_MODES:
+        return "none"
+    if len(notes) < SUSTAIN_PATTERN_MIN_INLINE_NOTES:
+        return "unknown"
+
+    pitch_is_stable = _is_stable_pitch(pitch)
+    if not pitch_is_stable:
+        return "none"
+
+    alternating_tail = _has_alternating_pan_tail(notes, rhythm)
+    decay_tail = _has_volume_decay_tail(notes)
+    stable_tail = _has_stable_inline_tail(volume)
+
+    if alternating_tail and decay_tail:
+        return "mixed_tail_like"
+    if alternating_tail:
+        return "inline_alternating_tail_like"
+    if decay_tail:
+        return "inline_decay_tail_like"
+    if stable_tail:
+        return "inline_stable_tail_like"
+    return "none"
+
+
+def _is_stable_pitch(pitch: dict[str, float | int | None]) -> bool:
+    pitch_std = pitch["std"]
+    return (
+        pitch_std is not None
+        and pitch_std <= SUSTAIN_PATTERN_STABLE_PITCH_STD_MAX
+    )
+
+
+def _has_alternating_pan_tail(
+    notes: list[NoteEvent],
+    rhythm: dict[str, float | int | None],
+) -> bool:
+    regularity_score = rhythm["regularity_score"]
+    if (
+        regularity_score is None
+        or regularity_score < SUSTAIN_PATTERN_REGULARITY_SCORE
+    ):
+        return False
+
+    pan_sides = [
+        _pan_side(note.final_panning)
+        for note in sorted(notes, key=lambda note: (note.tick, note.layer, note.key))
+    ]
+    pan_sides = [
+        side
+        for side in pan_sides
+        if side is not None
+    ]
+    if len(pan_sides) < SUSTAIN_PATTERN_MIN_INLINE_NOTES:
+        return False
+
+    side_changes = sum(
+        1
+        for previous, current in zip(pan_sides, pan_sides[1:])
+        if previous != current
+    )
+    return side_changes >= SUSTAIN_PATTERN_ALTERNATING_PAN_MIN_SIDE_CHANGES
+
+
+def _pan_side(final_panning: float) -> str | None:
+    if final_panning <= 100 - SUSTAIN_PATTERN_ALTERNATING_PAN_CENTER_DEADZONE:
+        return "left"
+    if final_panning >= 100 + SUSTAIN_PATTERN_ALTERNATING_PAN_CENTER_DEADZONE:
+        return "right"
+    return None
+
+
+def _has_volume_decay_tail(notes: list[NoteEvent]) -> bool:
+    return _linear_slope(
+        [(note.tick, note.final_volume) for note in notes]
+    ) <= SUSTAIN_PATTERN_DECAY_SLOPE_MAX
+
+
+def _has_stable_inline_tail(volume: dict[str, float | None]) -> bool:
+    volume_std = volume["std"]
+    return (
+        volume_std is not None
+        and volume_std <= SUSTAIN_PATTERN_STABLE_VOLUME_STD_MAX
+    )
+
+
+def _linear_slope(points: list[tuple[int, float]]) -> float:
+    if len(points) < 2:
+        return 0.0
+
+    mean_x = sum(point[0] for point in points) / len(points)
+    mean_y = sum(point[1] for point in points) / len(points)
+    denominator = sum((point[0] - mean_x) ** 2 for point in points)
+    if denominator == 0:
+        return 0.0
+
+    numerator = sum(
+        (point[0] - mean_x) * (point[1] - mean_y)
+        for point in points
+    )
+    return numerator / denominator
 
 
 def _numeric_summary(values: Iterable[float]) -> dict[str, float | None]:

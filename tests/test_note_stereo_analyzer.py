@@ -702,6 +702,7 @@ def test_compute_group_windows_handles_empty_windows_stably() -> None:
         "multi_note_tick_ratio": 0.0,
     }
     assert empty_window["window_texture_guess"] == "empty"
+    assert empty_window["sustain_pattern_guess"] == "none"
 
 
 def test_window_texture_guess_identifies_percussion_like() -> None:
@@ -846,6 +847,155 @@ def test_window_texture_guess_identifies_mixed_like() -> None:
     assert windows[0]["window_texture_guess"] == "mixed_like"
 
 
+def test_sustain_pattern_guess_identifies_inline_alternating_tail_like() -> None:
+    windows = compute_group_windows(
+        [
+            _note(tick=0, layer=1, key=45, final_panning=80),
+            _note(tick=16, layer=1, key=45, final_panning=120),
+            _note(tick=32, layer=1, key=45, final_panning=80),
+            _note(tick=48, layer=1, key=45, final_panning=120),
+        ],
+        LayerGroupConfig(
+            name="inline_alternating",
+            layers=(1,),
+            grouping_mode="midi_instrument",
+        ),
+        window_size=128,
+        hop_size=128,
+    )
+
+    assert windows[0]["sustain_pattern_guess"] == "inline_alternating_tail_like"
+
+
+def test_sustain_pattern_guess_identifies_inline_decay_tail_like() -> None:
+    windows = compute_group_windows(
+        [
+            _note(tick=0, layer=1, key=45, final_volume=120),
+            _note(tick=16, layer=1, key=45, final_volume=105),
+            _note(tick=32, layer=1, key=45, final_volume=90),
+            _note(tick=48, layer=1, key=45, final_volume=75),
+        ],
+        LayerGroupConfig(
+            name="inline_decay",
+            layers=(1,),
+            grouping_mode="midi_instrument",
+        ),
+        window_size=128,
+        hop_size=128,
+    )
+
+    assert windows[0]["sustain_pattern_guess"] == "inline_decay_tail_like"
+
+
+def test_sustain_pattern_guess_identifies_inline_stable_tail_like() -> None:
+    windows = compute_group_windows(
+        [
+            _note(tick=0, layer=1, key=45, final_volume=100),
+            _note(tick=17, layer=1, key=46, final_volume=102),
+            _note(tick=35, layer=1, key=45, final_volume=99),
+            _note(tick=70, layer=1, key=46, final_volume=101),
+        ],
+        LayerGroupConfig(
+            name="inline_stable",
+            layers=(1,),
+            grouping_mode="instrument_mixed",
+        ),
+        window_size=128,
+        hop_size=128,
+    )
+
+    assert windows[0]["sustain_pattern_guess"] == "inline_stable_tail_like"
+
+
+def test_sustain_pattern_guess_identifies_split_tail_like() -> None:
+    windows = compute_group_windows(
+        [
+            _note(tick=0, layer=1, key=45),
+            _note(tick=16, layer=2, key=45),
+            _note(tick=32, layer=2, key=45),
+            _note(tick=48, layer=2, key=45),
+        ],
+        LayerGroupConfig(
+            name="split_tail",
+            layers=(1, 2),
+            grouping_mode="instrument_split",
+            layer_parts={
+                1: "head",
+                2: "tail",
+            },
+        ),
+        window_size=128,
+        hop_size=128,
+    )
+
+    assert windows[0]["sustain_pattern_guess"] == "split_tail_like"
+
+
+def test_sustain_pattern_guess_identifies_pan_region_tail_like() -> None:
+    windows = compute_group_windows(
+        [
+            _note(tick=0, layer=7, key=45),
+            _note(tick=16, layer=8, key=45),
+            _note(tick=32, layer=9, key=45),
+        ],
+        LayerGroupConfig(
+            name="left_tail",
+            layers=(7, 8, 9),
+            grouping_mode="pan_region",
+            pan_region="left",
+            layer_parts={
+                7: "main",
+                8: "inner_tail",
+                9: "outer_tail",
+            },
+        ),
+        window_size=128,
+        hop_size=128,
+    )
+
+    assert windows[0]["sustain_pattern_guess"] == "pan_region_tail_like"
+
+
+def test_sustain_pattern_guess_identifies_mixed_tail_like() -> None:
+    windows = compute_group_windows(
+        [
+            _note(tick=0, layer=1, key=45, final_volume=120, final_panning=80),
+            _note(tick=16, layer=1, key=45, final_volume=105, final_panning=120),
+            _note(tick=32, layer=1, key=45, final_volume=90, final_panning=80),
+            _note(tick=48, layer=1, key=45, final_volume=75, final_panning=120),
+        ],
+        LayerGroupConfig(
+            name="mixed_tail",
+            layers=(1,),
+            grouping_mode="midi_instrument",
+        ),
+        window_size=128,
+        hop_size=128,
+    )
+
+    assert windows[0]["sustain_pattern_guess"] == "mixed_tail_like"
+
+
+def test_sustain_pattern_guess_returns_none_without_obvious_sustain() -> None:
+    windows = compute_group_windows(
+        [
+            _note(tick=0, layer=1, key=40, final_volume=100),
+            _note(tick=9, layer=1, key=48, final_volume=80),
+            _note(tick=31, layer=1, key=55, final_volume=130),
+            _note(tick=72, layer=1, key=63, final_volume=90),
+        ],
+        LayerGroupConfig(
+            name="plain_line",
+            layers=(1,),
+            grouping_mode="midi_instrument",
+        ),
+        window_size=128,
+        hop_size=128,
+    )
+
+    assert windows[0]["sustain_pattern_guess"] == "none"
+
+
 def test_analyze_note_stereo_outputs_group_windows() -> None:
     report = analyze_note_stereo(
         [
@@ -902,7 +1052,7 @@ def test_analysis_report_to_jsonable_converts_dataclasses_and_tuples() -> None:
     }
 
 
-def test_analysis_json_contains_window_texture_guess_only() -> None:
+def test_analysis_json_contains_window_and_sustain_guesses() -> None:
     report = analyze_note_stereo(
         [_note(tick=0, layer=1)],
         group_configs=[LayerGroupConfig(name="group", layers=(1,))],
@@ -912,5 +1062,5 @@ def test_analysis_json_contains_window_texture_guess_only() -> None:
     first_window = jsonable["groups"][0]["windows"][0]
 
     assert first_window["window_texture_guess"] == "effect_or_transition_like"
+    assert first_window["sustain_pattern_guess"] == "none"
     assert "musical_role_guess" not in first_window
-    assert "sustain_pattern_guess" not in first_window
