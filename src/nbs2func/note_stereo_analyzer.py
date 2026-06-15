@@ -46,6 +46,29 @@ STANDARD_PAN_REGIONS = frozenset(
         "unknown",
     }
 )
+TAIL_LAYER_PARTS = frozenset(
+    {
+        "tail",
+        "left_tail",
+        "right_tail",
+        "inner_tail",
+        "outer_tail",
+    }
+)
+WINDOW_TEXTURE_PERCUSSION_RATIO = 0.75
+WINDOW_TEXTURE_MIN_EFFECT_NOTES = 3
+WINDOW_TEXTURE_MIN_EFFECT_ACTIVE_TICKS = 3
+WINDOW_TEXTURE_SUSTAIN_MIN_NOTE_COUNT = 6
+WINDOW_TEXTURE_SUSTAIN_MIN_DENSITY = 0.04
+WINDOW_TEXTURE_STABLE_PITCH_STD_MAX = 1.5
+WINDOW_TEXTURE_TAIL_ACTIVITY_RATIO = 0.5
+WINDOW_TEXTURE_LAYERED_MULTI_TICK_RATIO = 0.25
+WINDOW_TEXTURE_LAYERED_MEAN_NOTES_PER_ACTIVE_TICK = 1.5
+WINDOW_TEXTURE_REPEATED_MIN_NOTES = 6
+WINDOW_TEXTURE_REPEATED_MIN_ACTIVE_TICKS = 4
+WINDOW_TEXTURE_REPEATED_REGULARITY_SCORE = 0.8
+WINDOW_TEXTURE_SINGLE_LINE_MAX_MEAN_NOTES_PER_ACTIVE_TICK = 1.15
+WINDOW_TEXTURE_SINGLE_LINE_MAX_MULTI_TICK_RATIO = 0.1
 
 _INSTRUMENT_NAMES: dict[int, str] = {
     0: "harp",
@@ -225,6 +248,7 @@ def compute_group_windows(
         ]
         windows.append(
             _build_window_report(
+                group_config,
                 group_config.layers,
                 window_notes,
                 tick_start=tick_start,
@@ -370,28 +394,46 @@ def _build_group_report(
 
 
 def _build_window_report(
+    group_config: LayerGroupConfig,
     layers: tuple[int, ...],
     notes: list[NoteEvent],
     *,
     tick_start: int,
     tick_end: int,
 ) -> dict[str, Any]:
+    density = _density_summary(
+        notes,
+        tick_start=tick_start,
+        tick_end=tick_end,
+    )
+    instrument_counts = _instrument_counts(notes)
+    pitch = _pitch_summary(notes)
+    rhythm = _rhythm_summary(notes)
+    layer_activity = _layer_activity(layers, notes)
+    simultaneity = _simultaneity_summary(notes)
+
     return {
         "tick_start": tick_start,
         "tick_end": tick_end,
         "note_count": len(notes),
-        "density": _density_summary(
-            notes,
-            tick_start=tick_start,
-            tick_end=tick_end,
-        ),
-        "instrument_counts": _instrument_counts(notes),
+        "density": density,
+        "instrument_counts": instrument_counts,
         "volume": _numeric_summary(note.final_volume for note in notes),
         "pan": _numeric_summary(note.final_panning for note in notes),
-        "pitch": _pitch_summary(notes),
-        "rhythm": _rhythm_summary(notes),
-        "layer_activity": _layer_activity(layers, notes),
-        "simultaneity": _simultaneity_summary(notes),
+        "pitch": pitch,
+        "rhythm": rhythm,
+        "layer_activity": layer_activity,
+        "simultaneity": simultaneity,
+        "window_texture_guess": _guess_window_texture(
+            group_config,
+            notes,
+            density=density,
+            instrument_counts=instrument_counts,
+            pitch=pitch,
+            rhythm=rhythm,
+            layer_activity=layer_activity,
+            simultaneity=simultaneity,
+        ),
     }
 
 
@@ -423,6 +465,159 @@ def _guess_role(notes: Iterable[NoteEvent]) -> str:
     if percussion_count / note_count >= 0.9:
         return "mostly_percussion"
     return "unknown"
+
+
+def _guess_window_texture(
+    group_config: LayerGroupConfig,
+    notes: list[NoteEvent],
+    *,
+    density: dict[str, float | int],
+    instrument_counts: dict[str, int],
+    pitch: dict[str, float | int | None],
+    rhythm: dict[str, float | int | None],
+    layer_activity: list[dict[str, float | int]],
+    simultaneity: dict[str, float | int],
+) -> str:
+    note_count = len(notes)
+    if note_count == 0:
+        return "empty"
+
+    percussion_like = _is_percussion_texture(
+        group_config,
+        instrument_counts,
+        note_count,
+    )
+    layered_like = _is_layered_texture(density, simultaneity)
+    repeated_like = _is_repeated_texture(note_count, density, rhythm)
+    sustain_like = _is_sustain_texture(
+        group_config,
+        density,
+        pitch,
+        layer_activity,
+        note_count,
+    )
+    single_line_like = _is_single_line_texture(density, simultaneity)
+
+    if layered_like and repeated_like and not sustain_like:
+        return "mixed_like"
+
+    if percussion_like:
+        return "percussion_like"
+
+    if (
+        note_count < WINDOW_TEXTURE_MIN_EFFECT_NOTES
+        or density["active_tick_count"] < WINDOW_TEXTURE_MIN_EFFECT_ACTIVE_TICKS
+    ):
+        return "effect_or_transition_like"
+
+    if sustain_like:
+        return "sustain_texture_like"
+    if layered_like:
+        return "layered_or_chord_like"
+    if repeated_like:
+        return "repeated_pattern_like"
+    if single_line_like:
+        return "single_line_like"
+    return "unknown"
+
+
+def _is_percussion_texture(
+    group_config: LayerGroupConfig,
+    instrument_counts: dict[str, int],
+    note_count: int,
+) -> bool:
+    if group_config.grouping_mode == "percussion":
+        return True
+
+    percussion_count = sum(
+        instrument_counts.get(_instrument_name(instrument), 0)
+        for instrument in PERCUSSION_INSTRUMENTS
+    )
+    return percussion_count / note_count >= WINDOW_TEXTURE_PERCUSSION_RATIO
+
+
+def _is_layered_texture(
+    density: dict[str, float | int],
+    simultaneity: dict[str, float | int],
+) -> bool:
+    return (
+        simultaneity["max_notes_per_tick"] >= 2
+        and (
+            simultaneity["multi_note_tick_ratio"]
+            >= WINDOW_TEXTURE_LAYERED_MULTI_TICK_RATIO
+            or density["mean_notes_per_active_tick"]
+            >= WINDOW_TEXTURE_LAYERED_MEAN_NOTES_PER_ACTIVE_TICK
+        )
+    )
+
+
+def _is_repeated_texture(
+    note_count: int,
+    density: dict[str, float | int],
+    rhythm: dict[str, float | int | None],
+) -> bool:
+    regularity_score = rhythm["regularity_score"]
+    return (
+        note_count >= WINDOW_TEXTURE_REPEATED_MIN_NOTES
+        and density["active_tick_count"] >= WINDOW_TEXTURE_REPEATED_MIN_ACTIVE_TICKS
+        and regularity_score is not None
+        and regularity_score >= WINDOW_TEXTURE_REPEATED_REGULARITY_SCORE
+    )
+
+
+def _is_sustain_texture(
+    group_config: LayerGroupConfig,
+    density: dict[str, float | int],
+    pitch: dict[str, float | int | None],
+    layer_activity: list[dict[str, float | int]],
+    note_count: int,
+) -> bool:
+    if note_count < WINDOW_TEXTURE_SUSTAIN_MIN_NOTE_COUNT:
+        return False
+
+    pitch_std = pitch["std"]
+    pitch_is_stable = (
+        pitch_std is not None
+        and pitch_std <= WINDOW_TEXTURE_STABLE_PITCH_STD_MAX
+    )
+    dense_enough = density["note_density"] >= WINDOW_TEXTURE_SUSTAIN_MIN_DENSITY
+    tail_activity_ratio = _tail_activity_ratio(group_config, layer_activity)
+
+    return (
+        (tail_activity_ratio >= WINDOW_TEXTURE_TAIL_ACTIVITY_RATIO and dense_enough)
+        or (pitch_is_stable and dense_enough)
+    )
+
+
+def _is_single_line_texture(
+    density: dict[str, float | int],
+    simultaneity: dict[str, float | int],
+) -> bool:
+    return (
+        density["mean_notes_per_active_tick"]
+        <= WINDOW_TEXTURE_SINGLE_LINE_MAX_MEAN_NOTES_PER_ACTIVE_TICK
+        and simultaneity["multi_note_tick_ratio"]
+        <= WINDOW_TEXTURE_SINGLE_LINE_MAX_MULTI_TICK_RATIO
+    )
+
+
+def _tail_activity_ratio(
+    group_config: LayerGroupConfig,
+    layer_activity: list[dict[str, float | int]],
+) -> float:
+    tail_layers = {
+        layer
+        for layer, part in group_config.layer_parts.items()
+        if part in TAIL_LAYER_PARTS
+    }
+    if not tail_layers:
+        return 0.0
+
+    return sum(
+        activity["ratio"]
+        for activity in layer_activity
+        if activity["layer_id"] in tail_layers
+    )
 
 
 def _numeric_summary(values: Iterable[float]) -> dict[str, float | None]:

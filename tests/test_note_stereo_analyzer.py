@@ -701,6 +701,149 @@ def test_compute_group_windows_handles_empty_windows_stably() -> None:
         "max_notes_per_tick": 0,
         "multi_note_tick_ratio": 0.0,
     }
+    assert empty_window["window_texture_guess"] == "empty"
+
+
+def test_window_texture_guess_identifies_percussion_like() -> None:
+    group_windows = compute_group_windows(
+        [
+            _note(tick=0, layer=1, instrument=0),
+            _note(tick=16, layer=1, instrument=0),
+        ],
+        LayerGroupConfig(
+            name="declared_drums",
+            layers=(1,),
+            grouping_mode="percussion",
+        ),
+        window_size=128,
+        hop_size=128,
+    )
+    instrument_windows = compute_group_windows(
+        [
+            _note(tick=0, layer=1, instrument=2),
+            _note(tick=16, layer=1, instrument=3),
+            _note(tick=32, layer=1, instrument=4),
+            _note(tick=48, layer=1, instrument=2),
+            _note(tick=64, layer=1, instrument=0),
+        ],
+        LayerGroupConfig(name="mostly_drums", layers=(1,)),
+        window_size=128,
+        hop_size=128,
+    )
+
+    assert group_windows[0]["window_texture_guess"] == "percussion_like"
+    assert instrument_windows[0]["window_texture_guess"] == "percussion_like"
+
+
+def test_window_texture_guess_identifies_single_line_like() -> None:
+    windows = compute_group_windows(
+        [
+            _note(tick=0, layer=1, key=40),
+            _note(tick=17, layer=1, key=43),
+            _note(tick=39, layer=1, key=47),
+            _note(tick=73, layer=1, key=52),
+        ],
+        LayerGroupConfig(name="lead", layers=(1,)),
+        window_size=128,
+        hop_size=128,
+    )
+
+    assert windows[0]["window_texture_guess"] == "single_line_like"
+
+
+def test_window_texture_guess_identifies_layered_or_chord_like() -> None:
+    windows = compute_group_windows(
+        [
+            _note(tick=0, layer=1, key=40),
+            _note(tick=0, layer=2, key=44),
+            _note(tick=0, layer=3, key=47),
+            _note(tick=17, layer=1, key=41),
+            _note(tick=29, layer=2, key=45),
+        ],
+        LayerGroupConfig(name="chords", layers=(1, 2, 3)),
+        window_size=128,
+        hop_size=128,
+    )
+
+    assert windows[0]["window_texture_guess"] == "layered_or_chord_like"
+
+
+def test_window_texture_guess_identifies_repeated_pattern_like() -> None:
+    windows = compute_group_windows(
+        [
+            _note(tick=0, layer=1, key=40),
+            _note(tick=16, layer=1, key=44),
+            _note(tick=32, layer=1, key=47),
+            _note(tick=48, layer=1, key=52),
+            _note(tick=64, layer=1, key=55),
+            _note(tick=80, layer=1, key=59),
+        ],
+        LayerGroupConfig(name="arp", layers=(1,)),
+        window_size=128,
+        hop_size=128,
+    )
+
+    assert windows[0]["window_texture_guess"] == "repeated_pattern_like"
+
+
+def test_window_texture_guess_identifies_effect_or_transition_like() -> None:
+    windows = compute_group_windows(
+        [
+            _note(tick=64, layer=1, key=40),
+            _note(tick=65, layer=1, key=52),
+        ],
+        LayerGroupConfig(name="effect", layers=(1,)),
+        window_size=128,
+        hop_size=128,
+    )
+
+    assert windows[0]["window_texture_guess"] == "effect_or_transition_like"
+
+
+def test_window_texture_guess_identifies_sustain_texture_like() -> None:
+    windows = compute_group_windows(
+        [
+            _note(tick=0, layer=1, key=45),
+            _note(tick=16, layer=2, key=45),
+            _note(tick=32, layer=2, key=46),
+            _note(tick=48, layer=2, key=45),
+            _note(tick=64, layer=2, key=46),
+            _note(tick=80, layer=2, key=45),
+        ],
+        LayerGroupConfig(
+            name="sustain",
+            layers=(1, 2),
+            grouping_mode="instrument_split",
+            layer_parts={
+                1: "head",
+                2: "tail",
+            },
+        ),
+        window_size=128,
+        hop_size=128,
+    )
+
+    assert windows[0]["window_texture_guess"] == "sustain_texture_like"
+
+
+def test_window_texture_guess_identifies_mixed_like() -> None:
+    windows = compute_group_windows(
+        [
+            _note(tick=0, layer=1, key=40),
+            _note(tick=0, layer=2, key=52),
+            _note(tick=16, layer=1, key=43),
+            _note(tick=16, layer=2, key=55),
+            _note(tick=32, layer=1, key=47),
+            _note(tick=32, layer=2, key=59),
+            _note(tick=48, layer=1, key=50),
+            _note(tick=48, layer=2, key=62),
+        ],
+        LayerGroupConfig(name="mixed", layers=(1, 2)),
+        window_size=128,
+        hop_size=128,
+    )
+
+    assert windows[0]["window_texture_guess"] == "mixed_like"
 
 
 def test_analyze_note_stereo_outputs_group_windows() -> None:
@@ -757,3 +900,17 @@ def test_analysis_report_to_jsonable_converts_dataclasses_and_tuples() -> None:
             "layer_parts": {},
         }
     }
+
+
+def test_analysis_json_contains_window_texture_guess_only() -> None:
+    report = analyze_note_stereo(
+        [_note(tick=0, layer=1)],
+        group_configs=[LayerGroupConfig(name="group", layers=(1,))],
+    )
+
+    jsonable = analysis_report_to_jsonable(report)
+    first_window = jsonable["groups"][0]["windows"][0]
+
+    assert first_window["window_texture_guess"] == "effect_or_transition_like"
+    assert "musical_role_guess" not in first_window
+    assert "sustain_pattern_guess" not in first_window
