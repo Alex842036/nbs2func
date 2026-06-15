@@ -109,6 +109,11 @@ BOUNDARY_CANDIDATE_MAX_COUNT = 50
 BOUNDARY_CANDIDATE_MIN_SCORE = 0.5
 BOUNDARY_CLUSTER_MAX_TICK_GAP = 64
 BOUNDARY_CLUSTER_MAX_COUNT = 50
+BOUNDARY_FINAL_MAX_COUNT = 25
+BOUNDARY_FINAL_MIN_SCORE = 2.5
+BOUNDARY_LOW_RELIABILITY_WEIGHT = 0.9
+BOUNDARY_LOW_RELIABILITY_SOLO_MIN_SCORE = 5.0
+BOUNDARY_LOW_RELIABILITY_MULTI_MIN_SCORE = 4.0
 BOUNDARY_GROUP_WEIGHT_MIN = 0.25
 BOUNDARY_GROUP_WEIGHT_MAX = 1.25
 BOUNDARY_GROUP_LOW_NOTE_COUNT = 4
@@ -410,8 +415,13 @@ def detect_boundary_candidates(
             **change_score,
             "raw_score": raw_score,
             "score": weighted_score,
+            "group_weight": group_weight,
             "component_scores": _weighted_component_scores(
                 change_score["components"],
+            ),
+            "weighted_component_scores": _weighted_component_scores(
+                change_score["components"],
+                group_weight=group_weight,
             ),
         }
         raw_candidates_by_tick.setdefault(
@@ -435,10 +445,21 @@ def detect_boundary_candidates(
                 key=lambda score: score["group"],
             )
         }
+        group_weights_for_tick = {
+            change_score["group"]: change_score["group_weight"]
+            for change_score in sorted(
+                tick_scores,
+                key=lambda score: score["group"],
+            )
+        }
         component_scores = _aggregate_component_scores(tick_scores)
+        weighted_component_scores = _aggregate_component_scores(
+            tick_scores,
+            field_name="weighted_component_scores",
+        )
         top_components = dict(
             sorted(
-                component_scores.items(),
+                weighted_component_scores.items(),
                 key=lambda item: (-item[1], item[0]),
             )[:2]
         )
@@ -451,8 +472,10 @@ def detect_boundary_candidates(
                 "groups": list(group_scores),
                 "group_scores": group_scores,
                 "group_raw_scores": group_raw_scores,
+                "group_weights": group_weights_for_tick,
                 "top_components": top_components,
                 "component_scores": component_scores,
+                "weighted_component_scores": weighted_component_scores,
                 "member_count": 1,
             }
         )
@@ -829,19 +852,25 @@ def _is_fragmented_boundary_group(group_summary: dict[str, Any]) -> bool:
 
 def _weighted_component_scores(
     components: dict[str, float],
+    group_weight: float = 1.0,
 ) -> dict[str, float]:
     return {
-        component: components[component] * BOUNDARY_COMPONENT_WEIGHTS[component]
+        component: (
+            components[component]
+            * BOUNDARY_COMPONENT_WEIGHTS[component]
+            * group_weight
+        )
         for component in BOUNDARY_COMPONENT_WEIGHTS
     }
 
 
 def _aggregate_component_scores(
     candidates: list[dict[str, Any]],
+    field_name: str = "component_scores",
 ) -> dict[str, float]:
     return {
         component: max(
-            candidate["component_scores"][component]
+            candidate[field_name][component]
             for candidate in candidates
         )
         for component in BOUNDARY_COMPONENT_WEIGHTS
@@ -867,9 +896,17 @@ def _cluster_boundary_candidates(
         for cluster in clusters
     ]
     return sorted(
-        clustered_candidates,
+        [
+            candidate
+            for candidate in clustered_candidates
+            if _is_structural_boundary_candidate(candidate)
+        ],
         key=lambda candidate: (-candidate["score"], candidate["tick"]),
-    )[: min(BOUNDARY_CANDIDATE_MAX_COUNT, BOUNDARY_CLUSTER_MAX_COUNT)]
+    )[: min(
+        BOUNDARY_FINAL_MAX_COUNT,
+        BOUNDARY_CANDIDATE_MAX_COUNT,
+        BOUNDARY_CLUSTER_MAX_COUNT,
+    )]
 
 
 def _build_boundary_cluster(
@@ -878,16 +915,23 @@ def _build_boundary_cluster(
     best_member = max(cluster, key=lambda item: (item["score"], -item["tick"]))
     group_scores: dict[str, float] = {}
     group_raw_scores: dict[str, float] = {}
+    group_weights: dict[str, float] = {}
     for member in cluster:
         for group, score in member["group_scores"].items():
             group_scores[group] = max(group_scores.get(group, 0.0), score)
         for group, score in member["group_raw_scores"].items():
             group_raw_scores[group] = max(group_raw_scores.get(group, 0.0), score)
+        for group, weight in member["group_weights"].items():
+            group_weights[group] = weight
 
     component_scores = _aggregate_component_scores(cluster)
+    weighted_component_scores = _aggregate_component_scores(
+        cluster,
+        field_name="weighted_component_scores",
+    )
     top_components = dict(
         sorted(
-            component_scores.items(),
+            weighted_component_scores.items(),
             key=lambda item: (-item[1], item[0]),
         )[:2]
     )
@@ -906,10 +950,32 @@ def _build_boundary_cluster(
             group: group_raw_scores[group]
             for group in sorted(group_raw_scores)
         },
+        "group_weights": {
+            group: group_weights[group]
+            for group in sorted(group_weights)
+        },
         "top_components": top_components,
         "component_scores": component_scores,
+        "weighted_component_scores": weighted_component_scores,
         "member_count": len(cluster),
     }
+
+
+def _is_structural_boundary_candidate(candidate: dict[str, Any]) -> bool:
+    score = candidate["score"]
+    group_count = len(candidate["groups"])
+    has_reliable_group = any(
+        weight >= BOUNDARY_LOW_RELIABILITY_WEIGHT
+        for weight in candidate["group_weights"].values()
+    )
+
+    if score >= BOUNDARY_LOW_RELIABILITY_SOLO_MIN_SCORE:
+        return True
+    if has_reliable_group and score >= BOUNDARY_FINAL_MIN_SCORE:
+        return True
+    if group_count > 1 and score >= BOUNDARY_LOW_RELIABILITY_MULTI_MIN_SCORE:
+        return True
+    return False
 
 
 def _count_window_field(
