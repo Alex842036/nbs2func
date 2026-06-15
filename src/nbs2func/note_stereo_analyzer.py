@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass
 from math import sqrt
 from pathlib import Path
 from statistics import median
@@ -12,6 +12,29 @@ from .models import NoteEvent
 
 
 PERCUSSION_INSTRUMENTS = frozenset({2, 3, 4})
+STANDARD_GROUP_ROLES = frozenset(
+    {
+        "percussion",
+        "lead",
+        "sustain_group",
+        "accompaniment",
+        "bass",
+        "arpeggio",
+        "effect",
+        "unknown",
+    }
+)
+STANDARD_LAYER_ROLES = frozenset(
+    {
+        "head",
+        "left_tail",
+        "right_tail",
+        "tail",
+        "main",
+        "support",
+        "unknown",
+    }
+)
 
 _INSTRUMENT_NAMES: dict[int, str] = {
     0: "harp",
@@ -41,7 +64,37 @@ _INSTRUMENT_NAMES: dict[int, str] = {
 class LayerGroupConfig:
     name: str
     layers: tuple[int, ...]
-    role: str
+    role: str = "unknown"
+    layer_roles: dict[int, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        layers = tuple(self.layers)
+        if self.role not in STANDARD_GROUP_ROLES:
+            raise ValueError(f"Unknown group role: {self.role}")
+
+        normalized_layer_roles = _normalize_layer_roles(self.layer_roles)
+        unknown_layer_roles = [
+            role
+            for role in normalized_layer_roles.values()
+            if role not in STANDARD_LAYER_ROLES
+        ]
+        if unknown_layer_roles:
+            raise ValueError(f"Unknown layer role: {unknown_layer_roles[0]}")
+
+        configured_layers = set(layers)
+        unknown_layers = [
+            layer
+            for layer in normalized_layer_roles
+            if layer not in configured_layers
+        ]
+        if unknown_layers:
+            raise ValueError(
+                "Layer role references layer outside group: "
+                f"{unknown_layers[0]}"
+            )
+
+        object.__setattr__(self, "layers", layers)
+        object.__setattr__(self, "layer_roles", normalized_layer_roles)
 
 
 def load_group_config(path: str | Path) -> tuple[LayerGroupConfig, ...]:
@@ -112,13 +165,58 @@ def analysis_report_to_jsonable(report: Any) -> Any:
     return report
 
 
+def compute_group_windows(
+    notes: Iterable[NoteEvent],
+    group_config: LayerGroupConfig,
+    window_size: int = 128,
+    hop_size: int = 32,
+) -> list[dict[str, Any]]:
+    """Compute fixed-window group features for future vector-based analysis."""
+
+    if window_size <= 0:
+        raise ValueError("window_size must be positive")
+    if hop_size <= 0:
+        raise ValueError("hop_size must be positive")
+
+    configured_layers = set(group_config.layers)
+    group_notes = tuple(
+        note
+        for note in notes
+        if note.layer in configured_layers
+    )
+    if not group_notes:
+        return []
+
+    max_tick = max(note.tick for note in group_notes)
+    windows: list[dict[str, Any]] = []
+    tick_start = 0
+    while tick_start <= max_tick:
+        tick_end = tick_start + window_size
+        window_notes = [
+            note
+            for note in group_notes
+            if tick_start <= note.tick < tick_end
+        ]
+        windows.append(
+            _build_window_report(
+                group_config.layers,
+                window_notes,
+                tick_start=tick_start,
+                tick_end=tick_end,
+            )
+        )
+        tick_start += hop_size
+
+    return windows
+
+
 def _parse_group_config(raw_group: Any, index: int) -> LayerGroupConfig:
     if not isinstance(raw_group, dict):
         raise ValueError(f"Group config entry {index} must be an object")
 
     missing_fields = [
         field
-        for field in ("name", "layers", "role")
+        for field in ("name", "layers")
         if field not in raw_group
     ]
     if missing_fields:
@@ -127,7 +225,8 @@ def _parse_group_config(raw_group: Any, index: int) -> LayerGroupConfig:
 
     name = raw_group["name"]
     layers = raw_group["layers"]
-    role = raw_group["role"]
+    role = raw_group.get("role", "unknown")
+    layer_roles = raw_group.get("layer_roles", {})
 
     if not isinstance(name, str) or not name:
         raise ValueError(f"Group config entry {index} field 'name' must be a string")
@@ -139,8 +238,30 @@ def _parse_group_config(raw_group: Any, index: int) -> LayerGroupConfig:
         )
     if not isinstance(role, str) or not role:
         raise ValueError(f"Group config entry {index} field 'role' must be a string")
+    if not isinstance(layer_roles, dict):
+        raise ValueError(
+            f"Group config entry {index} field 'layer_roles' must be an object"
+        )
 
-    return LayerGroupConfig(name=name, layers=tuple(layers), role=role)
+    return LayerGroupConfig(
+        name=name,
+        layers=tuple(layers),
+        role=role,
+        layer_roles=layer_roles,
+    )
+
+
+def _normalize_layer_roles(layer_roles: dict[Any, str]) -> dict[int, str]:
+    normalized: dict[int, str] = {}
+    for raw_layer, role in layer_roles.items():
+        try:
+            layer = int(raw_layer)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Layer role key must be an integer: {raw_layer}") from exc
+        if not isinstance(role, str) or not role:
+            raise ValueError(f"Layer role for layer {layer} must be a string")
+        normalized[layer] = role
+    return normalized
 
 
 def _build_layer_report(layer_id: int, notes: list[NoteEvent]) -> dict[str, Any]:
@@ -182,6 +303,7 @@ def _build_group_report(
         "name": group_config.name,
         "layers": list(group_config.layers),
         "role": group_config.role,
+        "layer_roles": dict(group_config.layer_roles),
         "note_count": len(group_notes),
         "tick_start": min((note.tick for note in group_notes), default=None),
         "tick_end": max((note.tick for note in group_notes), default=None),
@@ -194,6 +316,33 @@ def _build_group_report(
         "rhythm": _rhythm_summary(group_notes),
         "density": _density_summary(group_notes),
         "layer_activity": _layer_activity(group_config.layers, group_notes),
+        "windows": compute_group_windows(all_notes, group_config),
+    }
+
+
+def _build_window_report(
+    layers: tuple[int, ...],
+    notes: list[NoteEvent],
+    *,
+    tick_start: int,
+    tick_end: int,
+) -> dict[str, Any]:
+    return {
+        "tick_start": tick_start,
+        "tick_end": tick_end,
+        "note_count": len(notes),
+        "density": _density_summary(
+            notes,
+            tick_start=tick_start,
+            tick_end=tick_end,
+        ),
+        "instrument_counts": _instrument_counts(notes),
+        "volume": _numeric_summary(note.final_volume for note in notes),
+        "pan": _numeric_summary(note.final_panning for note in notes),
+        "pitch": _pitch_summary(notes),
+        "rhythm": _rhythm_summary(notes),
+        "layer_activity": _layer_activity(layers, notes),
+        "simultaneity": _simultaneity_summary(notes),
     }
 
 
@@ -291,7 +440,11 @@ def _rhythm_summary(notes: Iterable[NoteEvent]) -> dict[str, float | int | None]
     }
 
 
-def _density_summary(notes: Iterable[NoteEvent]) -> dict[str, float | int]:
+def _density_summary(
+    notes: Iterable[NoteEvent],
+    tick_start: int | None = None,
+    tick_end: int | None = None,
+) -> dict[str, float | int]:
     note_events = tuple(notes)
     if not note_events:
         return {
@@ -301,9 +454,10 @@ def _density_summary(notes: Iterable[NoteEvent]) -> dict[str, float | int]:
         }
 
     active_tick_count = len({note.tick for note in note_events})
-    tick_start = min(note.tick for note in note_events)
-    tick_end = max(note.tick for note in note_events)
-    tick_span = tick_end - tick_start + 1
+    if tick_start is None or tick_end is None:
+        tick_start = min(note.tick for note in note_events)
+        tick_end = max(note.tick for note in note_events) + 1
+    tick_span = tick_end - tick_start
 
     return {
         "note_density": len(note_events) / tick_span,
@@ -328,3 +482,24 @@ def _layer_activity(
         }
         for layer in layers
     ]
+
+
+def _simultaneity_summary(notes: Iterable[NoteEvent]) -> dict[str, float | int]:
+    note_events = tuple(notes)
+    if not note_events:
+        return {
+            "max_notes_per_tick": 0,
+            "multi_note_tick_ratio": 0.0,
+        }
+
+    notes_by_tick = Counter(note.tick for note in note_events)
+    active_tick_count = len(notes_by_tick)
+    multi_note_tick_count = sum(
+        1
+        for note_count in notes_by_tick.values()
+        if note_count > 1
+    )
+    return {
+        "max_notes_per_tick": max(notes_by_tick.values()),
+        "multi_note_tick_ratio": multi_note_tick_count / active_tick_count,
+    }
