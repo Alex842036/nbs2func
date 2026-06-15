@@ -54,6 +54,15 @@ def test_load_group_config_reads_valid_new_schema(tmp_path: Path) -> None:
                         },
                     },
                     {
+                        "name": "flute_1",
+                        "layers": [19, 20],
+                        "grouping_mode": "sustain_split",
+                        "layer_parts": {
+                            "19": "left_tail",
+                            "20": "right_tail",
+                        },
+                    },
+                    {
                         "name": "left_accompaniment",
                         "layers": [7, 8, 9, 10],
                         "grouping_mode": "pan_region",
@@ -87,6 +96,15 @@ def test_load_group_config_reads_valid_new_schema(tmp_path: Path) -> None:
                 2: "head",
                 3: "left_tail",
                 4: "right_tail",
+            },
+        ),
+        LayerGroupConfig(
+            name="flute_1",
+            layers=(19, 20),
+            grouping_mode="sustain_split",
+            layer_parts={
+                19: "left_tail",
+                20: "right_tail",
             },
         ),
         LayerGroupConfig(
@@ -974,6 +992,33 @@ def test_sustain_pattern_guess_identifies_split_tail_like() -> None:
     assert windows[0]["sustain_pattern_guess"] == "split_tail_like"
 
 
+def test_sustain_pattern_guess_identifies_split_sustain_like() -> None:
+    windows = compute_group_windows(
+        [
+            _note(tick=0, layer=19, key=45),
+            _note(tick=16, layer=20, key=45),
+            _note(tick=32, layer=19, key=45),
+            _note(tick=48, layer=20, key=45),
+            _note(tick=64, layer=19, key=45),
+            _note(tick=80, layer=20, key=45),
+        ],
+        LayerGroupConfig(
+            name="flute_1",
+            layers=(19, 20),
+            grouping_mode="sustain_split",
+            layer_parts={
+                19: "left_tail",
+                20: "right_tail",
+            },
+        ),
+        window_size=128,
+        hop_size=128,
+    )
+
+    assert windows[0]["sustain_pattern_guess"] == "split_sustain_like"
+    assert windows[0]["window_texture_guess"] == "sustain_texture_like"
+
+
 def test_sustain_pattern_guess_identifies_pan_region_tail_like() -> None:
     windows = compute_group_windows(
         [
@@ -1039,6 +1084,32 @@ def test_sustain_pattern_guess_returns_none_without_obvious_sustain() -> None:
     assert windows[0]["sustain_pattern_guess"] == "none"
 
 
+def test_mixed_texture_does_not_trigger_for_instrument_split_stable_structure() -> None:
+    windows = compute_group_windows(
+        [
+            _note(tick=0, layer=1, instrument=0, key=45),
+            _note(tick=0, layer=2, instrument=5, key=57),
+            _note(tick=16, layer=1, instrument=0, key=45),
+            _note(tick=16, layer=2, instrument=5, key=57),
+            _note(tick=32, layer=1, instrument=0, key=45),
+            _note(tick=32, layer=2, instrument=5, key=57),
+        ],
+        LayerGroupConfig(
+            name="split_colors",
+            layers=(1, 2),
+            grouping_mode="instrument_split",
+            layer_parts={
+                1: "head",
+                2: "support",
+            },
+        ),
+        window_size=128,
+        hop_size=128,
+    )
+
+    assert windows[0]["window_texture_guess"] == "layered_or_chord_like"
+
+
 def test_analyze_note_stereo_outputs_group_windows() -> None:
     report = analyze_note_stereo(
         [
@@ -1059,6 +1130,89 @@ def test_analyze_note_stereo_outputs_group_windows() -> None:
     ]
     assert windows[0]["note_count"] == 1
     assert windows[-1]["note_count"] == 1
+
+
+def test_analyze_note_stereo_outputs_summary() -> None:
+    report = analyze_note_stereo(
+        [
+            _note(tick=0, layer=1, instrument=2),
+            _note(tick=32, layer=1, instrument=3),
+            _note(tick=0, layer=2, instrument=0),
+        ],
+        group_configs=[
+            LayerGroupConfig(
+                name="drums",
+                layers=(1,),
+                grouping_mode="percussion",
+            ),
+            LayerGroupConfig(
+                name="missing_tail",
+                layers=(2, 3),
+                grouping_mode="instrument_split",
+                layer_parts={
+                    3: "tail",
+                },
+            ),
+        ],
+        window_size=64,
+        hop_size=64,
+    )
+
+    assert list(report) == ["layers", "groups", "summary"]
+    summary = report["summary"]
+
+    assert summary["overview"] == {
+        "layer_count": 2,
+        "group_count": 2,
+        "total_notes": 3,
+        "total_windows": 2,
+    }
+    assert summary["window_texture_counts"] == {
+        "effect_or_transition_like": 1,
+        "percussion_like": 1,
+    }
+    assert summary["sustain_pattern_counts"] == {
+        "none": 2,
+    }
+    assert summary["groups"] == [
+        {
+            "name": "drums",
+            "grouping_mode": "percussion",
+            "layers": [1],
+            "note_count": 2,
+            "window_count": 1,
+            "active_tick_start": 0,
+            "active_tick_end": 32,
+            "window_texture_counts": {
+                "percussion_like": 1,
+            },
+            "sustain_pattern_counts": {
+                "none": 1,
+            },
+            "texture_run_count": 1,
+            "sustain_run_count": 1,
+            "missing_layers": [],
+        },
+        {
+            "name": "missing_tail",
+            "grouping_mode": "instrument_split",
+            "layers": [2, 3],
+            "note_count": 1,
+            "window_count": 1,
+            "active_tick_start": 0,
+            "active_tick_end": 0,
+            "window_texture_counts": {
+                "effect_or_transition_like": 1,
+            },
+            "sustain_pattern_counts": {
+                "none": 1,
+            },
+            "texture_run_count": 1,
+            "sustain_run_count": 1,
+            "missing_layers": [3],
+        },
+    ]
+    assert "windows" not in summary["groups"][0]
 
 
 def test_analyzer_does_not_modify_input_notes() -> None:

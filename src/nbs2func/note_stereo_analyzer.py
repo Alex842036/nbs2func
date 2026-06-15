@@ -17,6 +17,7 @@ STANDARD_GROUPING_MODES = frozenset(
         "midi_instrument",
         "instrument_mixed",
         "instrument_split",
+        "sustain_split",
         "pan_region",
         "percussion",
         "manual_mixed",
@@ -213,6 +214,7 @@ def analyze_note_stereo(
     return {
         "layers": layer_reports,
         "groups": group_reports,
+        "summary": _build_summary_report(layer_reports, group_reports),
     }
 
 
@@ -410,6 +412,92 @@ def _build_group_report(
     }
 
 
+def _build_summary_report(
+    layer_reports: list[dict[str, Any]],
+    group_reports: list[dict[str, Any]],
+) -> dict[str, Any]:
+    all_windows = [
+        window
+        for group_report in group_reports
+        for window in group_report["windows"]
+    ]
+
+    return {
+        "overview": {
+            "layer_count": len(layer_reports),
+            "group_count": len(group_reports),
+            "total_notes": sum(
+                layer_report["note_count"]
+                for layer_report in layer_reports
+            ),
+            "total_windows": len(all_windows),
+        },
+        "window_texture_counts": _count_window_field(
+            all_windows,
+            "window_texture_guess",
+        ),
+        "sustain_pattern_counts": _count_window_field(
+            all_windows,
+            "sustain_pattern_guess",
+        ),
+        "groups": [
+            _build_group_summary(group_report)
+            for group_report in group_reports
+        ],
+    }
+
+
+def _build_group_summary(group_report: dict[str, Any]) -> dict[str, Any]:
+    windows = group_report["windows"]
+    return {
+        "name": group_report["name"],
+        "grouping_mode": group_report["grouping_mode"],
+        "layers": group_report["layers"],
+        "note_count": group_report["note_count"],
+        "window_count": len(windows),
+        "active_tick_start": group_report["tick_start"],
+        "active_tick_end": group_report["tick_end"],
+        "window_texture_counts": _count_window_field(
+            windows,
+            "window_texture_guess",
+        ),
+        "sustain_pattern_counts": _count_window_field(
+            windows,
+            "sustain_pattern_guess",
+        ),
+        "texture_run_count": _count_runs(
+            window["window_texture_guess"]
+            for window in windows
+        ),
+        "sustain_run_count": _count_runs(
+            window["sustain_pattern_guess"]
+            for window in windows
+        ),
+        "missing_layers": group_report["missing_layers"],
+    }
+
+
+def _count_window_field(
+    windows: list[dict[str, Any]],
+    field_name: str,
+) -> dict[str, int]:
+    counts = Counter(window[field_name] for window in windows)
+    return {
+        name: counts[name]
+        for name in sorted(counts)
+    }
+
+
+def _count_runs(values: Iterable[str]) -> int:
+    run_count = 0
+    previous_value = None
+    for value in values:
+        if value != previous_value:
+            run_count += 1
+            previous_value = value
+    return run_count
+
+
 def _build_window_report(
     group_config: LayerGroupConfig,
     layers: tuple[int, ...],
@@ -526,6 +614,7 @@ def _guess_window_texture(
         sustain_pattern_guess,
     )
     mixed_like = _is_mixed_texture(
+        group_config,
         instrument_counts,
         layer_activity,
         simultaneity,
@@ -621,10 +710,14 @@ def _is_sustain_texture(
 
 
 def _is_mixed_texture(
+    group_config: LayerGroupConfig,
     instrument_counts: dict[str, int],
     layer_activity: list[dict[str, float | int]],
     simultaneity: dict[str, float | int],
 ) -> bool:
+    if group_config.grouping_mode in {"instrument_split", "sustain_split"}:
+        return False
+
     active_layer_ratios = [
         activity["ratio"]
         for activity in layer_activity
@@ -676,6 +769,14 @@ def _tail_activity_ratio(
     )
 
 
+def _active_layer_count(layer_activity: list[dict[str, float | int]]) -> int:
+    return sum(
+        1
+        for activity in layer_activity
+        if activity["note_count"] > 0
+    )
+
+
 def _guess_sustain_pattern(
     group_config: LayerGroupConfig,
     notes: list[NoteEvent],
@@ -693,6 +794,10 @@ def _guess_sustain_pattern(
 
     if group_config.grouping_mode == "pan_region" and has_tail_activity:
         return "pan_region_tail_like"
+    if group_config.grouping_mode == "sustain_split":
+        if has_tail_activity or _active_layer_count(layer_activity) >= 2:
+            return "split_sustain_like"
+        return "none"
     if group_config.grouping_mode == "instrument_split" and has_tail_activity:
         return "split_tail_like"
 
