@@ -50,25 +50,30 @@ def test_parser_keeps_existing_cli_arguments_available() -> None:
         ]
     )
 
+    assert args.analyze_layout_spatial is False
     assert args.analyze_stereo is False
     assert args.layout_mode == "basic_linear"
     assert args.output == "build"
 
 
-def test_analyze_stereo_does_not_call_layout_writer_or_create_build_output(
+def test_analyze_layout_spatial_does_not_call_layout_writer_or_create_build_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     nbs_path = _write_placeholder_nbs(tmp_path)
     output_path = tmp_path / "build_output"
-    monkeypatch.setattr(sys, "argv", [
-        "main.py",
-        str(nbs_path),
-        "--analyze-stereo",
-        "--output",
-        str(output_path),
-    ])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            str(nbs_path),
+            "--analyze-layout-spatial",
+            "--output",
+            str(output_path),
+        ],
+    )
     monkeypatch.setattr(cli, "read_nbs", lambda path: _song())
 
     def fail_if_called(*args, **kwargs):
@@ -83,64 +88,30 @@ def test_analyze_stereo_does_not_call_layout_writer_or_create_build_output(
     stdout = capsys.readouterr().out
     report = json.loads(stdout)
     assert result == 0
+    assert report["analysis_type"] == "layout_spatial"
     assert report["layers"][0]["layer_id"] == 1
-    assert report["groups"] == []
+    assert "groups" not in report
     assert not output_path.exists()
 
 
-def test_analyze_stereo_with_group_config_outputs_group_report(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    nbs_path = _write_placeholder_nbs(tmp_path)
-    group_config_path = tmp_path / "song.groups.json"
-    group_config_path.write_text(
-        json.dumps(
-            {
-                "groups": [
-                    {
-                        "name": "drums",
-                        "layers": [1],
-                        "grouping_mode": "percussion",
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(sys, "argv", [
-        "main.py",
-        str(nbs_path),
-        "--analyze-stereo",
-        "--group-config",
-        str(group_config_path),
-    ])
-    monkeypatch.setattr(cli, "read_nbs", lambda path: _song())
-
-    result = cli.main()
-
-    report = json.loads(capsys.readouterr().out)
-    assert result == 0
-    assert report["groups"][0]["name"] == "drums"
-    assert report["groups"][0]["grouping_mode"] == "percussion"
-    assert report["groups"][0]["note_count"] == 2
-
-
-def test_analyze_stereo_writes_analysis_output_file(
+def test_analyze_layout_spatial_writes_analysis_output_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     nbs_path = _write_placeholder_nbs(tmp_path)
     analysis_output = tmp_path / "reports" / "analysis.json"
-    monkeypatch.setattr(sys, "argv", [
-        "main.py",
-        str(nbs_path),
-        "--analyze-stereo",
-        "--analysis-output",
-        str(analysis_output),
-    ])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            str(nbs_path),
+            "--analyze-layout-spatial",
+            "--analysis-output",
+            str(analysis_output),
+        ],
+    )
     monkeypatch.setattr(cli, "read_nbs", lambda path: _song())
 
     result = cli.main()
@@ -148,20 +119,25 @@ def test_analyze_stereo_writes_analysis_output_file(
     assert result == 0
     assert capsys.readouterr().out == ""
     report = json.loads(analysis_output.read_text(encoding="utf-8"))
+    assert report["analysis_type"] == "layout_spatial"
     assert report["layers"][0]["note_count"] == 2
 
 
-def test_analyze_stereo_prints_json_to_stdout_without_output_file(
+def test_analyze_layout_spatial_prints_json_to_stdout_without_output_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     nbs_path = _write_placeholder_nbs(tmp_path)
-    monkeypatch.setattr(sys, "argv", [
-        "main.py",
-        str(nbs_path),
-        "--analyze-stereo",
-    ])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            str(nbs_path),
+            "--analyze-layout-spatial",
+        ],
+    )
     monkeypatch.setattr(cli, "read_nbs", lambda path: _song())
 
     result = cli.main()
@@ -172,74 +148,96 @@ def test_analyze_stereo_prints_json_to_stdout_without_output_file(
     assert json.loads(stdout)["layers"][0]["layer_id"] == 1
 
 
-def test_analyze_stereo_passes_window_size_and_hop_size_to_analyzer(
+def test_analyze_layout_spatial_passes_window_size_and_hop_size_to_analyzer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     nbs_path = _write_placeholder_nbs(tmp_path)
     captured = {}
-    monkeypatch.setattr(sys, "argv", [
-        "main.py",
-        str(nbs_path),
-        "--analyze-stereo",
-        "--analysis-window-size",
-        "64",
-        "--analysis-hop-size",
-        "16",
-    ])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            str(nbs_path),
+            "--analyze-layout-spatial",
+            "--analysis-window-size",
+            "64",
+            "--analysis-hop-size",
+            "16",
+        ],
+    )
     monkeypatch.setattr(cli, "read_nbs", lambda path: _song())
 
-    def fake_analyze_note_stereo(notes, group_configs, window_size, hop_size):
-        captured["notes"] = tuple(notes)
-        captured["group_configs"] = group_configs
+    def fake_analyze_layout_spatial(song, *, window_size, hop_size):
+        captured["song"] = song
         captured["window_size"] = window_size
         captured["hop_size"] = hop_size
-        return {"layers": [], "groups": []}
+        return {"analysis_type": "layout_spatial", "overview": {}, "layers": []}
 
-    monkeypatch.setattr(cli, "analyze_note_stereo", fake_analyze_note_stereo)
+    monkeypatch.setattr(
+        cli,
+        "analyze_layout_spatial",
+        fake_analyze_layout_spatial,
+    )
 
     result = cli.main()
 
     assert result == 0
-    assert len(captured["notes"]) == 3
-    assert captured["group_configs"] is None
+    assert captured["song"].name == "Analyze Song"
     assert captured["window_size"] == 64
     assert captured["hop_size"] == 16
 
 
-def test_analyze_stereo_invalid_group_config_returns_clear_error(
+def test_analyze_layout_spatial_rejects_group_config(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     nbs_path = _write_placeholder_nbs(tmp_path)
-    group_config_path = tmp_path / "bad.groups.json"
-    group_config_path.write_text(
-        json.dumps(
-            {
-                "groups": [
-                    {
-                        "name": "bad",
-                        "layers": [1],
-                        "grouping_mode": "bad_mode",
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
+    group_config_path = tmp_path / "song.groups.json"
+    group_config_path.write_text('{"groups":[]}', encoding="utf-8")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            str(nbs_path),
+            "--analyze-layout-spatial",
+            "--group-config",
+            str(group_config_path),
+        ],
     )
-    monkeypatch.setattr(sys, "argv", [
-        "main.py",
-        str(nbs_path),
-        "--analyze-stereo",
-        "--group-config",
-        str(group_config_path),
-    ])
     monkeypatch.setattr(cli, "read_nbs", lambda path: _song())
 
     result = cli.main()
 
     stdout = capsys.readouterr().out
     assert result == 1
-    assert "Error: Unknown grouping_mode" in stdout
+    assert "--group-config is not supported" in stdout
     assert not stdout.lstrip().startswith("{")
+
+
+def test_analyze_stereo_fails_with_clear_message(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    nbs_path = _write_placeholder_nbs(tmp_path)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            str(nbs_path),
+            "--analyze-stereo",
+        ],
+    )
+    monkeypatch.setattr(cli, "read_nbs", lambda path: _song())
+
+    result = cli.main()
+
+    stdout = capsys.readouterr().out
+    assert result == 1
+    assert "--analyze-stereo was removed" in stdout
+    assert "--analyze-layout-spatial" in stdout

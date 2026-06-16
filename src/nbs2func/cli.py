@@ -12,13 +12,12 @@ from .command_writer import CommandWriterConfig, write_mcfunction
 from .layout import build_layout_strategy, layout_song
 from .layout_geometry import BlockPosition, LayoutError
 from .layout_models import StereoLayoutConfig
+from .layout_spatial_analyzer import (
+    analysis_report_to_jsonable,
+    analyze_layout_spatial,
+)
 from .minecraft_version import get_version_profile, write_pack_mcmeta
 from .nbs_reader import read_nbs
-from .note_stereo_analyzer import (
-    analysis_report_to_jsonable,
-    analyze_note_stereo,
-    load_group_config,
-)
 from .playback_assist_module import (
     PlaybackAssistModuleConfig,
     playback_assist_debug_info,
@@ -48,29 +47,34 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--analyze-stereo",
         action="store_true",
-        help="Analyze note stereo features and output a JSON report without building.",
+        help="Removed. Use --analyze-layout-spatial instead.",
+    )
+    parser.add_argument(
+        "--analyze-layout-spatial",
+        action="store_true",
+        help="Analyze layer-local layout spatial features and output JSON without building.",
     )
     parser.add_argument(
         "--group-config",
         default=None,
-        help="Optional layer group config JSON path for --analyze-stereo.",
+        help="Removed for layout spatial analysis. Group configs are not consumed.",
     )
     parser.add_argument(
         "--analysis-output",
         default=None,
-        help="Optional output path for the --analyze-stereo JSON report.",
+        help="Optional output path for the analysis JSON report.",
     )
     parser.add_argument(
         "--analysis-window-size",
         type=int,
         default=128,
-        help="Window size in ticks for --analyze-stereo. Defaults to 128.",
+        help="Window size in ticks for layout spatial analysis. Defaults to 128.",
     )
     parser.add_argument(
         "--analysis-hop-size",
         type=int,
         default=32,
-        help="Hop size in ticks for --analyze-stereo. Defaults to 32.",
+        help="Hop size in ticks for layout spatial analysis. Defaults to 32.",
     )
     parser.add_argument("--origin-x", type=int, default=0, help="World origin X.")
     parser.add_argument("--origin-y", type=int, default=128, help="World origin Y.")
@@ -643,7 +647,11 @@ def main() -> int:
     note_count = sum(len(track.notes) for track in song.tracks)
 
     if args.analyze_stereo:
-        return _run_analyze_stereo(args, song)
+        print("Error: --analyze-stereo was removed. Use --analyze-layout-spatial.")
+        return 1
+
+    if args.analyze_layout_spatial:
+        return _run_analyze_layout_spatial(args, song)
 
     print("Song")
     print(f"  file: {path}")
@@ -1108,20 +1116,17 @@ def main() -> int:
     return 0
 
 
-def _run_analyze_stereo(args, song) -> int:
-    try:
-        group_configs = (
-            load_group_config(args.group_config)
-            if args.group_config is not None
-            else None
+def _run_analyze_layout_spatial(args, song) -> int:
+    if args.group_config is not None:
+        print(
+            "Error: --group-config is not supported by "
+            "--analyze-layout-spatial."
         )
-        report = analyze_note_stereo(
-            (
-                note
-                for track in song.tracks
-                for note in track.notes
-            ),
-            group_configs=group_configs,
+        return 1
+
+    try:
+        report = analyze_layout_spatial(
+            song,
             window_size=args.analysis_window_size,
             hop_size=args.analysis_hop_size,
         )
