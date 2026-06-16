@@ -144,6 +144,19 @@ GROUP_SSM_NOVELTY_PEAK_MAX_COUNT = 20
 GROUP_SSM_NOVELTY_MIN_DISTANCE_TICKS = 64
 GROUP_SSM_MIN_ACTIVE_FRAMES = 2
 GROUP_NOVELTY_GLOBAL_MAX_COUNT = 50
+STRUCTURE_BOUNDARY_MATCH_TOLERANCE_TICKS = 64
+STRUCTURE_BOUNDARY_MATCHED_PEAK_MAX_COUNT = 8
+STRUCTURE_NOVELTY_ONLY_MIN_WEIGHTED_SCORE = 0.9
+STRUCTURE_NOVELTY_ONLY_MULTI_GROUP_MIN_COUNT = 2
+STRUCTURE_BOUNDARY_SCORE_SCALE = 8.0
+STRUCTURE_NOVELTY_SCORE_SCALE = 1.2
+STRUCTURE_BOUNDARY_EVIDENCE_WEIGHT = 0.55
+STRUCTURE_NOVELTY_EVIDENCE_WEIGHT = 0.35
+STRUCTURE_MULTI_GROUP_BONUS = 0.10
+STRUCTURE_SOURCE_AGREEMENT_BONUS = 0.10
+STRUCTURE_LOW_RELIABILITY_ONLY_PENALTY = 0.20
+STRUCTURE_BOUNDARY_MIN_CONFIDENCE = 0.25
+STRUCTURE_BOUNDARY_MAX_COUNT = 30
 SUSTAIN_PATTERN_TAIL_ACTIVITY_RATIO = 0.1
 SUSTAIN_PATTERN_INLINE_GROUPING_MODES = frozenset(
     {
@@ -811,6 +824,56 @@ def detect_boundary_candidates(
     return _cluster_boundary_candidates(raw_candidates)
 
 
+def build_structure_boundary_candidates(
+    boundary_candidates: list[dict[str, Any]],
+    group_novelty_peaks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    matched_peak_indexes: set[int] = set()
+    structure_candidates: list[dict[str, Any]] = []
+
+    for boundary_candidate in boundary_candidates:
+        matched_peaks: list[dict[str, Any]] = []
+        for index, peak in enumerate(group_novelty_peaks):
+            if index in matched_peak_indexes:
+                continue
+            if _group_novelty_peak_matches_boundary(peak, boundary_candidate):
+                matched_peaks.append(peak)
+                matched_peak_indexes.add(index)
+        structure_candidate = _build_structure_candidate_from_boundary(
+            boundary_candidate,
+            matched_peaks,
+        )
+        if structure_candidate["confidence"] >= STRUCTURE_BOUNDARY_MIN_CONFIDENCE:
+            structure_candidates.append(structure_candidate)
+
+    unmatched_peaks = [
+        peak
+        for index, peak in enumerate(group_novelty_peaks)
+        if index not in matched_peak_indexes
+    ]
+    for peak_cluster in _cluster_group_novelty_peaks(unmatched_peaks):
+        max_weighted_score = max(
+            peak["weighted_score"]
+            for peak in peak_cluster
+        )
+        group_count = len({peak["group"] for peak in peak_cluster})
+        if (
+            max_weighted_score < STRUCTURE_NOVELTY_ONLY_MIN_WEIGHTED_SCORE
+            and group_count < STRUCTURE_NOVELTY_ONLY_MULTI_GROUP_MIN_COUNT
+        ):
+            continue
+        structure_candidate = _build_structure_candidate_from_novelty_cluster(
+            peak_cluster,
+        )
+        if structure_candidate["confidence"] >= STRUCTURE_BOUNDARY_MIN_CONFIDENCE:
+            structure_candidates.append(structure_candidate)
+
+    return sorted(
+        structure_candidates,
+        key=lambda candidate: (-candidate["confidence"], candidate["tick"]),
+    )[:STRUCTURE_BOUNDARY_MAX_COUNT]
+
+
 def compute_group_windows(
     notes: Iterable[NoteEvent],
     group_config: LayerGroupConfig,
@@ -1007,6 +1070,15 @@ def _build_summary_report(
     window_vectors = compute_window_feature_vectors(group_reports)
     frame_vectors = compute_track_frame_feature_vectors(group_reports)
     group_ssm = compute_group_ssm_summaries(group_reports, group_summaries)
+    boundary_candidates = detect_boundary_candidates(
+        compute_adjacent_change_scores(window_vectors),
+        group_summaries,
+    )
+    group_novelty_peaks = flatten_group_novelty_peaks(group_ssm)
+    structure_boundary_candidates = build_structure_boundary_candidates(
+        boundary_candidates,
+        group_novelty_peaks,
+    )
 
     return {
         "overview": {
@@ -1027,16 +1099,17 @@ def _build_summary_report(
             "sustain_pattern_guess",
         ),
         "groups": group_summaries,
-        "boundary_candidates": detect_boundary_candidates(
-            compute_adjacent_change_scores(window_vectors),
-            group_summaries,
-        ),
+        "boundary_candidates": boundary_candidates,
         "ssm": compute_self_similarity_summary(frame_vectors),
         "novelty_peaks": detect_novelty_peaks(
             compute_novelty_curve_from_frames(frame_vectors)
         ),
         "group_ssm": group_ssm,
-        "group_novelty_peaks": flatten_group_novelty_peaks(group_ssm),
+        "group_novelty_peaks": group_novelty_peaks,
+        "structure_boundary_candidates": structure_boundary_candidates,
+        "structure_boundary_summary": _build_structure_boundary_summary(
+            structure_boundary_candidates
+        ),
     }
 
 
@@ -1311,6 +1384,224 @@ def _is_structural_boundary_candidate(candidate: dict[str, Any]) -> bool:
     if group_count > 1 and score >= BOUNDARY_LOW_RELIABILITY_MULTI_MIN_SCORE:
         return True
     return False
+
+
+def _group_novelty_peak_matches_boundary(
+    peak: dict[str, Any],
+    boundary_candidate: dict[str, Any],
+) -> bool:
+    if boundary_candidate["tick_start"] <= peak["tick"] <= boundary_candidate["tick_end"]:
+        return True
+    return (
+        abs(peak["tick"] - boundary_candidate["tick"])
+        <= STRUCTURE_BOUNDARY_MATCH_TOLERANCE_TICKS
+    )
+
+
+def _build_structure_candidate_from_boundary(
+    boundary_candidate: dict[str, Any],
+    matched_peaks: list[dict[str, Any]],
+) -> dict[str, Any]:
+    boundary_groups = set(boundary_candidate["groups"])
+    novelty_groups = {peak["group"] for peak in matched_peaks}
+    groups = sorted(boundary_groups | novelty_groups)
+    group_weights = dict(boundary_candidate.get("group_weights", {}))
+    for peak in matched_peaks:
+        group_weights[peak["group"]] = peak["boundary_weight"]
+
+    boundary_score = boundary_candidate["score"]
+    novelty_score = max(
+        (peak["weighted_score"] for peak in matched_peaks),
+        default=0.0,
+    )
+    support = {
+        "boundary": True,
+        "group_novelty": bool(matched_peaks),
+        "multi_group": len(groups) >= 2,
+    }
+
+    return {
+        "tick": boundary_candidate["tick"],
+        "tick_start": boundary_candidate["tick_start"],
+        "tick_end": boundary_candidate["tick_end"],
+        "confidence": _structure_boundary_confidence(
+            boundary_score=boundary_score,
+            novelty_score=novelty_score,
+            support=support,
+            group_weights=group_weights,
+        ),
+        "sources": _structure_candidate_sources(support),
+        "groups": groups,
+        "boundary_score": boundary_score,
+        "novelty_score": novelty_score,
+        "matched_novelty_peak_count": len(matched_peaks),
+        "matched_novelty_groups": sorted(novelty_groups),
+        "top_groups": _structure_top_groups(boundary_candidate, matched_peaks),
+        "support": support,
+        "matched_novelty_peaks": _compact_matched_novelty_peaks(matched_peaks),
+    }
+
+
+def _build_structure_candidate_from_novelty_cluster(
+    peak_cluster: list[dict[str, Any]],
+) -> dict[str, Any]:
+    best_peak = max(
+        peak_cluster,
+        key=lambda peak: (peak["weighted_score"], -peak["tick"], peak["group"]),
+    )
+    groups = sorted({peak["group"] for peak in peak_cluster})
+    group_weights = {
+        peak["group"]: peak["boundary_weight"]
+        for peak in peak_cluster
+    }
+    novelty_score = max(peak["weighted_score"] for peak in peak_cluster)
+    support = {
+        "boundary": False,
+        "group_novelty": True,
+        "multi_group": len(groups) >= 2,
+    }
+
+    return {
+        "tick": best_peak["tick"],
+        "tick_start": min(peak["left_tick_start"] for peak in peak_cluster),
+        "tick_end": max(peak["right_tick_start"] for peak in peak_cluster),
+        "confidence": _structure_boundary_confidence(
+            boundary_score=0.0,
+            novelty_score=novelty_score,
+            support=support,
+            group_weights=group_weights,
+        ),
+        "sources": _structure_candidate_sources(support),
+        "groups": groups,
+        "boundary_score": 0.0,
+        "novelty_score": novelty_score,
+        "matched_novelty_peak_count": len(peak_cluster),
+        "matched_novelty_groups": groups,
+        "top_groups": _structure_top_groups(None, peak_cluster),
+        "support": support,
+        "matched_novelty_peaks": _compact_matched_novelty_peaks(peak_cluster),
+    }
+
+
+def _structure_boundary_confidence(
+    *,
+    boundary_score: float,
+    novelty_score: float,
+    support: dict[str, bool],
+    group_weights: dict[str, float],
+) -> float:
+    boundary_strength = min(
+        1.0,
+        boundary_score / STRUCTURE_BOUNDARY_SCORE_SCALE,
+    )
+    novelty_strength = min(
+        1.0,
+        novelty_score / STRUCTURE_NOVELTY_SCORE_SCALE,
+    )
+    confidence = (
+        boundary_strength * STRUCTURE_BOUNDARY_EVIDENCE_WEIGHT
+        + novelty_strength * STRUCTURE_NOVELTY_EVIDENCE_WEIGHT
+    )
+    if support["multi_group"]:
+        confidence += STRUCTURE_MULTI_GROUP_BONUS
+    if support["boundary"] and support["group_novelty"]:
+        confidence += STRUCTURE_SOURCE_AGREEMENT_BONUS
+    if group_weights and all(
+        weight < BOUNDARY_LOW_RELIABILITY_WEIGHT
+        for weight in group_weights.values()
+    ):
+        confidence -= STRUCTURE_LOW_RELIABILITY_ONLY_PENALTY
+
+    return _clamp(confidence, 0.0, 1.0)
+
+
+def _structure_candidate_sources(support: dict[str, bool]) -> list[str]:
+    sources: list[str] = []
+    if support["boundary"]:
+        sources.append("boundary_candidate")
+    if support["group_novelty"]:
+        sources.append("group_novelty_peak")
+    return sources
+
+
+def _structure_top_groups(
+    boundary_candidate: dict[str, Any] | None,
+    novelty_peaks: list[dict[str, Any]],
+) -> dict[str, float]:
+    group_scores: dict[str, float] = {}
+    if boundary_candidate is not None:
+        for group, score in boundary_candidate.get("group_scores", {}).items():
+            group_scores[group] = max(group_scores.get(group, 0.0), score)
+    for peak in novelty_peaks:
+        group_scores[peak["group"]] = max(
+            group_scores.get(peak["group"], 0.0),
+            peak["weighted_score"],
+        )
+
+    return {
+        group: score
+        for group, score in sorted(
+            group_scores.items(),
+            key=lambda item: (-item[1], item[0]),
+        )[:STRUCTURE_BOUNDARY_MATCHED_PEAK_MAX_COUNT]
+    }
+
+
+def _compact_matched_novelty_peaks(
+    matched_peaks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "group": peak["group"],
+            "tick": peak["tick"],
+            "weighted_score": peak["weighted_score"],
+        }
+        for peak in sorted(
+            matched_peaks,
+            key=lambda peak: (-peak["weighted_score"], peak["tick"], peak["group"]),
+        )[:STRUCTURE_BOUNDARY_MATCHED_PEAK_MAX_COUNT]
+    ]
+
+
+def _cluster_group_novelty_peaks(
+    peaks: list[dict[str, Any]],
+) -> list[list[dict[str, Any]]]:
+    clusters: list[list[dict[str, Any]]] = []
+    for peak in sorted(peaks, key=lambda item: item["tick"]):
+        if (
+            clusters
+            and peak["tick"] - clusters[-1][-1]["tick"]
+            <= STRUCTURE_BOUNDARY_MATCH_TOLERANCE_TICKS
+        ):
+            clusters[-1].append(peak)
+        else:
+            clusters.append([peak])
+    return clusters
+
+
+def _build_structure_boundary_summary(
+    structure_candidates: list[dict[str, Any]],
+) -> dict[str, int]:
+    return {
+        "candidate_count": len(structure_candidates),
+        "from_boundary_candidate_count": sum(
+            1
+            for candidate in structure_candidates
+            if candidate["support"]["boundary"]
+        ),
+        "from_group_novelty_count": sum(
+            1
+            for candidate in structure_candidates
+            if candidate["support"]["group_novelty"]
+        ),
+        "source_agreement_count": sum(
+            1
+            for candidate in structure_candidates
+            if candidate["support"]["boundary"]
+            and candidate["support"]["group_novelty"]
+        ),
+        "match_tolerance_ticks": STRUCTURE_BOUNDARY_MATCH_TOLERANCE_TICKS,
+    }
 
 
 def _count_window_field(

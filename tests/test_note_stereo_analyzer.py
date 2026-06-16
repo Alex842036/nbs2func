@@ -12,10 +12,12 @@ from nbs2func.note_stereo_analyzer import (
     GROUP_NOVELTY_GLOBAL_MAX_COUNT,
     GROUP_SSM_NOVELTY_PEAK_MAX_COUNT,
     SSM_NOVELTY_PEAK_MAX_COUNT,
+    STRUCTURE_BOUNDARY_MAX_COUNT,
     LayerGroupConfig,
     TrackFrameFeatureVector,
     analysis_report_to_jsonable,
     analyze_note_stereo,
+    build_structure_boundary_candidates,
     compute_adjacent_change_scores,
     compute_group_windows,
     compute_novelty_curve_from_frames,
@@ -129,6 +131,55 @@ def _group_report(
         "tick_end": max((window["tick_end"] for window in windows), default=None),
         "missing_layers": [],
         "windows": windows,
+    }
+
+
+def _boundary_candidate(
+    *,
+    tick: int = 128,
+    score: float = 4.0,
+    groups: list[str] | None = None,
+    group_weights: dict[str, float] | None = None,
+) -> dict:
+    candidate_groups = groups or ["lead"]
+    weights = group_weights or {group: 1.0 for group in candidate_groups}
+    return {
+        "tick": tick,
+        "tick_start": tick - 32,
+        "tick_end": tick + 32,
+        "score": score,
+        "groups": candidate_groups,
+        "group_scores": {
+            group: score
+            for group in candidate_groups
+        },
+        "group_raw_scores": {
+            group: score
+            for group in candidate_groups
+        },
+        "group_weights": weights,
+        "top_components": {"activity": 2.0},
+        "component_scores": {"activity": 2.0},
+        "weighted_component_scores": {"activity": 2.0},
+        "member_count": 1,
+    }
+
+
+def _group_novelty_peak(
+    *,
+    group: str = "lead",
+    tick: int = 128,
+    score: float = 0.6,
+    boundary_weight: float = 1.0,
+) -> dict:
+    return {
+        "tick": tick,
+        "score": score,
+        "weighted_score": score * boundary_weight,
+        "group": group,
+        "boundary_weight": boundary_weight,
+        "left_tick_start": tick - 32,
+        "right_tick_start": tick,
     }
 
 
@@ -1337,6 +1388,14 @@ def test_analyze_note_stereo_outputs_summary() -> None:
         "missing_tail",
     ]
     assert summary["group_novelty_peaks"] == []
+    assert summary["structure_boundary_candidates"] == []
+    assert summary["structure_boundary_summary"] == {
+        "candidate_count": 0,
+        "from_boundary_candidate_count": 0,
+        "from_group_novelty_count": 0,
+        "source_agreement_count": 0,
+        "match_tolerance_ticks": 64,
+    }
     assert "windows" not in summary["groups"][0]
 
 
@@ -1783,6 +1842,145 @@ def test_group_novelty_peaks_are_capped() -> None:
     peaks = detect_group_novelty_peaks(novelty_curve)
 
     assert len(peaks) == GROUP_SSM_NOVELTY_PEAK_MAX_COUNT
+
+
+def test_structure_boundary_candidates_merge_boundary_and_novelty_sources() -> None:
+    candidates = build_structure_boundary_candidates(
+        [_boundary_candidate(tick=128, score=4.0)],
+        [_group_novelty_peak(tick=160, score=0.6)],
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0]["tick"] == 128
+    assert candidates[0]["sources"] == [
+        "boundary_candidate",
+        "group_novelty_peak",
+    ]
+    assert candidates[0]["support"] == {
+        "boundary": True,
+        "group_novelty": True,
+        "multi_group": False,
+    }
+    assert candidates[0]["matched_novelty_peak_count"] == 1
+    assert candidates[0]["matched_novelty_groups"] == ["lead"]
+    assert candidates[0]["matched_novelty_peaks"] == [
+        {
+            "group": "lead",
+            "tick": 160,
+            "weighted_score": 0.6,
+        }
+    ]
+
+
+def test_structure_boundary_confidence_increases_with_source_agreement() -> None:
+    boundary_only = build_structure_boundary_candidates(
+        [_boundary_candidate(tick=128, score=4.0)],
+        [],
+    )[0]
+    with_novelty = build_structure_boundary_candidates(
+        [_boundary_candidate(tick=128, score=4.0)],
+        [_group_novelty_peak(tick=128, score=0.6)],
+    )[0]
+
+    assert with_novelty["confidence"] > boundary_only["confidence"]
+
+
+def test_structure_boundary_multi_group_evidence_increases_confidence() -> None:
+    single_group = build_structure_boundary_candidates(
+        [_boundary_candidate(tick=128, score=4.0)],
+        [_group_novelty_peak(group="lead", tick=128, score=0.6)],
+    )[0]
+    multi_group = build_structure_boundary_candidates(
+        [
+            _boundary_candidate(
+                tick=128,
+                score=4.0,
+                groups=["lead", "bass"],
+                group_weights={"lead": 1.0, "bass": 1.0},
+            )
+        ],
+        [_group_novelty_peak(group="bass", tick=128, score=0.6)],
+    )[0]
+
+    assert multi_group["support"]["multi_group"] is True
+    assert multi_group["confidence"] > single_group["confidence"]
+
+
+def test_structure_boundary_low_reliability_only_evidence_is_penalized() -> None:
+    reliable = build_structure_boundary_candidates(
+        [
+            _boundary_candidate(
+                tick=128,
+                score=8.0,
+                group_weights={"lead": 1.0},
+            )
+        ],
+        [],
+    )[0]
+    low_reliability = build_structure_boundary_candidates(
+        [
+            _boundary_candidate(
+                tick=128,
+                score=8.0,
+                group_weights={"lead": 0.5},
+            )
+        ],
+        [],
+    )[0]
+
+    assert low_reliability["confidence"] < reliable["confidence"]
+
+
+def test_structure_boundary_keeps_strong_novelty_only_candidate() -> None:
+    candidates = build_structure_boundary_candidates(
+        [],
+        [_group_novelty_peak(group="lead", tick=128, score=0.95)],
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0]["sources"] == ["group_novelty_peak"]
+    assert candidates[0]["boundary_score"] == 0.0
+    assert candidates[0]["novelty_score"] == pytest.approx(0.95)
+
+
+def test_structure_boundary_filters_weak_novelty_only_candidate() -> None:
+    candidates = build_structure_boundary_candidates(
+        [],
+        [_group_novelty_peak(group="lead", tick=128, score=0.5)],
+    )
+
+    assert candidates == []
+
+
+def test_structure_boundary_keeps_multi_group_novelty_only_candidate() -> None:
+    candidates = build_structure_boundary_candidates(
+        [],
+        [
+            _group_novelty_peak(group="lead", tick=128, score=0.55),
+            _group_novelty_peak(group="bass", tick=160, score=0.55),
+        ],
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0]["support"]["multi_group"] is True
+    assert candidates[0]["matched_novelty_groups"] == ["bass", "lead"]
+
+
+def test_structure_boundary_candidates_are_capped() -> None:
+    boundary_candidates = [
+        _boundary_candidate(
+            tick=index * 128,
+            score=8.0 - index / 1000,
+            groups=[f"group_{index}"],
+            group_weights={f"group_{index}": 1.0},
+        )
+        for index in range(STRUCTURE_BOUNDARY_MAX_COUNT + 5)
+    ]
+
+    candidates = build_structure_boundary_candidates(boundary_candidates, [])
+
+    assert len(candidates) == STRUCTURE_BOUNDARY_MAX_COUNT
+    assert candidates[0]["confidence"] >= candidates[-1]["confidence"]
 
 
 def test_adjacent_change_scores_detect_activity_change() -> None:
