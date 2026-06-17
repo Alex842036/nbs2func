@@ -7,7 +7,6 @@ from nbs2func.layout_spatial_analyzer import (
     LayoutSpatialWindow,
     analysis_report_to_jsonable,
     analyze_layout_spatial,
-    build_layout_segments_preview,
     detect_layout_regime_candidates,
 )
 from nbs2func.models import NoteEvent, Song, Track
@@ -50,6 +49,15 @@ def _track(layer: int, notes: tuple[NoteEvent, ...], name: str | None = None) ->
     )
 
 
+def _segment_for_notes(notes: tuple[NoteEvent, ...]) -> dict:
+    report = analyze_layout_spatial(
+        _song(_track(1, notes)),
+        window_size=128,
+        hop_size=128,
+    )
+    return report["layers"][0]["layout_segments_preview"][0]
+
+
 def _window(
     tick_start: int,
     *,
@@ -68,96 +76,57 @@ def _window(
         _song(_track(1, tuple(notes))),
         window_size=128,
         hop_size=128,
+        detail="full",
     )
     return LayoutSpatialWindow(**report["layers"][0]["windows"][0])
 
 
-def test_analyzer_works_without_group_config() -> None:
+def test_overview_counts_empty_and_non_empty_layers() -> None:
+    report = analyze_layout_spatial(
+        _song(
+            _track(1, (_note(tick=0, layer=1),)),
+            _track(2, ()),
+        )
+    )
+
+    assert report["overview"]["layer_count"] == 2
+    assert report["overview"]["non_empty_layer_count"] == 1
+    assert report["overview"]["empty_layer_count"] == 1
+    assert [layer["layer_id"] for layer in report["layers"]] == [1]
+
+
+def test_summary_detail_excludes_windows_by_default() -> None:
+    report = analyze_layout_spatial(_song(_track(1, (_note(tick=0),))))
+
+    assert "windows" not in report["layers"][0]
+
+
+def test_full_detail_includes_windows() -> None:
     report = analyze_layout_spatial(
         _song(_track(1, (_note(tick=0),))),
-        window_size=64,
-        hop_size=64,
+        detail="full",
     )
 
-    assert report["analysis_type"] == "layout_spatial"
-    assert "groups" not in report
+    assert report["layers"][0]["windows"][0]["note_count"] == 1
 
 
-def test_each_layer_is_analyzed_independently() -> None:
+def test_full_detail_empty_window_has_null_spatial_fields() -> None:
     report = analyze_layout_spatial(
-        _song(
-            _track(1, (_note(tick=0, layer=1, final_panning=40),), "Lead"),
-            _track(2, (_note(tick=0, layer=2, final_panning=160),), "Echo"),
-        ),
-        window_size=64,
-        hop_size=64,
-    )
-
-    layers = {layer["layer_id"]: layer for layer in report["layers"]}
-    assert layers[1]["name"] == "Lead"
-    assert layers[1]["pan_summary"]["mean"] == 40
-    assert layers[2]["name"] == "Echo"
-    assert layers[2]["pan_summary"]["mean"] == 160
-
-
-def test_window_pan_volume_summary_is_computed_correctly() -> None:
-    report = analyze_layout_spatial(
-        _song(
-            _track(
-                1,
-                (
-                    _note(tick=0, final_panning=80, final_volume=50),
-                    _note(tick=16, final_panning=120, final_volume=70),
-                ),
-            )
-        ),
-        window_size=64,
-        hop_size=64,
-    )
-
-    window = report["layers"][0]["windows"][0]
-    assert window["pan"] == {
-        "mean": 100.0,
-        "std": 20.0,
-        "min": 80,
-        "max": 120,
-        "range": 40,
-    }
-    assert window["volume"] == {
-        "mean": 60.0,
-        "std": 10.0,
-        "min": 50,
-        "max": 70,
-        "range": 20,
-    }
-
-
-def test_empty_windows_produce_null_spatial_fields() -> None:
-    report = analyze_layout_spatial(
-        _song(
-            _track(
-                1,
-                (
-                    _note(tick=0),
-                    _note(tick=256),
-                ),
-            )
-        ),
+        _song(_track(1, (_note(tick=0), _note(tick=256)))),
         window_size=32,
         hop_size=64,
+        detail="full",
     )
 
     empty_window = report["layers"][0]["windows"][1]
     assert empty_window["note_count"] == 0
-    assert empty_window["active_tick_start"] is None
-    assert empty_window["active_tick_end"] is None
     assert empty_window["pan"] is None
     assert empty_window["volume"] is None
     assert empty_window["pan_bins"] is None
     assert empty_window["volume_bins"] is None
 
 
-def test_active_window_bins_sum_to_one() -> None:
+def test_active_window_bins_sum_to_one_in_full_detail() -> None:
     report = analyze_layout_spatial(
         _song(
             _track(
@@ -171,8 +140,7 @@ def test_active_window_bins_sum_to_one() -> None:
                 ),
             )
         ),
-        window_size=64,
-        hop_size=64,
+        detail="full",
     )
 
     window = report["layers"][0]["windows"][0]
@@ -180,7 +148,7 @@ def test_active_window_bins_sum_to_one() -> None:
     assert sum(window["volume_bins"].values()) == pytest.approx(1.0)
 
 
-def test_layout_regime_candidate_detects_pan_center_shift() -> None:
+def test_candidate_type_is_emitted_for_pan_spatial_change() -> None:
     candidates = detect_layout_regime_candidates(
         [
             _window(0, pan_values=(40.0,)),
@@ -188,36 +156,140 @@ def test_layout_regime_candidate_detects_pan_center_shift() -> None:
         ]
     )
 
-    assert candidates
-    assert candidates[0]["components"]["pan_center_shift"] > 0
+    assert candidates[0]["candidate_type"] == "spatial_change"
+    assert "pan_mode" in candidates[0]["changed_components"]
+    assert "component_scores" in candidates[0]
 
 
-def test_layout_regime_candidate_detects_pan_distribution_shift() -> None:
-    candidates = detect_layout_regime_candidates(
-        [
-            _window(0, pan_values=(100.0, 100.0)),
-            _window(128, pan_values=(60.0, 140.0)),
-        ]
+def test_active_inactive_transition_becomes_activity_change() -> None:
+    report = analyze_layout_spatial(
+        _song(_track(1, (_note(tick=0), _note(tick=256)))),
+        window_size=32,
+        hop_size=64,
+        detail="full",
     )
 
+    candidates = report["layers"][0]["layout_regime_candidates"]
     assert candidates
-    assert candidates[0]["components"]["pan_center_shift"] == 0
-    assert candidates[0]["components"]["pan_bin_shift"] > 0
+    assert candidates[0]["candidate_type"] == "activity_change"
 
 
-def test_layout_regime_candidate_detects_volume_radius_shift() -> None:
-    candidates = detect_layout_regime_candidates(
-        [
-            _window(0, volume_values=(30.0,)),
-            _window(128, volume_values=(90.0,)),
-        ]
+def test_stable_pan_with_stepped_decay_volume_is_classified() -> None:
+    segment = _segment_for_notes(
+        (
+            _note(tick=0, final_volume=100),
+            _note(tick=4, final_volume=50),
+        )
     )
 
-    assert candidates
-    assert candidates[0]["components"]["volume_center_shift"] > 0
+    assert segment["pan_mode"] == "center_stable"
+    assert segment["pan_contour_mode"] == "flat"
+    assert segment["volume_contour_mode"] == "stepped_decay_contour"
+    assert segment["volume_distribution_mode"] != "unknown"
 
 
-def test_pitch_only_changes_do_not_create_layout_regime_candidates() -> None:
+@pytest.mark.parametrize(
+    "volumes",
+    [
+        (100, 50),
+        (100, 50, 25),
+        (100, 60, 40, 20),
+        (50, 25),
+        (40, 30, 20),
+    ],
+)
+def test_relative_volume_drops_detect_stepped_decay_contour(
+    volumes: tuple[int, ...],
+) -> None:
+    segment = _segment_for_notes(
+        tuple(
+            _note(tick=index * 4, final_volume=volume)
+            for index, volume in enumerate(volumes)
+        )
+    )
+
+    assert segment["volume_contour_mode"] == "stepped_decay_contour"
+    assert segment["volume_contour"]["decay_chain_count"] >= 1
+    assert segment["volume_contour"]["decay_note_ratio"] >= 0.30
+
+
+def test_midi_style_attack_decay_produces_radius_layer_hint() -> None:
+    segment = _segment_for_notes(
+        (
+            _note(tick=0, final_volume=100),
+            _note(tick=4, final_volume=50),
+            _note(tick=8, final_volume=25),
+            _note(tick=128, final_volume=100),
+            _note(tick=132, final_volume=60),
+            _note(tick=136, final_volume=40),
+            _note(tick=140, final_volume=20),
+        )
+    )
+
+    assert segment["radius_layer_hint"]["type"] in {
+        "relative_decay_layers",
+        "relative_radius_layers",
+    }
+    assert segment["layout_intent"]["allow_radius_layering"] is True
+
+
+def test_repeated_stepped_decay_bin_fluctuation_does_not_over_split() -> None:
+    notes = []
+    for base_tick in (0, 128, 256, 384):
+        notes.extend(
+            [
+                _note(tick=base_tick, final_volume=100),
+                _note(tick=base_tick + 4, final_volume=50),
+                _note(tick=base_tick + 8, final_volume=25),
+            ]
+        )
+    report = analyze_layout_spatial(
+        _song(_track(1, tuple(notes))),
+        window_size=32,
+        hop_size=128,
+    )
+
+    candidates = report["layers"][0]["layout_regime_candidates"]
+    assert [
+        candidate
+        for candidate in candidates
+        if candidate["candidate_type"] == "spatial_change"
+    ] == []
+
+
+def test_bimodal_left_right_pan_produces_lateral_substream_hint() -> None:
+    segment = _segment_for_notes(
+        (
+            _note(tick=0, final_panning=40),
+            _note(tick=16, final_panning=160),
+            _note(tick=32, final_panning=45),
+            _note(tick=48, final_panning=155),
+        )
+    )
+
+    assert segment["pan_mode"] == "bimodal_left_right"
+    assert segment["lateral_substream_hint"]["type"] in {
+        "lateral_split",
+        "lateral_alternating",
+    }
+    assert segment["layout_intent"]["allow_lateral_split"] is True
+
+
+def test_center_plus_side_pan_produces_hint() -> None:
+    segment = _segment_for_notes(
+        (
+            _note(tick=0, final_panning=100),
+            _note(tick=16, final_panning=105),
+            _note(tick=32, final_panning=150),
+            _note(tick=48, final_panning=155),
+        )
+    )
+
+    assert segment["pan_mode"] == "center_plus_side"
+    assert segment["lateral_substream_hint"]["type"] == "center_plus_side"
+
+
+def test_pitch_only_changes_do_not_affect_candidate_generation() -> None:
     report = analyze_layout_spatial(
         _song(
             _track(
@@ -235,7 +307,7 @@ def test_pitch_only_changes_do_not_create_layout_regime_candidates() -> None:
     assert report["layers"][0]["layout_regime_candidates"] == []
 
 
-def test_instrument_only_changes_do_not_create_layout_regime_candidates() -> None:
+def test_instrument_only_changes_do_not_affect_candidate_generation() -> None:
     report = analyze_layout_spatial(
         _song(
             _track(
@@ -253,7 +325,7 @@ def test_instrument_only_changes_do_not_create_layout_regime_candidates() -> Non
     assert report["layers"][0]["layout_regime_candidates"] == []
 
 
-def test_note_count_density_changes_do_not_create_layout_regime_candidates() -> None:
+def test_note_count_density_changes_do_not_drive_candidate_generation() -> None:
     report = analyze_layout_spatial(
         _song(
             _track(
@@ -273,32 +345,13 @@ def test_note_count_density_changes_do_not_create_layout_regime_candidates() -> 
     assert report["layers"][0]["layout_regime_candidates"] == []
 
 
-def test_layout_segment_preview_is_built_from_candidate_ticks() -> None:
-    segments = build_layout_segments_preview(
-        0,
-        1024,
-        [{"tick": 512, "score": 1.0}],
-        [
-            _window(0, pan_values=(60.0,), volume_values=(60.0,)),
-            _window(512, pan_values=(140.0,), volume_values=(80.0,)),
-        ],
-    )
-
-    assert [segment["start_tick"] for segment in segments] == [0, 512]
-    assert [segment["end_tick"] for segment in segments] == [512, 1024]
-    assert segments[0]["pan_mode"] == "left_stable"
-    assert segments[0]["continuity_priority"] == "high"
-
-
 def test_output_schema_has_layout_spatial_analysis_type() -> None:
-    report = analyze_layout_spatial(
-        _song(_track(1, (_note(tick=0),))),
-    )
+    report = analyze_layout_spatial(_song(_track(1, (_note(tick=0),))))
 
     assert analysis_report_to_jsonable(report)["analysis_type"] == "layout_spatial"
 
 
-def test_old_analyzer_module_is_not_importable() -> None:
+def test_old_analyzer_module_is_not_imported() -> None:
     analyzer_path = (
         Path(__file__).parents[1]
         / "src"

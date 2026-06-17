@@ -9,21 +9,20 @@ from .models import NoteEvent, Song
 
 PAN_BIN_NAMES = ("far_left", "left", "center", "right", "far_right")
 VOLUME_BIN_NAMES = ("very_low", "low", "mid", "high", "max")
+ANALYSIS_DETAIL_LEVELS = frozenset({"summary", "full"})
 
-LAYOUT_SPATIAL_COMPONENT_WEIGHTS = {
-    "pan_center_shift": 2.0,
-    "pan_spread_shift": 1.0,
-    "pan_bin_shift": 2.0,
-    "volume_center_shift": 1.5,
-    "volume_spread_shift": 0.8,
-    "volume_bin_shift": 1.5,
-    "active_change": 1.0,
-}
 LAYOUT_REGIME_MIN_SCORE = 0.35
 LAYOUT_REGIME_MIN_TICK_GAP = 64
 LAYOUT_REGIME_MAX_COUNT_PER_LAYER = 20
 LAYOUT_SEGMENT_MIN_LENGTH_TICKS = 256
 LAYOUT_SEGMENT_MAX_COUNT_PER_LAYER = 30
+
+DECAY_CONTOUR_MAX_STEP_GAP_TICKS = 4
+DECAY_CONTOUR_MAX_ALLOWED_UPWARD_STEP = 5
+DECAY_CONTOUR_MIN_TOTAL_DROP_RATIO = 0.35
+DECAY_CONTOUR_MIN_TOTAL_DROP_ABS = 15
+DECAY_CONTOUR_MIN_CHAIN_LENGTH = 2
+DECAY_CONTOUR_NOTE_RATIO_MIN = 0.30
 
 
 @dataclass(frozen=True)
@@ -37,6 +36,11 @@ class LayoutSpatialWindow:
     volume: dict[str, float | None] | None
     pan_bins: dict[str, float] | None
     volume_bins: dict[str, float] | None
+    pan_mode: str
+    pan_contour_mode: str
+    volume_distribution_mode: str
+    volume_contour_mode: str
+    volume_contour: dict[str, float | int]
 
 
 def analyze_layout_spatial(
@@ -44,6 +48,7 @@ def analyze_layout_spatial(
     *,
     window_size: int = 128,
     hop_size: int = 32,
+    detail: str = "summary",
 ) -> dict[str, Any]:
     """Analyze layer-local pan/volume patterns without touching layout output."""
 
@@ -51,6 +56,8 @@ def analyze_layout_spatial(
         raise ValueError("analysis window size must be greater than 0")
     if hop_size <= 0:
         raise ValueError("analysis hop size must be greater than 0")
+    if detail not in ANALYSIS_DETAIL_LEVELS:
+        raise ValueError("analysis detail must be 'summary' or 'full'")
 
     notes_by_layer: dict[int, list[NoteEvent]] = {}
     layer_names: dict[int, str] = {}
@@ -65,21 +72,32 @@ def analyze_layout_spatial(
             layer_names.setdefault(note.layer, track.name)
             notes_by_layer.setdefault(note.layer, []).append(note)
 
-    layer_reports = [
+    all_layer_reports = [
         _build_layer_report(
             layer_id,
             layer_names.get(layer_id, f"Layer {layer_id}"),
             notes_by_layer.get(layer_id, []),
             window_size=window_size,
             hop_size=hop_size,
+            detail=detail,
         )
         for layer_id in sorted(known_layers)
     ]
+    non_empty_layer_count = sum(
+        1 for report in all_layer_reports if report["note_count"] > 0
+    )
+    layer_reports = (
+        all_layer_reports
+        if detail == "full"
+        else [report for report in all_layer_reports if report["note_count"] > 0]
+    )
 
     return {
         "analysis_type": "layout_spatial",
         "overview": {
-            "layer_count": len(layer_reports),
+            "layer_count": len(all_layer_reports),
+            "non_empty_layer_count": non_empty_layer_count,
+            "empty_layer_count": len(all_layer_reports) - non_empty_layer_count,
             "total_notes": sum(len(notes) for notes in notes_by_layer.values()),
             "window_size": window_size,
             "hop_size": hop_size,
@@ -113,12 +131,19 @@ def detect_layout_regime_candidates(
         if left.note_count == 0 and right.note_count == 0:
             continue
 
-        components = _layout_change_components(left, right)
-        weighted_components = {
-            name: components[name] * LAYOUT_SPATIAL_COMPONENT_WEIGHTS[name]
-            for name in LAYOUT_SPATIAL_COMPONENT_WEIGHTS
-        }
-        score = sum(weighted_components.values())
+        component_scores = _candidate_component_scores(left, right)
+        changed_components = [
+            name
+            for name, score in component_scores.items()
+            if score >= LAYOUT_REGIME_MIN_SCORE
+        ]
+        active_change = component_scores["active_change"] > 0.0
+        spatial_change = any(
+            name != "active_change"
+            and score >= LAYOUT_REGIME_MIN_SCORE
+            for name, score in component_scores.items()
+        )
+        score = sum(component_scores.values())
         if score < LAYOUT_REGIME_MIN_SCORE:
             continue
 
@@ -126,9 +151,12 @@ def detect_layout_regime_candidates(
             {
                 "tick": right.tick_start,
                 "score": score,
-                "components": components,
-                "weighted_components": weighted_components,
-                "top_components": _top_components(weighted_components),
+                "candidate_type": _candidate_type(
+                    active_change=active_change,
+                    spatial_change=spatial_change,
+                ),
+                "changed_components": changed_components,
+                "component_scores": component_scores,
                 "left_window_tick_start": left.tick_start,
                 "right_window_tick_start": right.tick_start,
                 "member_count": 1,
@@ -143,6 +171,7 @@ def build_layout_segments_preview(
     layer_active_tick_end: int | None,
     candidates: list[dict[str, Any]],
     windows: list[LayoutSpatialWindow] | None = None,
+    notes: list[NoteEvent] | None = None,
 ) -> list[dict[str, Any]]:
     if layer_active_tick_start is None or layer_active_tick_end is None:
         return []
@@ -161,27 +190,25 @@ def build_layout_segments_preview(
 
     preview: list[dict[str, Any]] = []
     available_windows = windows or []
+    available_notes = sorted(notes or (), key=lambda note: (note.tick, note.key))
     for start_tick, end_tick in zip(segment_bounds, segment_bounds[1:]):
         segment_windows = [
             window
             for window in available_windows
-            if window.tick_start >= start_tick and window.tick_start < end_tick
+            if start_tick <= window.tick_start < end_tick
         ]
-        pan_mode = _guess_pan_mode(segment_windows)
-        volume_mode = _guess_volume_mode(segment_windows)
+        segment_notes = [
+            note
+            for note in available_notes
+            if start_tick <= note.tick <= end_tick
+        ]
         preview.append(
-            {
-                "start_tick": start_tick,
-                "end_tick": end_tick,
-                "duration_ticks": end_tick - start_tick,
-                "window_count": len(segment_windows),
-                "pan_mode": pan_mode,
-                "volume_mode": volume_mode,
-                "continuity_priority": _continuity_priority(
-                    pan_mode,
-                    volume_mode,
-                ),
-            }
+            _build_segment_preview(
+                start_tick,
+                end_tick,
+                segment_windows,
+                segment_notes,
+            )
         )
 
     return preview[:LAYOUT_SEGMENT_MAX_COUNT_PER_LAYER]
@@ -194,6 +221,7 @@ def _build_layer_report(
     *,
     window_size: int,
     hop_size: int,
+    detail: str,
 ) -> dict[str, Any]:
     sorted_notes = sorted(notes, key=lambda note: (note.tick, note.key))
     active_tick_start = min((note.tick for note in sorted_notes), default=None)
@@ -206,8 +234,7 @@ def _build_layer_report(
         hop_size=hop_size,
     )
     candidates = detect_layout_regime_candidates(windows)
-
-    return {
+    report = {
         "layer_id": layer_id,
         "name": name,
         "note_count": len(sorted_notes),
@@ -220,15 +247,21 @@ def _build_layer_report(
         "volume_summary": _numeric_summary(
             note.final_volume for note in sorted_notes
         ),
-        "windows": [analysis_report_to_jsonable(window) for window in windows],
         "layout_regime_candidates": candidates,
         "layout_segments_preview": build_layout_segments_preview(
             active_tick_start,
             active_tick_end,
             candidates,
             windows,
+            sorted_notes,
         ),
     }
+    if detail == "full":
+        report["windows"] = [
+            analysis_report_to_jsonable(window)
+            for window in windows
+        ]
+    return report
 
 
 def _build_windows(
@@ -270,6 +303,7 @@ def _build_window(
     tick_end: int,
 ) -> LayoutSpatialWindow:
     if not notes:
+        zero_contour = _empty_volume_contour()
         return LayoutSpatialWindow(
             tick_start=tick_start,
             tick_end=tick_end,
@@ -280,6 +314,11 @@ def _build_window(
             volume=None,
             pan_bins=None,
             volume_bins=None,
+            pan_mode="inactive",
+            pan_contour_mode="inactive",
+            volume_distribution_mode="inactive",
+            volume_contour_mode="inactive",
+            volume_contour=zero_contour,
         )
 
     return LayoutSpatialWindow(
@@ -293,53 +332,146 @@ def _build_window(
         # The project model stores NBS stereo panning on the 0..200 scale.
         pan_bins=_pan_bins(note.final_panning for note in notes),
         volume_bins=_volume_bins(note.final_volume for note in notes),
+        pan_mode=_classify_pan_distribution(notes),
+        pan_contour_mode=_classify_pan_contour(notes),
+        volume_distribution_mode=_classify_volume_distribution(notes),
+        volume_contour_mode=_classify_volume_contour(notes),
+        volume_contour=_volume_contour_metrics(notes),
     )
 
 
-def _layout_change_components(
+def _build_segment_preview(
+    start_tick: int,
+    end_tick: int,
+    windows: list[LayoutSpatialWindow],
+    notes: list[NoteEvent],
+) -> dict[str, Any]:
+    pan_mode = _classify_pan_distribution(notes, windows)
+    pan_contour_mode = _classify_pan_contour(notes, windows)
+    volume_distribution_mode = _classify_volume_distribution(notes, windows)
+    volume_contour_mode = _classify_volume_contour(notes, windows)
+    volume_contour = _volume_contour_metrics(notes)
+    radius_layer_hint = _radius_layer_hint(
+        notes,
+        volume_contour_mode,
+        volume_contour,
+    )
+    lateral_substream_hint = _lateral_substream_hint(
+        pan_mode,
+        pan_contour_mode,
+    )
+
+    return {
+        "start_tick": start_tick,
+        "end_tick": end_tick,
+        "duration_ticks": end_tick - start_tick,
+        "window_count": len(windows),
+        "pan_mode": pan_mode,
+        "pan_contour_mode": pan_contour_mode,
+        "volume_distribution_mode": volume_distribution_mode,
+        "volume_contour_mode": volume_contour_mode,
+        "volume_mode": volume_distribution_mode,
+        "volume_contour": volume_contour,
+        "radius_layer_hint": radius_layer_hint,
+        "lateral_substream_hint": lateral_substream_hint,
+        "layout_intent": _layout_intent(
+            pan_mode,
+            pan_contour_mode,
+            volume_distribution_mode,
+            volume_contour_mode,
+            radius_layer_hint,
+            lateral_substream_hint,
+        ),
+        "continuity_priority": _legacy_continuity_priority(
+            pan_mode,
+            volume_distribution_mode,
+        ),
+    }
+
+
+def _candidate_component_scores(
     left: LayoutSpatialWindow,
     right: LayoutSpatialWindow,
 ) -> dict[str, float]:
     left_active = left.note_count > 0
     right_active = right.note_count > 0
+    active_change = left_active != right_active
     if not left_active or not right_active:
         return {
-            "pan_center_shift": 0.0,
-            "pan_spread_shift": 0.0,
-            "pan_bin_shift": 0.0,
-            "volume_center_shift": 0.0,
-            "volume_spread_shift": 0.0,
-            "volume_bin_shift": 0.0,
-            "active_change": 1.0 if left_active != right_active else 0.0,
+            "active_change": 0.45 if active_change else 0.0,
+            "pan_mode": 0.0,
+            "pan_contour_mode": 0.0,
+            "volume_distribution_mode": 0.0,
+            "volume_contour_mode": 0.0,
         }
 
+    pan_mode_score = _mode_change_score(left.pan_mode, right.pan_mode, 0.60)
+    pan_contour_score = _mode_change_score(
+        left.pan_contour_mode,
+        right.pan_contour_mode,
+        0.45,
+    )
+    volume_distribution_score = _volume_distribution_change_score(left, right)
+    volume_contour_score = _volume_contour_change_score(left, right)
     return {
-        "pan_center_shift": abs(
-            _summary_value(right.pan, "mean") - _summary_value(left.pan, "mean")
-        )
-        / 200.0,
-        "pan_spread_shift": abs(
-            _summary_value(right.pan, "std") - _summary_value(left.pan, "std")
-        )
-        / 100.0,
-        "pan_bin_shift": _bin_l1_distance(left.pan_bins, right.pan_bins) / 2.0,
-        "volume_center_shift": abs(
-            _summary_value(right.volume, "mean")
-            - _summary_value(left.volume, "mean")
-        )
-        / 100.0,
-        "volume_spread_shift": abs(
-            _summary_value(right.volume, "std")
-            - _summary_value(left.volume, "std")
-        )
-        / 100.0,
-        "volume_bin_shift": _bin_l1_distance(
-            left.volume_bins,
-            right.volume_bins,
-        )
-        / 2.0,
         "active_change": 0.0,
+        "pan_mode": pan_mode_score,
+        "pan_contour_mode": pan_contour_score,
+        "volume_distribution_mode": volume_distribution_score,
+        "volume_contour_mode": volume_contour_score,
     }
+
+
+def _volume_distribution_change_score(
+    left: LayoutSpatialWindow,
+    right: LayoutSpatialWindow,
+) -> float:
+    if left.volume_distribution_mode == right.volume_distribution_mode:
+        return 0.0
+    if (
+        left.volume_contour_mode == "stepped_decay_contour"
+        and right.volume_contour_mode == "stepped_decay_contour"
+        and left.pan_mode == right.pan_mode
+    ):
+        return 0.10
+    if (
+        left.volume_distribution_mode.endswith("_stable")
+        or right.volume_distribution_mode.endswith("_stable")
+    ):
+        return 0.35
+    return 0.25
+
+
+def _volume_contour_change_score(
+    left: LayoutSpatialWindow,
+    right: LayoutSpatialWindow,
+) -> float:
+    if left.volume_contour_mode == right.volume_contour_mode:
+        return 0.0
+    transition = {left.volume_contour_mode, right.volume_contour_mode}
+    if "insufficient_data" in transition:
+        return 0.0
+    if "irregular_dynamic" in transition:
+        return 0.55
+    if "stepped_decay_contour" in transition:
+        return 0.45
+    if "relative_radius_layers" in transition:
+        return 0.40
+    return 0.30
+
+
+def _mode_change_score(left: str, right: str, score: float) -> float:
+    if "insufficient_data" in {left, right}:
+        return 0.0
+    return score if left != right else 0.0
+
+
+def _candidate_type(*, active_change: bool, spatial_change: bool) -> str:
+    if active_change and spatial_change:
+        return "mixed"
+    if active_change:
+        return "activity_change"
+    return "spatial_change"
 
 
 def _cluster_layout_regime_candidates(
@@ -366,22 +498,361 @@ def _cluster_layout_regime_candidates(
         merged["tick_start"] = min(item["tick"] for item in cluster)
         merged["tick_end"] = max(item["tick"] for item in cluster)
         merged["member_count"] = len(cluster)
+        merged["changed_components"] = sorted(
+            {
+                component
+                for item in cluster
+                for component in item["changed_components"]
+            }
+        )
+        merged["candidate_type"] = _merged_candidate_type(cluster)
         clustered.append(merged)
 
     return sorted(
         clustered,
-        key=lambda item: (-item["score"], item["tick"]),
+        key=lambda item: (
+            item["candidate_type"] == "activity_change",
+            -item["score"],
+            item["tick"],
+        ),
     )[:LAYOUT_REGIME_MAX_COUNT_PER_LAYER]
 
 
-def _top_components(weighted_components: dict[str, float]) -> dict[str, float]:
+def _merged_candidate_type(cluster: list[dict[str, Any]]) -> str:
+    types = {item["candidate_type"] for item in cluster}
+    if types == {"activity_change"}:
+        return "activity_change"
+    if types == {"spatial_change"}:
+        return "spatial_change"
+    return "mixed"
+
+
+def _classify_pan_distribution(
+    notes: list[NoteEvent],
+    windows: list[LayoutSpatialWindow] | None = None,
+) -> str:
+    if not notes and windows:
+        return _dominant_window_label(windows, "pan_mode", "inactive")
+    if not notes:
+        return "inactive"
+
+    bins = _pan_bins(note.final_panning for note in notes)
+    left_ratio = bins["far_left"] + bins["left"]
+    center_ratio = bins["center"]
+    right_ratio = bins["right"] + bins["far_right"]
+    dominant_bin, dominant_ratio = _dominant_bin(bins)
+    pan_range = _range(note.final_panning for note in notes)
+
+    if left_ratio >= 0.30 and right_ratio >= 0.30 and center_ratio <= 0.25:
+        return "bimodal_left_right"
+    if center_ratio >= 0.30 and max(left_ratio, right_ratio) >= 0.25:
+        return "center_plus_side"
+    if dominant_ratio >= 0.65 and pan_range <= 60:
+        return f"{dominant_bin}_stable"
+    if pan_range >= 80 or dominant_ratio < 0.55:
+        return "wide_or_split"
+    if dominant_ratio >= 0.50:
+        return f"{dominant_bin}_stable"
+    return "unknown"
+
+
+def _classify_pan_contour(
+    notes: list[NoteEvent],
+    windows: list[LayoutSpatialWindow] | None = None,
+) -> str:
+    if not notes and windows:
+        return _dominant_window_label(windows, "pan_contour_mode", "inactive")
+    if not notes:
+        return "inactive"
+    if len(notes) < 2:
+        return "insufficient_data"
+
+    values = [note.final_panning for note in sorted(notes, key=lambda item: item.tick)]
+    value_range = max(values) - min(values)
+    if value_range <= 2:
+        return "flat"
+    if value_range <= 15:
+        return "small_variation"
+    if _is_alternating_pan(values):
+        return "alternating"
+    if _is_gradual_contour(values):
+        return "gradual_drift"
+    if _classify_pan_distribution(notes) in {
+        "bimodal_left_right",
+        "center_plus_side",
+        "wide_or_split",
+    }:
+        return "split_static"
+    return "irregular_dynamic"
+
+
+def _classify_volume_distribution(
+    notes: list[NoteEvent],
+    windows: list[LayoutSpatialWindow] | None = None,
+) -> str:
+    if not notes and windows:
+        return _dominant_window_label(
+            windows,
+            "volume_distribution_mode",
+            "inactive",
+        )
+    if not notes:
+        return "inactive"
+
+    bins = _volume_bins(note.final_volume for note in notes)
+    dominant_bin, dominant_ratio = _dominant_bin(bins)
+    volume_range = _range(note.final_volume for note in notes)
+    if dominant_ratio >= 0.65 and volume_range <= 30:
+        return f"{dominant_bin}_stable"
+    if volume_range <= 20:
+        return "narrow_dynamic"
+    if dominant_ratio >= 0.55 and volume_range <= 35:
+        return f"{dominant_bin}_stable"
+    return "wide_or_dynamic"
+
+
+def _classify_volume_contour(
+    notes: list[NoteEvent],
+    windows: list[LayoutSpatialWindow] | None = None,
+) -> str:
+    if not notes and windows:
+        return _dominant_window_label(windows, "volume_contour_mode", "inactive")
+    if not notes:
+        return "inactive"
+    if len(notes) < 2:
+        return "insufficient_data"
+
+    values = [
+        note.final_volume
+        for note in sorted(notes, key=lambda item: (item.tick, item.key))
+    ]
+    value_range = max(values) - min(values)
+    if value_range <= 2:
+        return "flat"
+
+    contour = _volume_contour_metrics(notes)
+    if contour["decay_note_ratio"] >= DECAY_CONTOUR_NOTE_RATIO_MIN:
+        return "stepped_decay_contour"
+    if value_range <= 12:
+        return "small_variation"
+    if _has_relative_radius_layers(values):
+        return "relative_radius_layers"
+    if _is_gradual_contour(values):
+        return "gradual_drift"
+    return "irregular_dynamic"
+
+
+def _volume_contour_metrics(notes: list[NoteEvent]) -> dict[str, float | int]:
+    if len(notes) < 2:
+        return _empty_volume_contour()
+
+    sorted_notes = sorted(notes, key=lambda note: (note.tick, note.key))
+    decay_chains: list[list[NoteEvent]] = []
+    current_chain = [sorted_notes[0]]
+    for previous, current in zip(sorted_notes, sorted_notes[1:]):
+        tick_gap = current.tick - previous.tick
+        close_in_time = 0 < tick_gap <= DECAY_CONTOUR_MAX_STEP_GAP_TICKS
+        not_upward_break = (
+            current.final_volume
+            <= previous.final_volume + DECAY_CONTOUR_MAX_ALLOWED_UPWARD_STEP
+        )
+        if close_in_time and not_upward_break:
+            current_chain.append(current)
+        else:
+            _append_decay_chain(decay_chains, current_chain)
+            current_chain = [current]
+    _append_decay_chain(decay_chains, current_chain)
+
+    participating_note_ids = {
+        id(note)
+        for chain in decay_chains
+        for note in chain
+    }
+    chain_lengths = [len(chain) for chain in decay_chains]
+    drop_ratios = [_chain_drop_ratio(chain) for chain in decay_chains]
     return {
-        name: value
-        for name, value in sorted(
-            weighted_components.items(),
-            key=lambda item: (-item[1], item[0]),
-        )[:3]
-        if value > 0.0
+        "decay_chain_count": len(decay_chains),
+        "decay_note_ratio": (
+            len(participating_note_ids) / len(sorted_notes)
+            if sorted_notes
+            else 0.0
+        ),
+        "mean_decay_chain_length": (
+            sum(chain_lengths) / len(chain_lengths)
+            if chain_lengths
+            else 0.0
+        ),
+        "mean_decay_drop_ratio": (
+            sum(drop_ratios) / len(drop_ratios)
+            if drop_ratios
+            else 0.0
+        ),
+    }
+
+
+def _append_decay_chain(
+    decay_chains: list[list[NoteEvent]],
+    chain: list[NoteEvent],
+) -> None:
+    if len(chain) < DECAY_CONTOUR_MIN_CHAIN_LENGTH:
+        return
+
+    first_volume = chain[0].final_volume
+    min_volume = min(note.final_volume for note in chain)
+    total_drop_abs = first_volume - min_volume
+    total_drop_ratio = total_drop_abs / max(first_volume, 1.0)
+    if (
+        total_drop_abs >= DECAY_CONTOUR_MIN_TOTAL_DROP_ABS
+        and total_drop_ratio >= DECAY_CONTOUR_MIN_TOTAL_DROP_RATIO
+    ):
+        decay_chains.append(chain)
+
+
+def _chain_drop_ratio(chain: list[NoteEvent]) -> float:
+    first_volume = chain[0].final_volume
+    min_volume = min(note.final_volume for note in chain)
+    return (first_volume - min_volume) / max(first_volume, 1.0)
+
+
+def _empty_volume_contour() -> dict[str, float | int]:
+    return {
+        "decay_chain_count": 0,
+        "decay_note_ratio": 0.0,
+        "mean_decay_chain_length": 0.0,
+        "mean_decay_drop_ratio": 0.0,
+    }
+
+
+def _radius_layer_hint(
+    notes: list[NoteEvent],
+    volume_contour_mode: str,
+    volume_contour: dict[str, float | int],
+) -> dict[str, Any]:
+    if volume_contour_mode == "stepped_decay_contour":
+        estimated_layer_count = max(
+            2,
+            min(4, round(float(volume_contour["mean_decay_chain_length"]))),
+        )
+        return {
+            "type": "relative_decay_layers",
+            "estimated_layer_count": estimated_layer_count,
+            "confidence": _clamp(float(volume_contour["decay_note_ratio"]), 0.0, 1.0),
+            "roles": _radius_roles(estimated_layer_count),
+        }
+    if volume_contour_mode == "relative_radius_layers":
+        estimated_layer_count = _estimated_relative_volume_layer_count(notes)
+        return {
+            "type": "relative_radius_layers",
+            "estimated_layer_count": estimated_layer_count,
+            "confidence": 0.65,
+            "roles": _radius_roles(estimated_layer_count),
+        }
+    return {
+        "type": "none",
+        "estimated_layer_count": 0,
+        "confidence": 0.0,
+        "roles": [],
+    }
+
+
+def _radius_roles(estimated_layer_count: int) -> list[dict[str, str]]:
+    roles = [
+        {
+            "role": "attack_or_primary",
+            "relative_volume": "high",
+            "layout_use": "main_radius_layer",
+        },
+        {
+            "role": "decay_step_1",
+            "relative_volume": "mid",
+            "layout_use": "inner_radius_layer",
+        },
+        {
+            "role": "decay_step_2",
+            "relative_volume": "low",
+            "layout_use": "near_radius_layer",
+        },
+        {
+            "role": "decay_step_3",
+            "relative_volume": "very_low",
+            "layout_use": "nearest_radius_layer",
+        },
+    ]
+    return roles[:estimated_layer_count]
+
+
+def _lateral_substream_hint(
+    pan_mode: str,
+    pan_contour_mode: str,
+) -> dict[str, float | int | str]:
+    if pan_contour_mode == "alternating":
+        return {
+            "type": "lateral_alternating",
+            "estimated_lane_count": 2,
+            "confidence": 0.76,
+        }
+    if pan_mode == "bimodal_left_right":
+        return {
+            "type": "lateral_split",
+            "estimated_lane_count": 2,
+            "confidence": 0.78,
+        }
+    if pan_mode == "center_plus_side":
+        return {
+            "type": "center_plus_side",
+            "estimated_lane_count": 2,
+            "confidence": 0.70,
+        }
+    return {
+        "type": "none",
+        "estimated_lane_count": 0,
+        "confidence": 0.0,
+    }
+
+
+def _layout_intent(
+    pan_mode: str,
+    pan_contour_mode: str,
+    volume_distribution_mode: str,
+    volume_contour_mode: str,
+    radius_layer_hint: dict[str, Any],
+    lateral_substream_hint: dict[str, float | int | str],
+) -> dict[str, bool | str]:
+    inactive = (
+        pan_mode == "inactive"
+        or volume_distribution_mode == "inactive"
+    )
+    allow_lateral_split = lateral_substream_hint["type"] != "none"
+    allow_radius_layering = radius_layer_hint["type"] != "none"
+
+    lateral_continuity = "medium"
+    radius_continuity = "medium"
+    if inactive:
+        lateral_continuity = "low"
+        radius_continuity = "low"
+    elif pan_mode.endswith("_stable") or pan_contour_mode == "gradual_drift":
+        lateral_continuity = "high"
+    elif pan_contour_mode in {"alternating", "split_static"}:
+        lateral_continuity = "medium"
+    elif pan_contour_mode == "irregular_dynamic":
+        lateral_continuity = "low"
+
+    if volume_distribution_mode.endswith("_stable"):
+        radius_continuity = "high"
+    if volume_contour_mode in {
+        "stepped_decay_contour",
+        "relative_radius_layers",
+    }:
+        radius_continuity = "high"
+    elif volume_contour_mode == "irregular_dynamic":
+        radius_continuity = "low"
+
+    return {
+        "preferred_lateral_continuity": lateral_continuity,
+        "preferred_radius_continuity": radius_continuity,
+        "allow_radius_layering": allow_radius_layering,
+        "allow_lateral_split": allow_lateral_split,
+        "allow_segment_reset": inactive,
     }
 
 
@@ -459,99 +930,110 @@ def _volume_bin_name(value: float) -> str:
     return "max"
 
 
-def _summary_value(
-    summary: dict[str, float | None] | None,
-    field_name: str,
-) -> float:
-    if summary is None:
-        return 0.0
-    value = summary.get(field_name)
-    return float(value) if value is not None else 0.0
-
-
-def _bin_l1_distance(
-    left: dict[str, float] | None,
-    right: dict[str, float] | None,
-) -> float:
-    keys = set(left or {}) | set(right or {})
-    return sum(
-        abs((right or {}).get(key, 0.0) - (left or {}).get(key, 0.0))
-        for key in keys
-    )
-
-
-def _guess_pan_mode(windows: list[LayoutSpatialWindow]) -> str:
-    active_windows = [window for window in windows if window.note_count > 0]
-    if not windows:
-        return "unknown"
-    if not active_windows:
-        return "inactive"
-
-    mean_values = [_summary_value(window.pan, "mean") for window in active_windows]
-    pan_range = max(mean_values) - min(mean_values)
-    average_bins = _average_bins(
-        [window.pan_bins for window in active_windows],
-        PAN_BIN_NAMES,
-    )
-    dominant_bin, dominant_ratio = _dominant_bin(average_bins)
-    max_window_range = max(
-        _summary_value(window.pan, "range")
-        for window in active_windows
-    )
-    if max_window_range >= 80 or dominant_ratio < 0.5:
-        return "wide_or_split"
-    if pan_range >= 40:
-        return "drifting"
-    if dominant_ratio >= 0.6:
-        return f"{dominant_bin}_stable"
-    return "unknown"
-
-
-def _guess_volume_mode(windows: list[LayoutSpatialWindow]) -> str:
-    active_windows = [window for window in windows if window.note_count > 0]
-    if not windows:
-        return "unknown"
-    if not active_windows:
-        return "inactive"
-
-    average_bins = _average_bins(
-        [window.volume_bins for window in active_windows],
-        VOLUME_BIN_NAMES,
-    )
-    dominant_bin, dominant_ratio = _dominant_bin(average_bins)
-    max_window_range = max(
-        _summary_value(window.volume, "range")
-        for window in active_windows
-    )
-    if max_window_range >= 35 or dominant_ratio < 0.5:
-        return "wide_or_dynamic"
-    if dominant_ratio >= 0.6:
-        return f"{dominant_bin}_stable"
-    return "unknown"
-
-
-def _average_bins(
-    bins: list[dict[str, float] | None],
-    names: tuple[str, ...],
-) -> dict[str, float]:
-    active_bins = [item for item in bins if item is not None]
-    if not active_bins:
-        return {name: 0.0 for name in names}
-    return {
-        name: sum(item.get(name, 0.0) for item in active_bins) / len(active_bins)
-        for name in names
-    }
-
-
 def _dominant_bin(bins: dict[str, float]) -> tuple[str, float]:
     return max(bins.items(), key=lambda item: (item[1], item[0]))
 
 
-def _continuity_priority(pan_mode: str, volume_mode: str) -> str:
-    if pan_mode == "inactive" or volume_mode == "inactive":
+def _dominant_window_label(
+    windows: list[LayoutSpatialWindow],
+    field_name: str,
+    default: str,
+) -> str:
+    labels = [
+        getattr(window, field_name)
+        for window in windows
+        if window.note_count > 0
+    ]
+    if not labels:
+        return default
+    return max(set(labels), key=lambda label: (labels.count(label), label))
+
+
+def _range(values: Iterable[float]) -> float:
+    numbers = tuple(values)
+    if not numbers:
+        return 0.0
+    return max(numbers) - min(numbers)
+
+
+def _is_alternating_pan(values: list[float]) -> bool:
+    sides = [_pan_side(value) for value in values]
+    sides = [side for side in sides if side != "center"]
+    if len(sides) < 4:
+        return False
+    side_changes = sum(
+        1
+        for previous, current in zip(sides, sides[1:])
+        if previous != current
+    )
+    return side_changes / (len(sides) - 1) >= 0.65
+
+
+def _pan_side(value: float) -> str:
+    if value < 80:
+        return "left"
+    if value > 120:
+        return "right"
+    return "center"
+
+
+def _is_gradual_contour(values: list[float]) -> bool:
+    if len(values) < 3:
+        return False
+    deltas = [
+        current - previous
+        for previous, current in zip(values, values[1:])
+        if current != previous
+    ]
+    if not deltas:
+        return False
+    positive = sum(1 for delta in deltas if delta > 0)
+    negative = sum(1 for delta in deltas if delta < 0)
+    dominant_direction_ratio = max(positive, negative) / len(deltas)
+    net_change = abs(values[-1] - values[0])
+    value_range = max(values) - min(values)
+    return dominant_direction_ratio >= 0.75 and net_change >= value_range * 0.60
+
+
+def _has_relative_radius_layers(values: list[float]) -> bool:
+    if len(values) < 4:
+        return False
+    value_range = max(values) - min(values)
+    if value_range < 20:
+        return False
+    return _estimated_relative_volume_layer_count_from_values(values) >= 3
+
+
+def _estimated_relative_volume_layer_count(notes: list[NoteEvent]) -> int:
+    values = [note.final_volume for note in notes]
+    return _estimated_relative_volume_layer_count_from_values(values)
+
+
+def _estimated_relative_volume_layer_count_from_values(values: list[float]) -> int:
+    if not values:
+        return 0
+    max_value = max(values)
+    if max_value <= 0:
+        return 0
+    buckets = {
+        min(4, int((value / max_value) * 4))
+        for value in values
+    }
+    return max(1, len(buckets))
+
+
+def _legacy_continuity_priority(
+    pan_mode: str,
+    volume_distribution_mode: str,
+) -> str:
+    if pan_mode == "inactive" or volume_distribution_mode == "inactive":
         return "low"
-    if pan_mode.endswith("_stable") and volume_mode.endswith("_stable"):
+    if pan_mode.endswith("_stable") and volume_distribution_mode.endswith("_stable"):
         return "high"
-    if pan_mode == "unknown" or volume_mode == "unknown":
+    if pan_mode == "unknown" or volume_distribution_mode == "unknown":
         return "low"
     return "medium"
+
+
+def _clamp(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(upper, value))

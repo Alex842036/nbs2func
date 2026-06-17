@@ -76,6 +76,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=32,
         help="Hop size in ticks for layout spatial analysis. Defaults to 32.",
     )
+    parser.add_argument(
+        "--analysis-detail",
+        choices=("summary", "full"),
+        default="summary",
+        help="Analysis output detail for layout spatial analysis. Defaults to summary.",
+    )
     parser.add_argument("--origin-x", type=int, default=0, help="World origin X.")
     parser.add_argument("--origin-y", type=int, default=128, help="World origin Y.")
     parser.add_argument("--origin-z", type=int, default=0, help="World origin Z.")
@@ -1129,6 +1135,7 @@ def _run_analyze_layout_spatial(args, song) -> int:
             song,
             window_size=args.analysis_window_size,
             hop_size=args.analysis_hop_size,
+            detail=args.analysis_detail,
         )
     except ValueError as exc:
         print(f"Error: {exc}")

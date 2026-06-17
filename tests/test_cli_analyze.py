@@ -52,6 +52,7 @@ def test_parser_keeps_existing_cli_arguments_available() -> None:
 
     assert args.analyze_layout_spatial is False
     assert args.analyze_stereo is False
+    assert args.analysis_detail == "summary"
     assert args.layout_mode == "basic_linear"
     assert args.output == "build"
 
@@ -148,7 +149,7 @@ def test_analyze_layout_spatial_prints_json_to_stdout_without_output_file(
     assert json.loads(stdout)["layers"][0]["layer_id"] == 1
 
 
-def test_analyze_layout_spatial_passes_window_size_and_hop_size_to_analyzer(
+def test_analyze_layout_spatial_passes_window_size_hop_size_and_detail_to_analyzer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -165,14 +166,17 @@ def test_analyze_layout_spatial_passes_window_size_and_hop_size_to_analyzer(
             "64",
             "--analysis-hop-size",
             "16",
+            "--analysis-detail",
+            "full",
         ],
     )
     monkeypatch.setattr(cli, "read_nbs", lambda path: _song())
 
-    def fake_analyze_layout_spatial(song, *, window_size, hop_size):
+    def fake_analyze_layout_spatial(song, *, window_size, hop_size, detail):
         captured["song"] = song
         captured["window_size"] = window_size
         captured["hop_size"] = hop_size
+        captured["detail"] = detail
         return {"analysis_type": "layout_spatial", "overview": {}, "layers": []}
 
     monkeypatch.setattr(
@@ -187,6 +191,33 @@ def test_analyze_layout_spatial_passes_window_size_and_hop_size_to_analyzer(
     assert captured["song"].name == "Analyze Song"
     assert captured["window_size"] == 64
     assert captured["hop_size"] == 16
+    assert captured["detail"] == "full"
+
+
+def test_analyze_layout_spatial_full_detail_outputs_windows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    nbs_path = _write_placeholder_nbs(tmp_path)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            str(nbs_path),
+            "--analyze-layout-spatial",
+            "--analysis-detail",
+            "full",
+        ],
+    )
+    monkeypatch.setattr(cli, "read_nbs", lambda path: _song())
+
+    result = cli.main()
+
+    report = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert "windows" in report["layers"][0]
 
 
 def test_analyze_layout_spatial_rejects_group_config(
