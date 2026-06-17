@@ -11,11 +11,27 @@ PAN_BIN_NAMES = ("far_left", "left", "center", "right", "far_right")
 VOLUME_BIN_NAMES = ("very_low", "low", "mid", "high", "max")
 ANALYSIS_DETAIL_LEVELS = frozenset({"summary", "full"})
 
+LARGE_WINDOW_SIZE_TICKS = 128
+LARGE_HOP_SIZE_TICKS = 32
+
 LAYOUT_REGIME_MIN_SCORE = 0.35
 LAYOUT_REGIME_MIN_TICK_GAP = 64
 LAYOUT_REGIME_MAX_COUNT_PER_LAYER = 20
 LAYOUT_SEGMENT_MIN_LENGTH_TICKS = 256
 LAYOUT_SEGMENT_MAX_COUNT_PER_LAYER = 30
+
+SMALL_WINDOW_SIZE_TICKS = 32
+SMALL_HOP_SIZE_TICKS = 8
+
+BOUNDARY_REFINE_RADIUS_TICKS = 96
+BOUNDARY_REFINE_STEP_TICKS = 8
+BOUNDARY_MIN_SCORE_IMPROVEMENT = 0.15
+
+MIN_REFINED_SEGMENT_LENGTH_TICKS = 64
+MIN_SMALL_WINDOWS_PER_REFINED_SEGMENT = 3
+MIN_NOTES_FOR_SMALL_WINDOW_REFINEMENT = 4
+
+MIN_INACTIVE_GAP_TICKS = 48
 
 DECAY_CONTOUR_MAX_STEP_GAP_TICKS = 4
 DECAY_CONTOUR_MAX_ALLOWED_UPWARD_STEP = 5
@@ -23,6 +39,31 @@ DECAY_CONTOUR_MIN_TOTAL_DROP_RATIO = 0.35
 DECAY_CONTOUR_MIN_TOTAL_DROP_ABS = 15
 DECAY_CONTOUR_MIN_CHAIN_LENGTH = 2
 DECAY_CONTOUR_NOTE_RATIO_MIN = 0.30
+
+STABLE_PAN_MODES = frozenset(
+    {
+        "far_left_stable",
+        "left_stable",
+        "center_stable",
+        "right_stable",
+        "far_right_stable",
+    }
+)
+STABLE_VOLUME_MODES = frozenset(
+    {
+        "very_low_stable",
+        "low_stable",
+        "mid_stable",
+        "high_stable",
+        "max_stable",
+    }
+)
+RADIUS_LAYER_CONTOURS = frozenset(
+    {
+        "stepped_decay_contour",
+        "relative_radius_layers",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -122,8 +163,8 @@ class LayoutSpatialHintIndex:
 def analyze_layout_spatial(
     song: Song,
     *,
-    window_size: int = 128,
-    hop_size: int = 32,
+    window_size: int = LARGE_WINDOW_SIZE_TICKS,
+    hop_size: int = LARGE_HOP_SIZE_TICKS,
     detail: str = "summary",
 ) -> LayoutSpatialAnalysis:
     """Analyze layer-local pan/volume patterns without touching layout output."""
@@ -307,11 +348,7 @@ def build_layout_segments_preview(
             for window in available_windows
             if start_tick <= window.tick_start < end_tick
         ]
-        segment_notes = [
-            note
-            for note in available_notes
-            if start_tick <= note.tick <= end_tick
-        ]
+        segment_notes = _notes_in_segment(available_notes, start_tick, end_tick)
         preview.append(
             _build_segment_hint(
                 layer_id,
@@ -322,7 +359,13 @@ def build_layout_segments_preview(
             )
         )
 
-    return preview[:LAYOUT_SEGMENT_MAX_COUNT_PER_LAYER]
+    refined = _refine_layout_segments(
+        layer_id=layer_id,
+        segments=preview,
+        candidates=candidates,
+        notes=available_notes,
+    )
+    return refined[:LAYOUT_SEGMENT_MAX_COUNT_PER_LAYER]
 
 
 def _layer_hint_to_jsonable(
@@ -519,6 +562,541 @@ def _build_segment_hint(
         ),
         continuity_priority=_legacy_continuity_priority(pan_mode, volume_mode),
     )
+
+
+def _refine_layout_segments(
+    *,
+    layer_id: int,
+    segments: list[LayoutSpatialSegmentHint],
+    candidates: list[dict[str, Any]],
+    notes: list[NoteEvent],
+) -> list[LayoutSpatialSegmentHint]:
+    if not segments:
+        return []
+
+    snapped_segments = _snap_candidate_boundaries(
+        layer_id=layer_id,
+        segments=segments,
+        candidates=candidates,
+        notes=notes,
+    )
+    refined: list[LayoutSpatialSegmentHint] = []
+    for segment in snapped_segments:
+        segment_notes = _notes_in_segment(notes, segment.start_tick, segment.end_tick)
+        gap_segments = _split_segment_on_inactive_gaps(
+            layer_id,
+            segment,
+            segment_notes,
+        )
+        for gap_segment in gap_segments:
+            gap_notes = _notes_in_segment(
+                notes,
+                gap_segment.start_tick,
+                gap_segment.end_tick,
+            )
+            small_segments = _refine_segment_with_small_windows(
+                layer_id,
+                gap_segment,
+                gap_notes,
+            )
+            refined.extend(small_segments)
+
+    return _merge_adjacent_equivalent_segments(refined)
+
+
+def _snap_candidate_boundaries(
+    *,
+    layer_id: int,
+    segments: list[LayoutSpatialSegmentHint],
+    candidates: list[dict[str, Any]],
+    notes: list[NoteEvent],
+) -> list[LayoutSpatialSegmentHint]:
+    if len(segments) < 2:
+        return segments
+
+    candidate_ticks = {
+        int(candidate["tick"])
+        for candidate in candidates
+        if candidate.get("candidate_type")
+        in {"spatial_change", "mixed", "activity_change"}
+    }
+    if not candidate_ticks:
+        return segments
+
+    snapped = list(segments)
+    for index in range(1, len(snapped)):
+        old_boundary = snapped[index].start_tick
+        if not any(
+            abs(old_boundary - candidate_tick) <= LAYOUT_REGIME_MIN_TICK_GAP
+            for candidate_tick in candidate_ticks
+        ):
+            continue
+
+        previous_segment = snapped[index - 1]
+        next_segment = snapped[index]
+        best_boundary = old_boundary
+        old_score = _boundary_score(
+            notes,
+            previous_segment.start_tick,
+            old_boundary,
+            next_segment.end_tick,
+        )
+        best_score = old_score
+        for boundary in _candidate_boundary_ticks(
+            old_boundary,
+            previous_segment.start_tick,
+            next_segment.end_tick,
+        ):
+            score = _boundary_score(
+                notes,
+                previous_segment.start_tick,
+                boundary,
+                next_segment.end_tick,
+            )
+            if score > best_score:
+                best_score = score
+                best_boundary = boundary
+
+        if best_score < old_score + BOUNDARY_MIN_SCORE_IMPROVEMENT:
+            activity_boundary = _activity_gap_boundary_near(
+                notes,
+                old_boundary,
+                previous_segment.start_tick,
+                next_segment.end_tick,
+            )
+            if activity_boundary is not None:
+                best_boundary = activity_boundary
+                best_score = old_score + BOUNDARY_MIN_SCORE_IMPROVEMENT
+
+        if (
+            best_boundary != old_boundary
+            and best_score >= old_score + BOUNDARY_MIN_SCORE_IMPROVEMENT
+        ):
+            snapped[index - 1] = _build_segment_hint(
+                layer_id,
+                previous_segment.start_tick,
+                best_boundary,
+                [],
+                _notes_in_segment(notes, previous_segment.start_tick, best_boundary),
+            )
+            snapped[index] = _build_segment_hint(
+                layer_id,
+                best_boundary,
+                next_segment.end_tick,
+                [],
+                _notes_in_segment(notes, best_boundary, next_segment.end_tick),
+            )
+
+    return snapped
+
+
+def _candidate_boundary_ticks(
+    old_boundary: int,
+    previous_start: int,
+    next_end: int,
+) -> list[int]:
+    lower = max(
+        old_boundary - BOUNDARY_REFINE_RADIUS_TICKS,
+        previous_start + MIN_REFINED_SEGMENT_LENGTH_TICKS,
+    )
+    upper = min(
+        old_boundary + BOUNDARY_REFINE_RADIUS_TICKS,
+        next_end - MIN_REFINED_SEGMENT_LENGTH_TICKS,
+    )
+    if lower >= upper:
+        return []
+
+    first = lower + ((BOUNDARY_REFINE_STEP_TICKS - lower) % BOUNDARY_REFINE_STEP_TICKS)
+    return list(range(first, upper + 1, BOUNDARY_REFINE_STEP_TICKS))
+
+
+def _boundary_score(
+    notes: list[NoteEvent],
+    start_tick: int,
+    boundary_tick: int,
+    end_tick: int,
+) -> float:
+    left_notes = _notes_in_segment(notes, start_tick, boundary_tick)
+    right_notes = _notes_in_segment(notes, boundary_tick, end_tick)
+    if not left_notes or not right_notes:
+        return -1.0
+
+    left_hint = _build_segment_hint(0, start_tick, boundary_tick, [], left_notes)
+    right_hint = _build_segment_hint(0, boundary_tick, end_tick, [], right_notes)
+    if _segment_has_explained_radius_layers(left_hint) and _segment_has_explained_radius_layers(right_hint):
+        return -0.5
+
+    left_cohesion = _segment_cohesion(left_hint)
+    right_cohesion = _segment_cohesion(right_hint)
+    between_difference = (
+        0.8
+        if _layout_meaningful_difference(left_hint, right_hint)
+        else 0.0
+    )
+    short_penalty = 0.0
+    if boundary_tick - start_tick < MIN_REFINED_SEGMENT_LENGTH_TICKS:
+        short_penalty += 0.5
+    if end_tick - boundary_tick < MIN_REFINED_SEGMENT_LENGTH_TICKS:
+        short_penalty += 0.5
+    return left_cohesion + right_cohesion + between_difference - short_penalty
+
+
+def _segment_cohesion(segment: LayoutSpatialSegmentHint) -> float:
+    score = 0.0
+    if segment.pan_mode in STABLE_PAN_MODES:
+        score += 0.5
+    if segment.volume_mode in STABLE_VOLUME_MODES or segment.volume_mode == "narrow_dynamic":
+        score += 0.5
+    if segment.pan_contour_mode in {"flat", "small_variation"}:
+        score += 0.25
+    if segment.volume_contour_mode in {"flat", "small_variation"}:
+        score += 0.25
+    if segment.volume_contour_mode in RADIUS_LAYER_CONTOURS:
+        score += 0.35
+    if segment.pan_mode == "inactive" and segment.volume_mode == "inactive":
+        score += 0.75
+    return score
+
+
+def _activity_gap_boundary_near(
+    notes: list[NoteEvent],
+    old_boundary: int,
+    start_tick: int,
+    end_tick: int,
+) -> int | None:
+    sorted_notes = [
+        note
+        for note in sorted(notes, key=lambda item: item.tick)
+        if start_tick <= note.tick <= end_tick
+    ]
+    best: tuple[int, int] | None = None
+    for previous, current in zip(sorted_notes, sorted_notes[1:]):
+        if current.tick - previous.tick < MIN_INACTIVE_GAP_TICKS:
+            continue
+        boundary = previous.tick + 1
+        if (
+            boundary - start_tick < MIN_REFINED_SEGMENT_LENGTH_TICKS
+            or end_tick - boundary < MIN_REFINED_SEGMENT_LENGTH_TICKS
+        ):
+            continue
+        distance = abs(boundary - old_boundary)
+        if distance <= BOUNDARY_REFINE_RADIUS_TICKS and (
+            best is None or distance < best[0]
+        ):
+            best = (distance, boundary)
+    return best[1] if best is not None else None
+
+
+def _split_segment_on_inactive_gaps(
+    layer_id: int,
+    segment: LayoutSpatialSegmentHint,
+    notes: list[NoteEvent],
+) -> list[LayoutSpatialSegmentHint]:
+    if len(notes) < 2:
+        return [segment]
+
+    bounds = [segment.start_tick]
+    sorted_notes = sorted(notes, key=lambda note: note.tick)
+    for previous, current in zip(sorted_notes, sorted_notes[1:]):
+        if current.tick - previous.tick < MIN_INACTIVE_GAP_TICKS:
+            continue
+        inactive_start = previous.tick + 1
+        inactive_end = current.tick
+        if inactive_start <= bounds[-1] or inactive_end >= segment.end_tick:
+            continue
+        bounds.extend([inactive_start, inactive_end])
+    bounds.append(segment.end_tick)
+    bounds = sorted(dict.fromkeys(bounds))
+    if len(bounds) <= 2:
+        return [segment]
+
+    split_segments: list[LayoutSpatialSegmentHint] = []
+    for start_tick, end_tick in zip(bounds, bounds[1:]):
+        part_notes = _notes_in_segment(
+            notes,
+            start_tick,
+            end_tick,
+            include_final_tick=False,
+        )
+        if not part_notes and end_tick - start_tick < MIN_INACTIVE_GAP_TICKS:
+            return [segment]
+        split_segments.append(
+            _build_segment_hint(
+                layer_id,
+                start_tick,
+                end_tick,
+                [],
+                part_notes,
+            )
+        )
+
+    return split_segments
+
+
+def _refine_segment_with_small_windows(
+    layer_id: int,
+    segment: LayoutSpatialSegmentHint,
+    notes: list[NoteEvent],
+) -> list[LayoutSpatialSegmentHint]:
+    if not _should_refine_segment(segment, notes):
+        return [segment]
+    if _segment_has_explained_radius_layers(segment) and not _has_inactive_gap(notes):
+        return [segment]
+
+    small_windows = _build_windows(
+        notes,
+        active_tick_start=segment.start_tick,
+        active_tick_end=max(segment.end_tick - 1, segment.start_tick),
+        window_size=SMALL_WINDOW_SIZE_TICKS,
+        hop_size=SMALL_HOP_SIZE_TICKS,
+    )
+    runs = _collapse_small_window_runs(small_windows)
+    if len(runs) < 2:
+        return [segment]
+
+    boundaries = [segment.start_tick]
+    accepted_runs = [
+        run
+        for run in runs
+        if _small_run_is_accepted(
+            run,
+            max(segment.start_tick, run[0].tick_start),
+            min(segment.end_tick, run[-1].tick_end),
+        )
+    ]
+    for left_run, right_run in zip(accepted_runs, accepted_runs[1:]):
+        left_hint = _segment_from_small_run(layer_id, segment, left_run, notes)
+        right_hint = _segment_from_small_run(layer_id, segment, right_run, notes)
+        boundary = right_run[0].tick_start
+        if _layout_meaningful_difference(left_hint, right_hint):
+            boundaries.append(boundary)
+    boundaries.append(segment.end_tick)
+    boundaries = sorted(dict.fromkeys(boundaries))
+    if len(boundaries) <= 2:
+        return [segment]
+
+    refined = [
+        _build_segment_hint(
+            layer_id,
+            start_tick,
+            end_tick,
+            [],
+            _notes_in_segment(notes, start_tick, end_tick),
+        )
+        for start_tick, end_tick in zip(boundaries, boundaries[1:])
+    ]
+    if any(
+        refined_segment.duration_ticks < MIN_REFINED_SEGMENT_LENGTH_TICKS
+        and refined_segment.pan_mode != "inactive"
+        for refined_segment in refined
+    ):
+        return [segment]
+    return refined
+
+
+def _should_refine_segment(
+    segment: LayoutSpatialSegmentHint,
+    notes: list[NoteEvent],
+) -> bool:
+    if _has_inactive_gap(notes):
+        return True
+    if _is_stable_flat_segment(segment):
+        return False
+    if _segment_has_explained_radius_layers(segment):
+        return False
+
+    has_enough_notes = len(notes) >= MIN_NOTES_FOR_SMALL_WINDOW_REFINEMENT
+    if not has_enough_notes:
+        return False
+    if segment.volume_contour_mode == "irregular_dynamic":
+        return True
+    if (
+        segment.volume_mode == "wide_or_dynamic"
+        and segment.radius_layer_hint.get("type") == "none"
+        and segment.volume_contour_mode not in RADIUS_LAYER_CONTOURS
+    ):
+        return True
+    if (
+        segment.pan_mode == "wide_or_split"
+        and segment.lateral_substream_hint.get("type") == "none"
+    ):
+        return True
+    if segment.volume_contour_mode == "gradual_drift":
+        return (
+            segment.volume_mode == "wide_or_dynamic"
+            and segment.radius_layer_hint.get("type") == "none"
+        ) or _small_window_prescan_has_front_back_difference(segment, notes)
+    if (
+        segment.pan_mode == "unknown"
+        or segment.volume_mode == "unknown"
+        or segment.volume_contour_mode == "insufficient_data"
+    ):
+        return True
+    return False
+
+
+def _small_window_prescan_has_front_back_difference(
+    segment: LayoutSpatialSegmentHint,
+    notes: list[NoteEvent],
+) -> bool:
+    small_windows = [
+        window
+        for window in _build_windows(
+            notes,
+            active_tick_start=segment.start_tick,
+            active_tick_end=max(segment.end_tick - 1, segment.start_tick),
+            window_size=SMALL_WINDOW_SIZE_TICKS,
+            hop_size=SMALL_HOP_SIZE_TICKS,
+        )
+        if window.note_count > 0
+    ]
+    if len(small_windows) < MIN_SMALL_WINDOWS_PER_REFINED_SEGMENT * 2:
+        return False
+    midpoint = len(small_windows) // 2
+    front = _dominant_window_label(small_windows[:midpoint], "volume_mode", "inactive")
+    back = _dominant_window_label(small_windows[midpoint:], "volume_mode", "inactive")
+    return front != back and {front, back} <= (STABLE_VOLUME_MODES | {"narrow_dynamic"})
+
+
+def _is_stable_flat_segment(segment: LayoutSpatialSegmentHint) -> bool:
+    return (
+        segment.pan_mode in STABLE_PAN_MODES
+        and segment.volume_mode in STABLE_VOLUME_MODES
+        and segment.volume_contour_mode in {"flat", "small_variation"}
+    )
+
+
+def _segment_has_explained_radius_layers(
+    segment: LayoutSpatialSegmentHint,
+) -> bool:
+    radius_type = segment.radius_layer_hint.get("type")
+    return (
+        segment.volume_contour_mode == "stepped_decay_contour"
+        and radius_type == "relative_decay_layers"
+    ) or (
+        segment.volume_contour_mode == "relative_radius_layers"
+        and radius_type == "relative_radius_layers"
+    )
+
+
+def _has_inactive_gap(notes: list[NoteEvent]) -> bool:
+    sorted_notes = sorted(notes, key=lambda note: note.tick)
+    return any(
+        current.tick - previous.tick >= MIN_INACTIVE_GAP_TICKS
+        for previous, current in zip(sorted_notes, sorted_notes[1:])
+    )
+
+
+def _collapse_small_window_runs(
+    small_windows: list[LayoutSpatialWindow],
+) -> list[list[LayoutSpatialWindow]]:
+    runs: list[list[LayoutSpatialWindow]] = []
+    for window in small_windows:
+        key = _layout_meaningful_key(window)
+        if runs and _layout_meaningful_key(runs[-1][-1]) == key:
+            runs[-1].append(window)
+        else:
+            runs.append([window])
+    return runs
+
+
+def _layout_meaningful_key(
+    item: LayoutSpatialWindow | LayoutSpatialSegmentHint,
+) -> tuple[str, str, str, str]:
+    return (
+        item.pan_mode,
+        item.pan_contour_mode,
+        item.volume_mode,
+        item.volume_contour_mode,
+    )
+
+
+def _small_run_is_accepted(
+    run: list[LayoutSpatialWindow],
+    start_tick: int,
+    end_tick: int,
+) -> bool:
+    if not run:
+        return False
+    if run[0].note_count == 0 and end_tick - start_tick >= MIN_INACTIVE_GAP_TICKS:
+        return True
+    return (
+        len(run) >= MIN_SMALL_WINDOWS_PER_REFINED_SEGMENT
+        and end_tick - start_tick >= MIN_REFINED_SEGMENT_LENGTH_TICKS
+    )
+
+
+def _segment_from_small_run(
+    layer_id: int,
+    parent_segment: LayoutSpatialSegmentHint,
+    run: list[LayoutSpatialWindow],
+    notes: list[NoteEvent],
+) -> LayoutSpatialSegmentHint:
+    start_tick = max(parent_segment.start_tick, run[0].tick_start)
+    end_tick = min(parent_segment.end_tick, run[-1].tick_end)
+    return _build_segment_hint(
+        layer_id,
+        start_tick,
+        end_tick,
+        run,
+        _notes_in_segment(notes, start_tick, end_tick),
+    )
+
+
+def _layout_meaningful_difference(
+    left: LayoutSpatialSegmentHint,
+    right: LayoutSpatialSegmentHint,
+) -> bool:
+    if left.pan_mode == "inactive" or right.pan_mode == "inactive":
+        return left.pan_mode != right.pan_mode
+    if left.pan_mode != right.pan_mode and (
+        left.pan_mode in STABLE_PAN_MODES
+        or right.pan_mode in STABLE_PAN_MODES
+        or "wide_or_split" in {left.pan_mode, right.pan_mode}
+    ):
+        return True
+    if left.volume_mode != right.volume_mode and (
+        left.volume_mode in STABLE_VOLUME_MODES
+        or right.volume_mode in STABLE_VOLUME_MODES
+        or "wide_or_dynamic" in {left.volume_mode, right.volume_mode}
+    ):
+        return True
+    if left.volume_contour_mode != right.volume_contour_mode:
+        if {left.volume_contour_mode, right.volume_contour_mode} <= {
+            "flat",
+            "small_variation",
+        }:
+            return False
+        if (
+            left.volume_contour_mode in RADIUS_LAYER_CONTOURS
+            or right.volume_contour_mode in RADIUS_LAYER_CONTOURS
+            or "irregular_dynamic"
+            in {left.volume_contour_mode, right.volume_contour_mode}
+        ):
+            return True
+    return False
+
+
+def _merge_adjacent_equivalent_segments(
+    segments: list[LayoutSpatialSegmentHint],
+) -> list[LayoutSpatialSegmentHint]:
+    return segments
+
+
+def _notes_in_segment(
+    notes: list[NoteEvent],
+    start_tick: int,
+    end_tick: int,
+    *,
+    include_final_tick: bool = True,
+) -> list[NoteEvent]:
+    final_tick = max((item.tick for item in notes), default=end_tick - 1)
+    return [
+        note
+        for note in notes
+        if start_tick <= note.tick < end_tick
+        or (include_final_tick and note.tick == end_tick and end_tick == final_tick)
+    ]
 
 
 def _candidate_component_scores(
