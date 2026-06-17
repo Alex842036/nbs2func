@@ -12,6 +12,10 @@ from nbs2func.layout import (
     _summarize_block_collisions,
     build_layout_strategy,
 )
+from nbs2func.layout_spatial_analyzer import (
+    analyze_layout_spatial,
+    build_layout_spatial_hint_index,
+)
 from nbs2func.models import NoteEvent, Song, Track
 
 
@@ -36,6 +40,29 @@ class NoteBasedStereoRailPreviewTest(unittest.TestCase):
         self.assertEqual(preview.total_ideal_emitters, 3)
         self.assertEqual(preview.failed_assignment_count, 0)
         self.assertEqual(len(preview.assignments), 3)
+
+    def test_note_based_layout_constructs_without_spatial_hints(self) -> None:
+        layout = NoteBasedStereoLayout(
+            origin=BlockPosition(0, 128, 0),
+            track_direction="east",
+        )
+
+        self.assertIsNone(layout._get_layout_spatial_segment_hint(0, 0))
+
+    def test_note_based_layout_can_query_spatial_hints(self) -> None:
+        analysis = analyze_layout_spatial(_three_note_song())
+        hint_index = build_layout_spatial_hint_index(analysis)
+        layout = NoteBasedStereoLayout(
+            origin=BlockPosition(0, 128, 0),
+            track_direction="east",
+            spatial_hint_index=hint_index,
+        )
+
+        hint = layout._get_layout_spatial_segment_hint(1, 0)
+
+        self.assertIsNotNone(hint)
+        assert hint is not None
+        self.assertEqual(hint.layer_id, 1)
 
     def test_assignments_use_each_rail_slot_once_per_tick(self) -> None:
         preview = NoteBasedStereoLayout(

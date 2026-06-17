@@ -52,6 +52,10 @@ from .layout_models import (
     TrackLayoutInfo,
     _StereoOffset,
 )
+from .layout_spatial_analyzer import (
+    LayoutSpatialHintIndex,
+    LayoutSpatialSegmentHint,
+)
 from .layout_pan import (
     PAN_ZONES,
     _angle_error_inside_zone,
@@ -149,10 +153,20 @@ class NoteBasedStereoLayout:
     track_direction: str = "east"
     config: StereoLayoutConfig = StereoLayoutConfig()
     tick_spacing: int = 2
+    spatial_hint_index: LayoutSpatialHintIndex | None = None
 
     def _log(self, message: str) -> None:
         if self.config.enable_progress_logging:
             print(f"[NoteBasedRail] {message}", flush=True)
+
+    def _get_layout_spatial_segment_hint(
+        self,
+        layer_id: int,
+        tick: int,
+    ) -> LayoutSpatialSegmentHint | None:
+        if self.spatial_hint_index is None:
+            return None
+        return self.spatial_hint_index.get_segment(layer_id, tick)
 
     def _check_time_limit(self, total_start: float, stage: str) -> None:
         limit = self.config.preview_time_limit_seconds

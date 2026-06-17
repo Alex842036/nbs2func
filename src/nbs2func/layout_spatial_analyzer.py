@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, is_dataclass
 from math import sqrt
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from .models import NoteEvent, Song
 
@@ -38,9 +38,85 @@ class LayoutSpatialWindow:
     volume_bins: dict[str, float] | None
     pan_mode: str
     pan_contour_mode: str
-    volume_distribution_mode: str
+    volume_mode: str
     volume_contour_mode: str
     volume_contour: dict[str, float | int]
+
+
+@dataclass(frozen=True)
+class LayoutSpatialSegmentHint:
+    layer_id: int
+    start_tick: int
+    end_tick: int
+    duration_ticks: int
+    window_count: int
+    pan_mode: str
+    pan_contour_mode: str
+    volume_mode: str
+    volume_contour_mode: str
+    volume_contour: Mapping[str, float | int]
+    radius_layer_hint: Mapping[str, Any]
+    lateral_substream_hint: Mapping[str, Any]
+    layout_intent: Mapping[str, Any]
+    continuity_priority: str
+
+
+@dataclass(frozen=True)
+class LayoutSpatialLayerHint:
+    layer_id: int
+    name: str
+    note_count: int
+    active_tick_start: int | None
+    active_tick_end: int | None
+    window_count: int
+    pan_summary: Mapping[str, float | None]
+    volume_summary: Mapping[str, float | None]
+    layout_regime_candidates: tuple[Mapping[str, Any], ...]
+    segments: tuple[LayoutSpatialSegmentHint, ...]
+    windows: tuple[LayoutSpatialWindow, ...]
+
+
+@dataclass(frozen=True)
+class LayoutSpatialAnalysis:
+    layer_count: int
+    non_empty_layer_count: int
+    empty_layer_count: int
+    total_notes: int
+    window_size: int
+    hop_size: int
+    layers: tuple[LayoutSpatialLayerHint, ...]
+
+
+class LayoutSpatialHintIndex:
+    def __init__(self, analysis: LayoutSpatialAnalysis) -> None:
+        self._layers = {
+            layer.layer_id: layer
+            for layer in analysis.layers
+        }
+
+    def get_segment(
+        self,
+        layer_id: int,
+        tick: int,
+    ) -> LayoutSpatialSegmentHint | None:
+        layer = self._layers.get(layer_id)
+        if layer is None:
+            return None
+
+        for index, segment in enumerate(layer.segments):
+            if segment.start_tick <= tick < segment.end_tick:
+                return segment
+            # Note events use inclusive active end ticks. The index uses
+            # half-open ranges, but accepts the final segment end for the
+            # layer's last active note.
+            if (
+                index == len(layer.segments) - 1
+                and tick == segment.end_tick
+                and tick == layer.active_tick_end
+            ):
+                return segment
+
+        return None
 
 
 def analyze_layout_spatial(
@@ -49,7 +125,7 @@ def analyze_layout_spatial(
     window_size: int = 128,
     hop_size: int = 32,
     detail: str = "summary",
-) -> dict[str, Any]:
+) -> LayoutSpatialAnalysis:
     """Analyze layer-local pan/volume patterns without touching layout output."""
 
     if window_size <= 0:
@@ -72,52 +148,85 @@ def analyze_layout_spatial(
             layer_names.setdefault(note.layer, track.name)
             notes_by_layer.setdefault(note.layer, []).append(note)
 
-    all_layer_reports = [
-        _build_layer_report(
+    layers = tuple(
+        _build_layer_hint(
             layer_id,
             layer_names.get(layer_id, f"Layer {layer_id}"),
             notes_by_layer.get(layer_id, []),
             window_size=window_size,
             hop_size=hop_size,
-            detail=detail,
         )
         for layer_id in sorted(known_layers)
-    ]
-    non_empty_layer_count = sum(
-        1 for report in all_layer_reports if report["note_count"] > 0
     )
-    layer_reports = (
-        all_layer_reports
-        if detail == "full"
-        else [report for report in all_layer_reports if report["note_count"] > 0]
+    non_empty_layer_count = sum(1 for layer in layers if layer.note_count > 0)
+    return LayoutSpatialAnalysis(
+        layer_count=len(layers),
+        non_empty_layer_count=non_empty_layer_count,
+        empty_layer_count=len(layers) - non_empty_layer_count,
+        total_notes=sum(len(notes) for notes in notes_by_layer.values()),
+        window_size=window_size,
+        hop_size=hop_size,
+        layers=layers,
     )
 
+
+def build_layout_spatial_hint_index(
+    analysis: LayoutSpatialAnalysis,
+) -> LayoutSpatialHintIndex:
+    return LayoutSpatialHintIndex(analysis)
+
+
+def analysis_to_jsonable(
+    analysis: LayoutSpatialAnalysis,
+    *,
+    detail: str = "summary",
+) -> dict[str, Any]:
+    if detail not in ANALYSIS_DETAIL_LEVELS:
+        raise ValueError("analysis detail must be 'summary' or 'full'")
+
+    layers = (
+        analysis.layers
+        if detail == "full"
+        else tuple(layer for layer in analysis.layers if layer.note_count > 0)
+    )
     return {
         "analysis_type": "layout_spatial",
         "overview": {
-            "layer_count": len(all_layer_reports),
-            "non_empty_layer_count": non_empty_layer_count,
-            "empty_layer_count": len(all_layer_reports) - non_empty_layer_count,
-            "total_notes": sum(len(notes) for notes in notes_by_layer.values()),
-            "window_size": window_size,
-            "hop_size": hop_size,
+            "layer_count": analysis.layer_count,
+            "non_empty_layer_count": analysis.non_empty_layer_count,
+            "empty_layer_count": analysis.empty_layer_count,
+            "total_notes": analysis.total_notes,
+            "window_size": analysis.window_size,
+            "hop_size": analysis.hop_size,
         },
-        "layers": layer_reports,
+        "layers": [
+            _layer_hint_to_jsonable(layer, detail=detail)
+            for layer in layers
+        ],
     }
 
 
-def analysis_report_to_jsonable(report: Any) -> Any:
+def analysis_report_to_jsonable(
+    report: Any,
+    *,
+    detail: str = "summary",
+) -> Any:
     """Convert analyzer output to JSON-serializable primitive containers."""
 
+    if isinstance(report, LayoutSpatialAnalysis):
+        return analysis_to_jsonable(report, detail=detail)
     if is_dataclass(report):
-        return analysis_report_to_jsonable(asdict(report))
+        return analysis_report_to_jsonable(asdict(report), detail=detail)
     if isinstance(report, dict):
         return {
-            str(key): analysis_report_to_jsonable(value)
+            str(key): analysis_report_to_jsonable(value, detail=detail)
             for key, value in report.items()
         }
     if isinstance(report, (list, tuple)):
-        return [analysis_report_to_jsonable(value) for value in report]
+        return [
+            analysis_report_to_jsonable(value, detail=detail)
+            for value in report
+        ]
     return report
 
 
@@ -172,7 +281,8 @@ def build_layout_segments_preview(
     candidates: list[dict[str, Any]],
     windows: list[LayoutSpatialWindow] | None = None,
     notes: list[NoteEvent] | None = None,
-) -> list[dict[str, Any]]:
+    layer_id: int = 0,
+) -> list[LayoutSpatialSegmentHint]:
     if layer_active_tick_start is None or layer_active_tick_end is None:
         return []
 
@@ -188,7 +298,7 @@ def build_layout_segments_preview(
             break
     segment_bounds.append(layer_active_tick_end)
 
-    preview: list[dict[str, Any]] = []
+    preview: list[LayoutSpatialSegmentHint] = []
     available_windows = windows or []
     available_notes = sorted(notes or (), key=lambda note: (note.tick, note.key))
     for start_tick, end_tick in zip(segment_bounds, segment_bounds[1:]):
@@ -203,7 +313,8 @@ def build_layout_segments_preview(
             if start_tick <= note.tick <= end_tick
         ]
         preview.append(
-            _build_segment_preview(
+            _build_segment_hint(
+                layer_id,
                 start_tick,
                 end_tick,
                 segment_windows,
@@ -214,54 +325,78 @@ def build_layout_segments_preview(
     return preview[:LAYOUT_SEGMENT_MAX_COUNT_PER_LAYER]
 
 
-def _build_layer_report(
+def _layer_hint_to_jsonable(
+    layer: LayoutSpatialLayerHint,
+    *,
+    detail: str,
+) -> dict[str, Any]:
+    jsonable = {
+        "layer_id": layer.layer_id,
+        "name": layer.name,
+        "note_count": layer.note_count,
+        "active_tick_start": layer.active_tick_start,
+        "active_tick_end": layer.active_tick_end,
+        "window_count": layer.window_count,
+        "pan_summary": analysis_report_to_jsonable(layer.pan_summary),
+        "volume_summary": analysis_report_to_jsonable(layer.volume_summary),
+        "layout_regime_candidates": analysis_report_to_jsonable(
+            layer.layout_regime_candidates
+        ),
+        "layout_segments_preview": analysis_report_to_jsonable(layer.segments),
+    }
+    if detail == "full":
+        jsonable["windows"] = analysis_report_to_jsonable(layer.windows)
+    return jsonable
+
+
+def _build_layer_hint(
     layer_id: int,
     name: str,
     notes: list[NoteEvent],
     *,
     window_size: int,
     hop_size: int,
-    detail: str,
-) -> dict[str, Any]:
+) -> LayoutSpatialLayerHint:
     sorted_notes = sorted(notes, key=lambda note: (note.tick, note.key))
     active_tick_start = min((note.tick for note in sorted_notes), default=None)
     active_tick_end = max((note.tick for note in sorted_notes), default=None)
-    windows = _build_windows(
-        sorted_notes,
-        active_tick_start=active_tick_start,
-        active_tick_end=active_tick_end,
-        window_size=window_size,
-        hop_size=hop_size,
+    windows = tuple(
+        _build_windows(
+            sorted_notes,
+            active_tick_start=active_tick_start,
+            active_tick_end=active_tick_end,
+            window_size=window_size,
+            hop_size=hop_size,
+        )
     )
-    candidates = detect_layout_regime_candidates(windows)
-    report = {
-        "layer_id": layer_id,
-        "name": name,
-        "note_count": len(sorted_notes),
-        "active_tick_start": active_tick_start,
-        "active_tick_end": active_tick_end,
-        "window_count": len(windows),
-        "pan_summary": _numeric_summary(
-            note.final_panning for note in sorted_notes
-        ),
-        "volume_summary": _numeric_summary(
-            note.final_volume for note in sorted_notes
-        ),
-        "layout_regime_candidates": candidates,
-        "layout_segments_preview": build_layout_segments_preview(
+    candidates = tuple(detect_layout_regime_candidates(list(windows)))
+    segments = tuple(
+        build_layout_segments_preview(
             active_tick_start,
             active_tick_end,
-            candidates,
-            windows,
+            list(candidates),
+            list(windows),
             sorted_notes,
+            layer_id=layer_id,
+        )
+    )
+    return LayoutSpatialLayerHint(
+        layer_id=layer_id,
+        name=name,
+        note_count=len(sorted_notes),
+        active_tick_start=active_tick_start,
+        active_tick_end=active_tick_end,
+        window_count=len(windows),
+        pan_summary=_numeric_summary(
+            note.final_panning for note in sorted_notes
         ),
-    }
-    if detail == "full":
-        report["windows"] = [
-            analysis_report_to_jsonable(window)
-            for window in windows
-        ]
-    return report
+        volume_summary=_numeric_summary(
+            note.final_volume for note in sorted_notes
+        ),
+        layout_regime_candidates=candidates,
+        segments=segments,
+        windows=windows,
+    )
 
 
 def _build_windows(
@@ -303,7 +438,6 @@ def _build_window(
     tick_end: int,
 ) -> LayoutSpatialWindow:
     if not notes:
-        zero_contour = _empty_volume_contour()
         return LayoutSpatialWindow(
             tick_start=tick_start,
             tick_end=tick_end,
@@ -316,9 +450,9 @@ def _build_window(
             volume_bins=None,
             pan_mode="inactive",
             pan_contour_mode="inactive",
-            volume_distribution_mode="inactive",
+            volume_mode="inactive",
             volume_contour_mode="inactive",
-            volume_contour=zero_contour,
+            volume_contour=_empty_volume_contour(),
         )
 
     return LayoutSpatialWindow(
@@ -334,21 +468,22 @@ def _build_window(
         volume_bins=_volume_bins(note.final_volume for note in notes),
         pan_mode=_classify_pan_distribution(notes),
         pan_contour_mode=_classify_pan_contour(notes),
-        volume_distribution_mode=_classify_volume_distribution(notes),
+        volume_mode=_classify_volume_mode(notes),
         volume_contour_mode=_classify_volume_contour(notes),
         volume_contour=_volume_contour_metrics(notes),
     )
 
 
-def _build_segment_preview(
+def _build_segment_hint(
+    layer_id: int,
     start_tick: int,
     end_tick: int,
     windows: list[LayoutSpatialWindow],
     notes: list[NoteEvent],
-) -> dict[str, Any]:
+) -> LayoutSpatialSegmentHint:
     pan_mode = _classify_pan_distribution(notes, windows)
     pan_contour_mode = _classify_pan_contour(notes, windows)
-    volume_distribution_mode = _classify_volume_distribution(notes, windows)
+    volume_mode = _classify_volume_mode(notes, windows)
     volume_contour_mode = _classify_volume_contour(notes, windows)
     volume_contour = _volume_contour_metrics(notes)
     radius_layer_hint = _radius_layer_hint(
@@ -361,32 +496,29 @@ def _build_segment_preview(
         pan_contour_mode,
     )
 
-    return {
-        "start_tick": start_tick,
-        "end_tick": end_tick,
-        "duration_ticks": end_tick - start_tick,
-        "window_count": len(windows),
-        "pan_mode": pan_mode,
-        "pan_contour_mode": pan_contour_mode,
-        "volume_distribution_mode": volume_distribution_mode,
-        "volume_contour_mode": volume_contour_mode,
-        "volume_mode": volume_distribution_mode,
-        "volume_contour": volume_contour,
-        "radius_layer_hint": radius_layer_hint,
-        "lateral_substream_hint": lateral_substream_hint,
-        "layout_intent": _layout_intent(
+    return LayoutSpatialSegmentHint(
+        layer_id=layer_id,
+        start_tick=start_tick,
+        end_tick=end_tick,
+        duration_ticks=end_tick - start_tick,
+        window_count=len(windows),
+        pan_mode=pan_mode,
+        pan_contour_mode=pan_contour_mode,
+        volume_mode=volume_mode,
+        volume_contour_mode=volume_contour_mode,
+        volume_contour=volume_contour,
+        radius_layer_hint=radius_layer_hint,
+        lateral_substream_hint=lateral_substream_hint,
+        layout_intent=_layout_intent(
             pan_mode,
             pan_contour_mode,
-            volume_distribution_mode,
+            volume_mode,
             volume_contour_mode,
             radius_layer_hint,
             lateral_substream_hint,
         ),
-        "continuity_priority": _legacy_continuity_priority(
-            pan_mode,
-            volume_distribution_mode,
-        ),
-    }
+        continuity_priority=_legacy_continuity_priority(pan_mode, volume_mode),
+    )
 
 
 def _candidate_component_scores(
@@ -401,7 +533,7 @@ def _candidate_component_scores(
             "active_change": 0.45 if active_change else 0.0,
             "pan_mode": 0.0,
             "pan_contour_mode": 0.0,
-            "volume_distribution_mode": 0.0,
+            "volume_mode": 0.0,
             "volume_contour_mode": 0.0,
         }
 
@@ -411,22 +543,22 @@ def _candidate_component_scores(
         right.pan_contour_mode,
         0.45,
     )
-    volume_distribution_score = _volume_distribution_change_score(left, right)
+    volume_mode_score = _volume_mode_change_score(left, right)
     volume_contour_score = _volume_contour_change_score(left, right)
     return {
         "active_change": 0.0,
         "pan_mode": pan_mode_score,
         "pan_contour_mode": pan_contour_score,
-        "volume_distribution_mode": volume_distribution_score,
+        "volume_mode": volume_mode_score,
         "volume_contour_mode": volume_contour_score,
     }
 
 
-def _volume_distribution_change_score(
+def _volume_mode_change_score(
     left: LayoutSpatialWindow,
     right: LayoutSpatialWindow,
 ) -> float:
-    if left.volume_distribution_mode == right.volume_distribution_mode:
+    if left.volume_mode == right.volume_mode:
         return 0.0
     if (
         left.volume_contour_mode == "stepped_decay_contour"
@@ -434,10 +566,7 @@ def _volume_distribution_change_score(
         and left.pan_mode == right.pan_mode
     ):
         return 0.10
-    if (
-        left.volume_distribution_mode.endswith("_stable")
-        or right.volume_distribution_mode.endswith("_stable")
-    ):
+    if left.volume_mode.endswith("_stable") or right.volume_mode.endswith("_stable"):
         return 0.35
     return 0.25
 
@@ -586,16 +715,12 @@ def _classify_pan_contour(
     return "irregular_dynamic"
 
 
-def _classify_volume_distribution(
+def _classify_volume_mode(
     notes: list[NoteEvent],
     windows: list[LayoutSpatialWindow] | None = None,
 ) -> str:
     if not notes and windows:
-        return _dominant_window_label(
-            windows,
-            "volume_distribution_mode",
-            "inactive",
-        )
+        return _dominant_window_label(windows, "volume_mode", "inactive")
     if not notes:
         return "inactive"
 
@@ -813,15 +938,12 @@ def _lateral_substream_hint(
 def _layout_intent(
     pan_mode: str,
     pan_contour_mode: str,
-    volume_distribution_mode: str,
+    volume_mode: str,
     volume_contour_mode: str,
     radius_layer_hint: dict[str, Any],
     lateral_substream_hint: dict[str, float | int | str],
 ) -> dict[str, bool | str]:
-    inactive = (
-        pan_mode == "inactive"
-        or volume_distribution_mode == "inactive"
-    )
+    inactive = pan_mode == "inactive" or volume_mode == "inactive"
     allow_lateral_split = lateral_substream_hint["type"] != "none"
     allow_radius_layering = radius_layer_hint["type"] != "none"
 
@@ -837,7 +959,7 @@ def _layout_intent(
     elif pan_contour_mode == "irregular_dynamic":
         lateral_continuity = "low"
 
-    if volume_distribution_mode.endswith("_stable"):
+    if volume_mode.endswith("_stable"):
         radius_continuity = "high"
     if volume_contour_mode in {
         "stepped_decay_contour",
@@ -1024,13 +1146,13 @@ def _estimated_relative_volume_layer_count_from_values(values: list[float]) -> i
 
 def _legacy_continuity_priority(
     pan_mode: str,
-    volume_distribution_mode: str,
+    volume_mode: str,
 ) -> str:
-    if pan_mode == "inactive" or volume_distribution_mode == "inactive":
+    if pan_mode == "inactive" or volume_mode == "inactive":
         return "low"
-    if pan_mode.endswith("_stable") and volume_distribution_mode.endswith("_stable"):
+    if pan_mode.endswith("_stable") and volume_mode.endswith("_stable"):
         return "high"
-    if pan_mode == "unknown" or volume_distribution_mode == "unknown":
+    if pan_mode == "unknown" or volume_mode == "unknown":
         return "low"
     return "medium"
 

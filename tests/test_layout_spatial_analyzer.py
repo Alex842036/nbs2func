@@ -4,9 +4,11 @@ from pathlib import Path
 import pytest
 
 from nbs2func.layout_spatial_analyzer import (
+    LayoutSpatialAnalysis,
     LayoutSpatialWindow,
     analysis_report_to_jsonable,
     analyze_layout_spatial,
+    build_layout_spatial_hint_index,
     detect_layout_regime_candidates,
 )
 from nbs2func.models import NoteEvent, Song, Track
@@ -49,13 +51,17 @@ def _track(layer: int, notes: tuple[NoteEvent, ...], name: str | None = None) ->
     )
 
 
+def _json_report(analysis: LayoutSpatialAnalysis, detail: str = "summary") -> dict:
+    return analysis_report_to_jsonable(analysis, detail=detail)
+
+
 def _segment_for_notes(notes: tuple[NoteEvent, ...]) -> dict:
-    report = analyze_layout_spatial(
+    analysis = analyze_layout_spatial(
         _song(_track(1, notes)),
         window_size=128,
         hop_size=128,
     )
-    return report["layers"][0]["layout_segments_preview"][0]
+    return _json_report(analysis)["layers"][0]["layout_segments_preview"][0]
 
 
 def _window(
@@ -72,51 +78,73 @@ def _window(
         )
         for index, pan in enumerate(pan_values)
     ]
-    report = analyze_layout_spatial(
+    analysis = analyze_layout_spatial(
         _song(_track(1, tuple(notes))),
         window_size=128,
         hop_size=128,
-        detail="full",
     )
-    return LayoutSpatialWindow(**report["layers"][0]["windows"][0])
+    return analysis.layers[0].windows[0]
 
 
 def test_overview_counts_empty_and_non_empty_layers() -> None:
-    report = analyze_layout_spatial(
+    analysis = analyze_layout_spatial(
         _song(
             _track(1, (_note(tick=0, layer=1),)),
             _track(2, ()),
         )
     )
+    report = _json_report(analysis)
 
-    assert report["overview"]["layer_count"] == 2
+    assert analysis.layer_count == 2
     assert report["overview"]["non_empty_layer_count"] == 1
     assert report["overview"]["empty_layer_count"] == 1
     assert [layer["layer_id"] for layer in report["layers"]] == [1]
 
 
 def test_summary_detail_excludes_windows_by_default() -> None:
-    report = analyze_layout_spatial(_song(_track(1, (_note(tick=0),))))
+    analysis = analyze_layout_spatial(_song(_track(1, (_note(tick=0),))))
+    report = _json_report(analysis)
 
     assert "windows" not in report["layers"][0]
 
 
 def test_full_detail_includes_windows() -> None:
-    report = analyze_layout_spatial(
-        _song(_track(1, (_note(tick=0),))),
-        detail="full",
-    )
+    analysis = analyze_layout_spatial(_song(_track(1, (_note(tick=0),))))
+    report = _json_report(analysis, detail="full")
 
     assert report["layers"][0]["windows"][0]["note_count"] == 1
 
 
+def test_json_output_uses_canonical_volume_fields() -> None:
+    analysis = analyze_layout_spatial(
+        _song(
+            _track(
+                1,
+                (
+                    _note(tick=0, final_volume=100),
+                    _note(tick=4, final_volume=50),
+                ),
+            )
+        )
+    )
+    report = _json_report(analysis, detail="full")
+    segment = report["layers"][0]["layout_segments_preview"][0]
+    window = report["layers"][0]["windows"][0]
+
+    assert "volume_distribution_mode" not in str(report)
+    assert segment["volume_mode"] == "wide_or_dynamic"
+    assert segment["volume_contour_mode"] == "stepped_decay_contour"
+    assert window["volume_mode"] == "wide_or_dynamic"
+    assert window["volume_contour_mode"] == "stepped_decay_contour"
+
+
 def test_full_detail_empty_window_has_null_spatial_fields() -> None:
-    report = analyze_layout_spatial(
+    analysis = analyze_layout_spatial(
         _song(_track(1, (_note(tick=0), _note(tick=256)))),
         window_size=32,
         hop_size=64,
-        detail="full",
     )
+    report = _json_report(analysis, detail="full")
 
     empty_window = report["layers"][0]["windows"][1]
     assert empty_window["note_count"] == 0
@@ -127,7 +155,7 @@ def test_full_detail_empty_window_has_null_spatial_fields() -> None:
 
 
 def test_active_window_bins_sum_to_one_in_full_detail() -> None:
-    report = analyze_layout_spatial(
+    analysis = analyze_layout_spatial(
         _song(
             _track(
                 1,
@@ -139,9 +167,9 @@ def test_active_window_bins_sum_to_one_in_full_detail() -> None:
                     _note(tick=4, final_panning=180, final_volume=100),
                 ),
             )
-        ),
-        detail="full",
+        )
     )
+    report = _json_report(analysis, detail="full")
 
     window = report["layers"][0]["windows"][0]
     assert sum(window["pan_bins"].values()) == pytest.approx(1.0)
@@ -162,14 +190,13 @@ def test_candidate_type_is_emitted_for_pan_spatial_change() -> None:
 
 
 def test_active_inactive_transition_becomes_activity_change() -> None:
-    report = analyze_layout_spatial(
+    analysis = analyze_layout_spatial(
         _song(_track(1, (_note(tick=0), _note(tick=256)))),
         window_size=32,
         hop_size=64,
-        detail="full",
     )
 
-    candidates = report["layers"][0]["layout_regime_candidates"]
+    candidates = analysis.layers[0].layout_regime_candidates
     assert candidates
     assert candidates[0]["candidate_type"] == "activity_change"
 
@@ -185,7 +212,7 @@ def test_stable_pan_with_stepped_decay_volume_is_classified() -> None:
     assert segment["pan_mode"] == "center_stable"
     assert segment["pan_contour_mode"] == "flat"
     assert segment["volume_contour_mode"] == "stepped_decay_contour"
-    assert segment["volume_distribution_mode"] != "unknown"
+    assert segment["volume_mode"] != "unknown"
 
 
 @pytest.mark.parametrize(
@@ -243,13 +270,13 @@ def test_repeated_stepped_decay_bin_fluctuation_does_not_over_split() -> None:
                 _note(tick=base_tick + 8, final_volume=25),
             ]
         )
-    report = analyze_layout_spatial(
+    analysis = analyze_layout_spatial(
         _song(_track(1, tuple(notes))),
         window_size=32,
         hop_size=128,
     )
 
-    candidates = report["layers"][0]["layout_regime_candidates"]
+    candidates = analysis.layers[0].layout_regime_candidates
     assert [
         candidate
         for candidate in candidates
@@ -289,8 +316,54 @@ def test_center_plus_side_pan_produces_hint() -> None:
     assert segment["lateral_substream_hint"]["type"] == "center_plus_side"
 
 
+def test_layout_spatial_analysis_and_hint_index_are_structured() -> None:
+    analysis = analyze_layout_spatial(
+        _song(_track(7, (_note(tick=0, layer=7), _note(tick=256, layer=7))))
+    )
+    index = build_layout_spatial_hint_index(analysis)
+    segment = index.get_segment(7, 0)
+
+    assert isinstance(analysis, LayoutSpatialAnalysis)
+    assert segment is analysis.layers[0].segments[0]
+    assert _json_report(analysis)["layers"][0]["layer_id"] == segment.layer_id
+
+
+def test_hint_index_returns_none_for_missing_layer_and_outside_tick() -> None:
+    analysis = analyze_layout_spatial(
+        _song(_track(7, (_note(tick=100, layer=7), _note(tick=300, layer=7))))
+    )
+    index = build_layout_spatial_hint_index(analysis)
+
+    assert index.get_segment(99, 100) is None
+    assert index.get_segment(7, 99) is None
+    assert index.get_segment(7, 301) is None
+
+
+def test_hint_index_boundary_matching_is_half_open_except_final_active_end() -> None:
+    analysis = analyze_layout_spatial(
+        _song(
+            _track(
+                7,
+                (
+                    _note(tick=0, layer=7, final_panning=40),
+                    _note(tick=512, layer=7, final_panning=160),
+                    _note(tick=1024, layer=7, final_panning=160),
+                ),
+            )
+        ),
+        window_size=128,
+        hop_size=128,
+    )
+    index = build_layout_spatial_hint_index(analysis)
+    first, second = analysis.layers[0].segments
+
+    assert index.get_segment(7, first.start_tick) is first
+    assert index.get_segment(7, first.end_tick) is second
+    assert index.get_segment(7, second.end_tick) is second
+
+
 def test_pitch_only_changes_do_not_affect_candidate_generation() -> None:
-    report = analyze_layout_spatial(
+    analysis = analyze_layout_spatial(
         _song(
             _track(
                 1,
@@ -304,11 +377,11 @@ def test_pitch_only_changes_do_not_affect_candidate_generation() -> None:
         hop_size=128,
     )
 
-    assert report["layers"][0]["layout_regime_candidates"] == []
+    assert analysis.layers[0].layout_regime_candidates == ()
 
 
 def test_instrument_only_changes_do_not_affect_candidate_generation() -> None:
-    report = analyze_layout_spatial(
+    analysis = analyze_layout_spatial(
         _song(
             _track(
                 1,
@@ -322,11 +395,11 @@ def test_instrument_only_changes_do_not_affect_candidate_generation() -> None:
         hop_size=128,
     )
 
-    assert report["layers"][0]["layout_regime_candidates"] == []
+    assert analysis.layers[0].layout_regime_candidates == ()
 
 
 def test_note_count_density_changes_do_not_drive_candidate_generation() -> None:
-    report = analyze_layout_spatial(
+    analysis = analyze_layout_spatial(
         _song(
             _track(
                 1,
@@ -342,13 +415,13 @@ def test_note_count_density_changes_do_not_drive_candidate_generation() -> None:
         hop_size=128,
     )
 
-    assert report["layers"][0]["layout_regime_candidates"] == []
+    assert analysis.layers[0].layout_regime_candidates == ()
 
 
 def test_output_schema_has_layout_spatial_analysis_type() -> None:
-    report = analyze_layout_spatial(_song(_track(1, (_note(tick=0),))))
+    analysis = analyze_layout_spatial(_song(_track(1, (_note(tick=0),))))
 
-    assert analysis_report_to_jsonable(report)["analysis_type"] == "layout_spatial"
+    assert _json_report(analysis)["analysis_type"] == "layout_spatial"
 
 
 def test_old_analyzer_module_is_not_imported() -> None:

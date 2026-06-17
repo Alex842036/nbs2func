@@ -1142,7 +1142,7 @@ def _run_analyze_layout_spatial(args, song) -> int:
         return 1
 
     json_text = json.dumps(
-        analysis_report_to_jsonable(report),
+        analysis_report_to_jsonable(report, detail=args.analysis_detail),
         indent=2,
     )
     if args.analysis_output is not None:
