@@ -93,6 +93,14 @@ def _window(
     return analysis.layers[0].windows[0]
 
 
+def _hint(
+    start_tick: int,
+    end_tick: int,
+    notes: tuple[NoteEvent, ...],
+):
+    return analyzer._build_segment_hint(1, start_tick, end_tick, [], list(notes))
+
+
 def test_overview_counts_empty_and_non_empty_layers() -> None:
     analysis = analyze_layout_spatial(
         _song(
@@ -532,6 +540,216 @@ def test_hint_index_boundary_matching_is_half_open_except_final_active_end() -> 
     assert index.get_segment(7, first.start_tick) is first
     assert index.get_segment(7, first.end_tick) is second
     assert index.get_segment(7, second.end_tick) is second
+
+
+def test_adjacent_equivalent_active_segments_are_merged() -> None:
+    first_notes = tuple(_note(tick=tick) for tick in range(0, 64, 16))
+    second_notes = tuple(_note(tick=tick) for tick in range(64, 128, 16))
+    notes = list(first_notes + second_notes)
+    merged = analyzer._merge_adjacent_equivalent_segments(
+        1,
+        [
+            _hint(0, 64, first_notes),
+            _hint(64, 128, second_notes),
+        ],
+        notes,
+    )
+
+    assert len(merged) == 1
+    assert merged[0].start_tick == 0
+    assert merged[0].end_tick == 128
+    assert merged[0].duration_ticks == 128
+    assert merged[0].segment_note_count == 8
+
+
+def test_adjacent_equivalent_inactive_segments_are_merged() -> None:
+    merged = analyzer._merge_adjacent_equivalent_segments(
+        1,
+        [
+            _hint(0, 48, ()),
+            _hint(48, 96, ()),
+        ],
+        [],
+    )
+
+    assert len(merged) == 1
+    assert merged[0].pan_mode == "inactive"
+    assert merged[0].layout_hint_weight > 0
+
+
+def test_active_segment_is_not_merged_with_inactive_segment() -> None:
+    segments = analyzer._merge_adjacent_equivalent_segments(
+        1,
+        [
+            _hint(0, 64, tuple(_note(tick=tick) for tick in range(0, 64, 16))),
+            _hint(64, 96, ()),
+        ],
+        [],
+    )
+
+    assert len(segments) == 2
+
+
+def test_segments_with_different_pan_or_volume_mode_are_not_merged() -> None:
+    pan_segments = analyzer._merge_adjacent_equivalent_segments(
+        1,
+        [
+            _hint(
+                0,
+                64,
+                tuple(_note(tick=tick, final_panning=40) for tick in range(0, 64, 16)),
+            ),
+            _hint(
+                64,
+                128,
+                tuple(_note(tick=tick, final_panning=160) for tick in range(64, 128, 16)),
+            ),
+        ],
+        [],
+    )
+    volume_segments = analyzer._merge_adjacent_equivalent_segments(
+        1,
+        [
+            _hint(0, 64, tuple(_note(tick=tick, final_volume=60) for tick in range(0, 64, 16))),
+            _hint(64, 128, tuple(_note(tick=tick, final_volume=20) for tick in range(64, 128, 16))),
+        ],
+        [],
+    )
+
+    assert len(pan_segments) == 2
+    assert len(volume_segments) == 2
+
+
+def test_segments_with_different_hint_types_are_not_merged() -> None:
+    notes = tuple(_note(tick=tick) for tick in range(0, 64, 16))
+    base = _hint(0, 64, notes)
+    radius_variant = analyzer.LayoutSpatialSegmentHint(
+        **{
+            **base.__dict__,
+            "start_tick": 64,
+            "end_tick": 128,
+            "duration_ticks": 64,
+            "radius_layer_hint": {
+                "type": "relative_radius_layers",
+                "estimated_layer_count": 2,
+                "confidence": 0.8,
+                "roles": [],
+            },
+        }
+    )
+    lateral_variant = analyzer.LayoutSpatialSegmentHint(
+        **{
+            **base.__dict__,
+            "start_tick": 64,
+            "end_tick": 128,
+            "lateral_substream_hint": {
+                "type": "lateral_split",
+                "estimated_lane_count": 2,
+                "confidence": 0.8,
+            },
+        }
+    )
+
+    assert len(analyzer._merge_adjacent_equivalent_segments(1, [base, radius_variant], [])) == 2
+    assert len(analyzer._merge_adjacent_equivalent_segments(1, [base, lateral_variant], [])) == 2
+
+
+def test_final_output_includes_layout_hint_weight_and_strength() -> None:
+    analysis = analyze_layout_spatial(_song(_track(1, (_note(tick=0),))))
+    report = _json_report(analysis)
+    segment = report["layers"][0]["layout_segments_preview"][0]
+
+    assert 0.0 <= segment["layout_hint_weight"] <= 1.0
+    assert segment["hint_strength"] in {"weak", "medium", "strong"}
+    assert segment["segment_note_count"] == 1
+
+
+def test_short_active_segment_gets_lower_weight_than_long_stable_segment() -> None:
+    short = _hint(0, 16, (_note(tick=0),))
+    long = _hint(
+        0,
+        256,
+        tuple(_note(tick=tick) for tick in range(0, 256, 32)),
+    )
+
+    assert short.layout_hint_weight < long.layout_hint_weight
+    assert short.hint_strength == "weak"
+
+
+def test_mode_quality_affects_layout_hint_weight() -> None:
+    flat_weight = analyzer._layout_hint_weight(
+        duration_ticks=256,
+        segment_note_count=8,
+        pan_mode="center_stable",
+        volume_contour_mode="flat",
+        radius_layer_hint={"type": "none"},
+        lateral_substream_hint={"type": "none"},
+    )
+    irregular_weight = analyzer._layout_hint_weight(
+        duration_ticks=256,
+        segment_note_count=8,
+        pan_mode="center_stable",
+        volume_contour_mode="irregular_dynamic",
+        radius_layer_hint={"type": "none"},
+        lateral_substream_hint={"type": "none"},
+    )
+    insufficient = analyzer._layout_hint_weight(
+        duration_ticks=256,
+        segment_note_count=8,
+        pan_mode="center_stable",
+        volume_contour_mode="insufficient_data",
+        radius_layer_hint={"type": "none"},
+        lateral_substream_hint={"type": "none"},
+    )
+
+    assert irregular_weight < flat_weight
+    assert insufficient < 0.35
+
+
+def test_radius_layer_segments_keep_medium_or_high_weight_when_supported() -> None:
+    stepped = _hint(
+        0,
+        256,
+        tuple(
+            _note(tick=tick, final_volume=volume)
+            for tick, volume in (
+                (0, 100),
+                (4, 50),
+                (8, 25),
+                (64, 100),
+                (68, 50),
+                (72, 25),
+                (128, 100),
+                (132, 50),
+            )
+        ),
+    )
+
+    assert stepped.volume_contour_mode == "stepped_decay_contour"
+    assert stepped.layout_hint_weight >= 0.35
+
+
+def test_inactive_segment_weight_is_nonzero_and_duration_sensitive() -> None:
+    short = _hint(0, 32, ())
+    long = _hint(0, 256, ())
+
+    assert short.layout_hint_weight > 0
+    assert short.layout_hint_weight < long.layout_hint_weight
+
+
+def test_hint_strength_thresholds_match_weight() -> None:
+    assert analyzer._hint_strength(0.10) == "weak"
+    assert analyzer._hint_strength(0.35) == "medium"
+    assert analyzer._hint_strength(0.70) == "strong"
+
+
+def test_hint_index_returns_segment_weight() -> None:
+    analysis = analyze_layout_spatial(_song(_track(1, (_note(tick=0),))))
+    index = build_layout_spatial_hint_index(analysis)
+    segment = index.get_segment(1, 0)
+
+    assert segment is not None
+    assert 0.0 <= segment.layout_hint_weight <= 1.0
 
 
 def test_spatial_change_candidate_boundary_is_available_for_snapping() -> None:

@@ -100,6 +100,9 @@ class LayoutSpatialSegmentHint:
     lateral_substream_hint: Mapping[str, Any]
     layout_intent: Mapping[str, Any]
     continuity_priority: str
+    segment_note_count: int
+    layout_hint_weight: float
+    hint_strength: str
 
 
 @dataclass(frozen=True)
@@ -538,6 +541,22 @@ def _build_segment_hint(
         pan_mode,
         pan_contour_mode,
     )
+    layout_intent = _layout_intent(
+        pan_mode,
+        pan_contour_mode,
+        volume_mode,
+        volume_contour_mode,
+        radius_layer_hint,
+        lateral_substream_hint,
+    )
+    layout_hint_weight = _layout_hint_weight(
+        duration_ticks=end_tick - start_tick,
+        segment_note_count=len(notes),
+        pan_mode=pan_mode,
+        volume_contour_mode=volume_contour_mode,
+        radius_layer_hint=radius_layer_hint,
+        lateral_substream_hint=lateral_substream_hint,
+    )
 
     return LayoutSpatialSegmentHint(
         layer_id=layer_id,
@@ -552,15 +571,11 @@ def _build_segment_hint(
         volume_contour=volume_contour,
         radius_layer_hint=radius_layer_hint,
         lateral_substream_hint=lateral_substream_hint,
-        layout_intent=_layout_intent(
-            pan_mode,
-            pan_contour_mode,
-            volume_mode,
-            volume_contour_mode,
-            radius_layer_hint,
-            lateral_substream_hint,
-        ),
+        layout_intent=layout_intent,
         continuity_priority=_legacy_continuity_priority(pan_mode, volume_mode),
+        segment_note_count=len(notes),
+        layout_hint_weight=layout_hint_weight,
+        hint_strength=_hint_strength(layout_hint_weight),
     )
 
 
@@ -601,7 +616,7 @@ def _refine_layout_segments(
             )
             refined.extend(small_segments)
 
-    return _merge_adjacent_equivalent_segments(refined)
+    return _merge_adjacent_equivalent_segments(layer_id, refined, notes)
 
 
 def _snap_candidate_boundaries(
@@ -1078,9 +1093,53 @@ def _layout_meaningful_difference(
 
 
 def _merge_adjacent_equivalent_segments(
+    layer_id: int,
     segments: list[LayoutSpatialSegmentHint],
+    notes: list[NoteEvent],
 ) -> list[LayoutSpatialSegmentHint]:
-    return segments
+    if not segments:
+        return []
+
+    merged: list[LayoutSpatialSegmentHint] = [segments[0]]
+    for segment in segments[1:]:
+        previous = merged[-1]
+        if _segments_are_layout_equivalent(previous, segment):
+            start_tick = previous.start_tick
+            end_tick = segment.end_tick
+            merged[-1] = _build_segment_hint(
+                layer_id,
+                start_tick,
+                end_tick,
+                [],
+                _notes_in_segment(notes, start_tick, end_tick),
+            )
+        else:
+            merged.append(segment)
+    return merged
+
+
+def _segments_are_layout_equivalent(
+    previous: LayoutSpatialSegmentHint,
+    current: LayoutSpatialSegmentHint,
+) -> bool:
+    if previous.end_tick != current.start_tick:
+        return False
+    previous_inactive = previous.pan_mode == "inactive" or previous.volume_mode == "inactive"
+    current_inactive = current.pan_mode == "inactive" or current.volume_mode == "inactive"
+    if previous_inactive != current_inactive:
+        return False
+    return (
+        previous.pan_mode == current.pan_mode
+        and previous.pan_contour_mode == current.pan_contour_mode
+        and previous.volume_mode == current.volume_mode
+        and previous.volume_contour_mode == current.volume_contour_mode
+        and previous.radius_layer_hint.get("type")
+        == current.radius_layer_hint.get("type")
+        and previous.lateral_substream_hint.get("type")
+        == current.lateral_substream_hint.get("type")
+        and dict(previous.layout_intent) == dict(current.layout_intent)
+        and previous.continuity_priority == current.continuity_priority
+    )
 
 
 def _notes_in_segment(
@@ -1554,6 +1613,63 @@ def _layout_intent(
         "allow_lateral_split": allow_lateral_split,
         "allow_segment_reset": inactive,
     }
+
+
+def _layout_hint_weight(
+    *,
+    duration_ticks: int,
+    segment_note_count: int,
+    pan_mode: str,
+    volume_contour_mode: str,
+    radius_layer_hint: Mapping[str, Any],
+    lateral_substream_hint: Mapping[str, Any],
+) -> float:
+    if pan_mode == "inactive" or volume_contour_mode == "inactive":
+        return _clamp(duration_ticks / 128.0, 0.25, 1.0)
+
+    duration_factor = _clamp(duration_ticks / 256.0, 0.15, 1.0)
+    note_count_factor = _clamp(segment_note_count / 8.0, 0.25, 1.0)
+    volume_contour_factor = {
+        "inactive": 0.75,
+        "flat": 1.0,
+        "small_variation": 0.9,
+        "stepped_decay_contour": 0.9,
+        "relative_radius_layers": 0.85,
+        "gradual_drift": 0.65,
+        "irregular_dynamic": 0.45,
+        "insufficient_data": 0.25,
+    }.get(volume_contour_mode, 0.4)
+    pan_factor = {
+        "far_left_stable": 1.0,
+        "left_stable": 1.0,
+        "center_stable": 1.0,
+        "right_stable": 1.0,
+        "far_right_stable": 1.0,
+        "bimodal_left_right": 0.85,
+        "center_plus_side": 0.8,
+        "wide_or_split": 0.65,
+        "inactive": 0.75,
+        "unknown": 0.25,
+    }.get(pan_mode, 0.4)
+    mode_factor = min(volume_contour_factor, pan_factor)
+    hint_factor = max(
+        0.75,
+        float(radius_layer_hint.get("confidence", 0.0) or 0.0),
+        float(lateral_substream_hint.get("confidence", 0.0) or 0.0),
+    )
+    return _clamp(
+        duration_factor * note_count_factor * mode_factor * hint_factor,
+        0.0,
+        1.0,
+    )
+
+
+def _hint_strength(layout_hint_weight: float) -> str:
+    if layout_hint_weight < 0.35:
+        return "weak"
+    if layout_hint_weight < 0.70:
+        return "medium"
+    return "strong"
 
 
 def _numeric_summary(values: Iterable[float]) -> dict[str, float | None]:
