@@ -559,7 +559,13 @@ def test_adjacent_equivalent_active_segments_are_merged() -> None:
     assert merged[0].start_tick == 0
     assert merged[0].end_tick == 128
     assert merged[0].duration_ticks == 128
-    assert merged[0].segment_note_count == 8
+    assert merged[0].segment_note_count == 0
+    assert merged[0].layout_hint_weight == 0.0
+
+    finalized = analyzer._finalize_segment_hints(1, merged, notes)
+    assert finalized[0].segment_note_count == 8
+    assert finalized[0].layout_hint_weight == pytest.approx(0.85)
+    assert finalized[0].hint_strength == "strong"
 
 
 def test_adjacent_equivalent_inactive_segments_are_merged() -> None:
@@ -574,7 +580,10 @@ def test_adjacent_equivalent_inactive_segments_are_merged() -> None:
 
     assert len(merged) == 1
     assert merged[0].pan_mode == "inactive"
-    assert merged[0].layout_hint_weight > 0
+    assert merged[0].layout_hint_weight == 0.0
+
+    finalized = analyzer._finalize_segment_hints(1, merged, [])
+    assert finalized[0].layout_hint_weight > 0
 
 
 def test_active_segment_is_not_merged_with_inactive_segment() -> None:
@@ -654,6 +663,22 @@ def test_segments_with_different_hint_types_are_not_merged() -> None:
     assert len(analyzer._merge_adjacent_equivalent_segments(1, [base, lateral_variant], [])) == 2
 
 
+def test_segment_equivalence_ignores_derived_hint_fields() -> None:
+    notes = tuple(_note(tick=tick) for tick in range(0, 128, 16))
+    first = _hint(0, 64, notes[:4])
+    second = analyzer.LayoutSpatialSegmentHint(
+        **{
+            **_hint(64, 128, notes[4:]).__dict__,
+            "window_count": 99,
+            "segment_note_count": 123,
+            "layout_hint_weight": 0.12,
+            "hint_strength": "weak",
+        }
+    )
+
+    assert analyzer._segments_are_layout_equivalent(first, second)
+
+
 def test_final_output_includes_layout_hint_weight_and_strength() -> None:
     analysis = analyze_layout_spatial(_song(_track(1, (_note(tick=0),))))
     report = _json_report(analysis)
@@ -674,6 +699,55 @@ def test_short_active_segment_gets_lower_weight_than_long_stable_segment() -> No
 
     assert short.layout_hint_weight < long.layout_hint_weight
     assert short.hint_strength == "weak"
+
+
+def test_active_duration_factor_reaches_cap_at_128_ticks() -> None:
+    weight = analyzer._layout_hint_weight(
+        duration_ticks=128,
+        segment_note_count=8,
+        pan_mode="center_stable",
+        volume_contour_mode="flat",
+        radius_layer_hint={"type": "none"},
+        lateral_substream_hint={"type": "none"},
+    )
+
+    assert weight == pytest.approx(0.85)
+    assert analyzer._hint_strength(weight) == "strong"
+
+
+def test_no_special_hint_uses_085_default_factor() -> None:
+    weight = analyzer._layout_hint_weight(
+        duration_ticks=192,
+        segment_note_count=8,
+        pan_mode="center_stable",
+        volume_contour_mode="flat",
+        radius_layer_hint={"type": "none", "confidence": 1.0},
+        lateral_substream_hint={"type": "none", "confidence": 1.0},
+    )
+
+    assert weight == pytest.approx(0.85)
+
+
+def test_explicit_special_hint_confidence_blends_to_one() -> None:
+    medium_hint_weight = analyzer._layout_hint_weight(
+        duration_ticks=128,
+        segment_note_count=8,
+        pan_mode="center_stable",
+        volume_contour_mode="flat",
+        radius_layer_hint={"type": "relative_radius_layers", "confidence": 0.65},
+        lateral_substream_hint={"type": "none"},
+    )
+    max_hint_weight = analyzer._layout_hint_weight(
+        duration_ticks=128,
+        segment_note_count=8,
+        pan_mode="center_stable",
+        volume_contour_mode="flat",
+        radius_layer_hint={"type": "relative_radius_layers", "confidence": 2.0},
+        lateral_substream_hint={"type": "none"},
+    )
+
+    assert medium_hint_weight == pytest.approx(0.9475)
+    assert max_hint_weight == pytest.approx(1.0)
 
 
 def test_mode_quality_affects_layout_hint_weight() -> None:

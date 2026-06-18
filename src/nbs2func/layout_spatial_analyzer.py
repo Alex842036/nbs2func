@@ -359,6 +359,7 @@ def build_layout_segments_preview(
                 end_tick,
                 segment_windows,
                 segment_notes,
+                compute_hint_weight=False,
             )
         )
 
@@ -526,6 +527,8 @@ def _build_segment_hint(
     end_tick: int,
     windows: list[LayoutSpatialWindow],
     notes: list[NoteEvent],
+    *,
+    compute_hint_weight: bool = True,
 ) -> LayoutSpatialSegmentHint:
     pan_mode = _classify_pan_distribution(notes, windows)
     pan_contour_mode = _classify_pan_contour(notes, windows)
@@ -549,13 +552,17 @@ def _build_segment_hint(
         radius_layer_hint,
         lateral_substream_hint,
     )
-    layout_hint_weight = _layout_hint_weight(
-        duration_ticks=end_tick - start_tick,
-        segment_note_count=len(notes),
-        pan_mode=pan_mode,
-        volume_contour_mode=volume_contour_mode,
-        radius_layer_hint=radius_layer_hint,
-        lateral_substream_hint=lateral_substream_hint,
+    layout_hint_weight = (
+        _layout_hint_weight(
+            duration_ticks=end_tick - start_tick,
+            segment_note_count=len(notes),
+            pan_mode=pan_mode,
+            volume_contour_mode=volume_contour_mode,
+            radius_layer_hint=radius_layer_hint,
+            lateral_substream_hint=lateral_substream_hint,
+        )
+        if compute_hint_weight
+        else 0.0
     )
 
     return LayoutSpatialSegmentHint(
@@ -573,7 +580,7 @@ def _build_segment_hint(
         lateral_substream_hint=lateral_substream_hint,
         layout_intent=layout_intent,
         continuity_priority=_legacy_continuity_priority(pan_mode, volume_mode),
-        segment_note_count=len(notes),
+        segment_note_count=len(notes) if compute_hint_weight else 0,
         layout_hint_weight=layout_hint_weight,
         hint_strength=_hint_strength(layout_hint_weight),
     )
@@ -616,7 +623,8 @@ def _refine_layout_segments(
             )
             refined.extend(small_segments)
 
-    return _merge_adjacent_equivalent_segments(layer_id, refined, notes)
+    merged = _merge_adjacent_equivalent_segments(layer_id, refined, notes)
+    return _finalize_segment_hints(layer_id, merged, notes)
 
 
 def _snap_candidate_boundaries(
@@ -693,6 +701,7 @@ def _snap_candidate_boundaries(
                 best_boundary,
                 [],
                 _notes_in_segment(notes, previous_segment.start_tick, best_boundary),
+                compute_hint_weight=False,
             )
             snapped[index] = _build_segment_hint(
                 layer_id,
@@ -700,6 +709,7 @@ def _snap_candidate_boundaries(
                 next_segment.end_tick,
                 [],
                 _notes_in_segment(notes, best_boundary, next_segment.end_tick),
+                compute_hint_weight=False,
             )
 
     return snapped
@@ -736,8 +746,22 @@ def _boundary_score(
     if not left_notes or not right_notes:
         return -1.0
 
-    left_hint = _build_segment_hint(0, start_tick, boundary_tick, [], left_notes)
-    right_hint = _build_segment_hint(0, boundary_tick, end_tick, [], right_notes)
+    left_hint = _build_segment_hint(
+        0,
+        start_tick,
+        boundary_tick,
+        [],
+        left_notes,
+        compute_hint_weight=False,
+    )
+    right_hint = _build_segment_hint(
+        0,
+        boundary_tick,
+        end_tick,
+        [],
+        right_notes,
+        compute_hint_weight=False,
+    )
     if _segment_has_explained_radius_layers(left_hint) and _segment_has_explained_radius_layers(right_hint):
         return -0.5
 
@@ -842,6 +866,7 @@ def _split_segment_on_inactive_gaps(
                 end_tick,
                 [],
                 part_notes,
+                compute_hint_weight=False,
             )
         )
 
@@ -897,6 +922,7 @@ def _refine_segment_with_small_windows(
             end_tick,
             [],
             _notes_in_segment(notes, start_tick, end_tick),
+            compute_hint_weight=False,
         )
         for start_tick, end_tick in zip(boundaries, boundaries[1:])
     ]
@@ -1055,6 +1081,7 @@ def _segment_from_small_run(
         end_tick,
         run,
         _notes_in_segment(notes, start_tick, end_tick),
+        compute_hint_weight=False,
     )
 
 
@@ -1112,10 +1139,41 @@ def _merge_adjacent_equivalent_segments(
                 end_tick,
                 [],
                 _notes_in_segment(notes, start_tick, end_tick),
+                compute_hint_weight=False,
             )
         else:
             merged.append(segment)
     return merged
+
+
+def _finalize_segment_hints(
+    layer_id: int,
+    segments: list[LayoutSpatialSegmentHint],
+    notes: list[NoteEvent],
+) -> list[LayoutSpatialSegmentHint]:
+    finalized: list[LayoutSpatialSegmentHint] = []
+    for segment in segments:
+        segment_notes = _notes_in_segment(notes, segment.start_tick, segment.end_tick)
+        layout_hint_weight = _layout_hint_weight(
+            duration_ticks=segment.duration_ticks,
+            segment_note_count=len(segment_notes),
+            pan_mode=segment.pan_mode,
+            volume_contour_mode=segment.volume_contour_mode,
+            radius_layer_hint=segment.radius_layer_hint,
+            lateral_substream_hint=segment.lateral_substream_hint,
+        )
+        finalized.append(
+            LayoutSpatialSegmentHint(
+                **{
+                    **segment.__dict__,
+                    "layer_id": layer_id,
+                    "segment_note_count": len(segment_notes),
+                    "layout_hint_weight": layout_hint_weight,
+                    "hint_strength": _hint_strength(layout_hint_weight),
+                }
+            )
+        )
+    return finalized
 
 
 def _segments_are_layout_equivalent(
@@ -1627,7 +1685,7 @@ def _layout_hint_weight(
     if pan_mode == "inactive" or volume_contour_mode == "inactive":
         return _clamp(duration_ticks / 128.0, 0.25, 1.0)
 
-    duration_factor = _clamp(duration_ticks / 256.0, 0.15, 1.0)
+    duration_factor = _clamp(duration_ticks / 128.0, 0.15, 1.0)
     note_count_factor = _clamp(segment_note_count / 8.0, 0.25, 1.0)
     volume_contour_factor = {
         "inactive": 0.75,
@@ -1652,13 +1710,24 @@ def _layout_hint_weight(
         "unknown": 0.25,
     }.get(pan_mode, 0.4)
     mode_factor = min(volume_contour_factor, pan_factor)
-    hint_factor = max(
-        0.75,
-        float(radius_layer_hint.get("confidence", 0.0) or 0.0),
-        float(lateral_substream_hint.get("confidence", 0.0) or 0.0),
+    radius_confidence = (
+        float(radius_layer_hint.get("confidence", 0.0) or 0.0)
+        if radius_layer_hint.get("type") != "none"
+        else 0.0
+    )
+    lateral_confidence = (
+        float(lateral_substream_hint.get("confidence", 0.0) or 0.0)
+        if lateral_substream_hint.get("type") != "none"
+        else 0.0
+    )
+    explicit_hint_confidence = max(radius_confidence, lateral_confidence)
+    special_hint_factor = _clamp(
+        0.85 + 0.15 * explicit_hint_confidence,
+        0.85,
+        1.0,
     )
     return _clamp(
-        duration_factor * note_count_factor * mode_factor * hint_factor,
+        duration_factor * note_count_factor * mode_factor * special_hint_factor,
         0.0,
         1.0,
     )
