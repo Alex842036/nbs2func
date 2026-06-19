@@ -73,6 +73,11 @@ from .layout_pan import (
 from .models import NoteEvent, Song
 
 PAN_HINT_WEIGHT = 1.0
+PAN_NORMALIZE_MIN_EXTENT = 20.0
+PAN_NORMALIZE_MAX_SCALE = 3.0
+PAN_ZONE_ORIGINAL_Y_MOVE_PENALTY = 0.3
+LEGACY_ORIGINAL_Y_MOVE_PENALTY = 1.0
+LEGACY_ORIGINAL_Z_MOVE_PENALTY = 2.0
 
 PAN_MODE_FACTORS = {
     "center_stable": 1.0,
@@ -594,10 +599,19 @@ class NoteBasedStereoLayout:
 
     def _ideal_emitters(self, song: Song) -> list[NoteEmitter]:
         emitters: list[NoteEmitter] = []
+        pan_normalization_scale = (
+            _pan_normalization_scale_for_song(song)
+            if self.config.enable_pan_normalization
+            else 1.0
+        )
 
         for track in song.tracks:
             for note_index, note in enumerate(track.notes):
-                offset = self._note_offset(note.final_volume, note.final_panning)
+                target_panning = _normalize_panning(
+                    note.final_panning,
+                    pan_normalization_scale,
+                )
+                offset = self._note_offset(note.final_volume, target_panning)
                 position = self._position_from_offsets(
                     note.tick,
                     offset.offset_y,
@@ -2020,11 +2034,6 @@ class NoteBasedStereoLayout:
                 offset_y,
                 offset_lateral,
             )
-            movement = (
-                movement_distance
-                if movement_distance is not None
-                else abs(y_movement) + abs(lateral_movement)
-            )
             candidate_radius_error = (
                 radius_error
                 if radius_error is not None
@@ -2040,7 +2049,10 @@ class NoteBasedStereoLayout:
                 pan_error_inside_zone
                 if pan_error_inside_zone is not None
                 else _pan_error_inside_zone(
-                    emitter.final_panning,
+                    _panning_from_angle(
+                        emitter.target_angle_degrees,
+                        self.config.max_stereo_angle_degrees,
+                    ),
                     candidate_panning_value,
                     emitter.pan_zone,
                 )
@@ -2056,14 +2068,20 @@ class NoteBasedStereoLayout:
                 else math.hypot(offset_y, offset_lateral)
             )
             if self.config.enable_pan_zone_layout:
-                lateral_penalty = (
-                    abs(lateral_movement) * self.config.lateral_step_penalty
+                movement_penalty = _dynamic_movement_penalty(
+                    emitter.target_angle_degrees,
+                    y_movement_amount=abs(y_movement),
+                    z_movement_amount=abs(lateral_movement),
+                    original_y_penalty=PAN_ZONE_ORIGINAL_Y_MOVE_PENALTY,
+                    original_z_penalty=(
+                        PAN_ZONE_ORIGINAL_Y_MOVE_PENALTY
+                        + self.config.lateral_step_penalty
+                    ),
                 )
                 cost = (
                     candidate_radius_error * 3.0
                     + candidate_pan_error * 0.5
-                    + movement * 0.3
-                    + lateral_penalty
+                    + movement_penalty
                     + abs(slot_index) * 0.2
                     + y_height_penalty * 0.2
                 )
@@ -2076,9 +2094,15 @@ class NoteBasedStereoLayout:
                 if adjacent_zone_fallback:
                     cost += 10
             else:
+                movement_penalty = _dynamic_movement_penalty(
+                    emitter.target_angle_degrees,
+                    y_movement_amount=abs(y_movement),
+                    z_movement_amount=abs(lateral_movement),
+                    original_y_penalty=LEGACY_ORIGINAL_Y_MOVE_PENALTY,
+                    original_z_penalty=LEGACY_ORIGINAL_Z_MOVE_PENALTY,
+                )
                 cost = (
-                    abs(y_movement)
-                    + abs(lateral_movement) * 2
+                    movement_penalty
                     + level * 0.01
                     + abs(slot_index) * 0.05
                 )
@@ -2331,6 +2355,68 @@ def _merge_candidate_values(
             candidate_values[key] = candidate_values.get(key, 0) + 1
 
 
+def _pan_normalization_scale_for_song(song: Song) -> float:
+    return _pan_normalization_scale(
+        note.final_panning
+        for track in song.tracks
+        for note in track.notes
+    )
+
+
+def _pan_normalization_scale(panning_values) -> float:
+    values = tuple(float(value) for value in panning_values)
+    if not values:
+        return 1.0
+
+    min_pan = min(values)
+    max_pan = max(values)
+    left_extent = max(0.0, 100.0 - min_pan)
+    right_extent = max(0.0, max_pan - 100.0)
+    max_extent = max(left_extent, right_extent)
+    if PAN_NORMALIZE_MIN_EXTENT <= max_extent < 100.0:
+        return min(100.0 / max_extent, PAN_NORMALIZE_MAX_SCALE)
+    return 1.0
+
+
+def _normalize_panning(raw_pan: float, scale: float) -> float:
+    return max(0.0, min(200.0, 100.0 + (raw_pan - 100.0) * scale))
+
+
+def _dynamic_movement_penalties(
+    target_angle_degrees: float,
+    *,
+    original_y_penalty: float,
+    original_z_penalty: float,
+) -> tuple[float, float]:
+    t = _clamp_unit(abs(target_angle_degrees) / 90.0)
+    dynamic_y_penalty = original_z_penalty + (
+        original_y_penalty - original_z_penalty
+    ) * t
+    dynamic_z_penalty = original_y_penalty + (
+        original_z_penalty - original_y_penalty
+    ) * t
+    return dynamic_y_penalty, dynamic_z_penalty
+
+
+def _dynamic_movement_penalty(
+    target_angle_degrees: float,
+    *,
+    y_movement_amount: float,
+    z_movement_amount: float,
+    original_y_penalty: float,
+    original_z_penalty: float,
+) -> float:
+    dynamic_y_penalty, dynamic_z_penalty = _dynamic_movement_penalties(
+        target_angle_degrees,
+        original_y_penalty=original_y_penalty,
+        original_z_penalty=original_z_penalty,
+    )
+    return (
+        dynamic_y_penalty * y_movement_amount
+        + dynamic_z_penalty * z_movement_amount
+    )
+
+
 def _segment_pan_hint_score(
     segment: LayoutSpatialSegmentHint,
     emitter: NoteEmitter,
@@ -2377,24 +2463,24 @@ def _segment_pan_target_interval(
     if pan_mode in SEGMENT_PAN_TARGET_INTERVALS:
         return SEGMENT_PAN_TARGET_INTERVALS[pan_mode]
     if pan_mode == "bimodal_left_right":
-        if emitter.final_panning < 100:
+        if emitter.target_angle_degrees < 0:
             return _side_pan_target_interval("left", max_stereo_angle_degrees)
-        if emitter.final_panning > 100:
+        if emitter.target_angle_degrees > 0:
             return _side_pan_target_interval("right", max_stereo_angle_degrees)
         return None
     if pan_mode == "center_plus_side":
-        note_zone = _pan_zone_for_panning(emitter.final_panning)
+        note_zone = _pan_zone_for_angle(emitter.target_angle_degrees)
         if note_zone == "CENTER":
             return SEGMENT_PAN_TARGET_INTERVALS["center_stable"]
-        if emitter.final_panning < 100:
+        if emitter.target_angle_degrees < 0:
             return SEGMENT_PAN_TARGET_INTERVALS["left_stable"]
-        if emitter.final_panning > 100:
+        if emitter.target_angle_degrees > 0:
             return SEGMENT_PAN_TARGET_INTERVALS["right_stable"]
         return None
     if pan_mode == "wide_or_split":
-        if emitter.final_panning < 100:
+        if emitter.target_angle_degrees < 0:
             return _side_pan_target_interval("left", max_stereo_angle_degrees)
-        if emitter.final_panning > 100:
+        if emitter.target_angle_degrees > 0:
             return _side_pan_target_interval("right", max_stereo_angle_degrees)
         return SEGMENT_PAN_TARGET_INTERVALS["center_stable"]
     return None

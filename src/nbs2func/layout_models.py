@@ -446,6 +446,7 @@ class StereoLayoutConfig:
     min_world_y: int | None = None
     max_world_y: int | None = None
     enable_pan_zone_layout: bool = True
+    enable_pan_normalization: bool = True
     allow_adjacent_pan_zone_fallback: bool = False
     pan_zone_search_radius_limit: int = 8
     max_candidates_per_emitter: int = 64

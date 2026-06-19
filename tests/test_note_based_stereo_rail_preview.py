@@ -66,6 +66,186 @@ class NoteBasedStereoRailPreviewTest(unittest.TestCase):
         assert hint is not None
         self.assertEqual(hint.layer_id, 1)
 
+    def test_pan_normalization_does_not_mutate_raw_song_pans(self) -> None:
+        song = _pan_range_song((50, 150))
+        raw_pans = [
+            note.final_panning
+            for track in song.tracks
+            for note in track.notes
+        ]
+        layout = NoteBasedStereoLayout(
+            origin=BlockPosition(0, 128, 0),
+            track_direction="east",
+        )
+
+        emitters = layout._ideal_emitters(song)
+
+        self.assertEqual(
+            [
+                note.final_panning
+                for track in song.tracks
+                for note in track.notes
+            ],
+            raw_pans,
+        )
+        self.assertEqual([emitter.final_panning for emitter in emitters], raw_pans)
+
+    def test_pan_normalization_stretches_meaningful_narrow_range(self) -> None:
+        scale = note_stereo._pan_normalization_scale((50, 150))
+
+        self.assertEqual(scale, 2.0)
+        self.assertEqual(note_stereo._normalize_panning(50, scale), 0.0)
+        self.assertEqual(note_stereo._normalize_panning(150, scale), 200.0)
+
+    def test_pan_normalization_preserves_asymmetric_proportion(self) -> None:
+        scale = note_stereo._pan_normalization_scale((70, 150))
+
+        self.assertEqual(scale, 2.0)
+        self.assertEqual(note_stereo._normalize_panning(70, scale), 40.0)
+        self.assertEqual(note_stereo._normalize_panning(150, scale), 200.0)
+
+    def test_pan_normalization_ignores_tiny_center_range(self) -> None:
+        scale = note_stereo._pan_normalization_scale((95, 105))
+
+        self.assertEqual(scale, 1.0)
+        self.assertEqual(note_stereo._normalize_panning(95, scale), 95.0)
+        self.assertEqual(note_stereo._normalize_panning(105, scale), 105.0)
+
+    def test_pan_normalization_scale_is_capped(self) -> None:
+        scale = note_stereo._pan_normalization_scale((80, 120))
+
+        self.assertEqual(scale, note_stereo.PAN_NORMALIZE_MAX_SCALE)
+        self.assertEqual(note_stereo._normalize_panning(80, scale), 40.0)
+        self.assertEqual(note_stereo._normalize_panning(120, scale), 160.0)
+
+    def test_target_angle_uses_normalized_pan_when_enabled(self) -> None:
+        layout = NoteBasedStereoLayout(
+            origin=BlockPosition(0, 128, 0),
+            track_direction="east",
+        )
+        emitters = layout._ideal_emitters(_pan_range_song((50, 150)))
+
+        self.assertEqual(emitters[0].final_panning, 50)
+        self.assertEqual(emitters[0].target_angle_degrees, -90.0)
+        self.assertEqual(emitters[1].target_angle_degrees, 90.0)
+
+    def test_pan_normalization_does_not_change_candidate_generation_count(self) -> None:
+        song = _pan_range_song((50, 150))
+        normalized_layout = NoteBasedStereoLayout(
+            origin=BlockPosition(0, 128, 0),
+            track_direction="east",
+        )
+        raw_layout = NoteBasedStereoLayout(
+            origin=BlockPosition(0, 128, 0),
+            track_direction="east",
+            config=StereoLayoutConfig(enable_pan_normalization=False),
+        )
+
+        normalized_counts = [
+            len(normalized_layout._emitter_candidates(emitter))
+            for emitter in normalized_layout._ideal_emitters(song)
+        ]
+        raw_counts = [
+            len(raw_layout._emitter_candidates(emitter))
+            for emitter in raw_layout._ideal_emitters(song)
+        ]
+
+        self.assertEqual(normalized_counts, raw_counts)
+
+    def test_dynamic_yz_penalties_match_zero_45_90_degree_endpoints(self) -> None:
+        original_y = note_stereo.PAN_ZONE_ORIGINAL_Y_MOVE_PENALTY
+        original_z = original_y + StereoLayoutConfig().lateral_step_penalty
+
+        self.assertEqual(
+            note_stereo._dynamic_movement_penalties(
+                0,
+                original_y_penalty=original_y,
+                original_z_penalty=original_z,
+            ),
+            (original_z, original_y),
+        )
+        self.assertEqual(
+            note_stereo._dynamic_movement_penalties(
+                45,
+                original_y_penalty=original_y,
+                original_z_penalty=original_z,
+            ),
+            ((original_y + original_z) / 2, (original_y + original_z) / 2),
+        )
+        edge_y, edge_z = note_stereo._dynamic_movement_penalties(
+            90,
+            original_y_penalty=original_y,
+            original_z_penalty=original_z,
+        )
+        self.assertAlmostEqual(edge_y, original_y)
+        self.assertAlmostEqual(edge_z, original_z)
+
+    def test_dynamic_yz_penalties_use_abs_target_angle(self) -> None:
+        original_y = 0.3
+        original_z = 0.8
+
+        self.assertEqual(
+            note_stereo._dynamic_movement_penalties(
+                -45,
+                original_y_penalty=original_y,
+                original_z_penalty=original_z,
+            ),
+            note_stereo._dynamic_movement_penalties(
+                45,
+                original_y_penalty=original_y,
+                original_z_penalty=original_z,
+            ),
+        )
+
+    def test_dynamic_yz_penalty_uses_note_target_angle_not_candidate_angle(self) -> None:
+        layout = NoteBasedStereoLayout(
+            origin=BlockPosition(0, 128, 0),
+            track_direction="east",
+        )
+        emitter = layout._ideal_emitters(_single_note_song())[0]
+        center_angle_candidates: list = []
+        edge_angle_candidates: list = []
+
+        layout._add_candidates_for_position(
+            center_angle_candidates,
+            set(),
+            emitter,
+            offset_y=emitter.ideal_offset_y + 1,
+            offset_lateral=emitter.ideal_offset_lateral,
+            level=1,
+            y_movement=1,
+            lateral_movement=0,
+            slots=(0,),
+            pan_zone="CENTER",
+            candidate_panning=100,
+            radius_error=0,
+            pan_error_inside_zone=0,
+            y_height_penalty=0,
+            chosen_angle_degrees=0,
+        )
+        layout._add_candidates_for_position(
+            edge_angle_candidates,
+            set(),
+            emitter,
+            offset_y=emitter.ideal_offset_y + 1,
+            offset_lateral=emitter.ideal_offset_lateral,
+            level=1,
+            y_movement=1,
+            lateral_movement=0,
+            slots=(0,),
+            pan_zone="CENTER",
+            candidate_panning=100,
+            radius_error=0,
+            pan_error_inside_zone=0,
+            y_height_penalty=0,
+            chosen_angle_degrees=90,
+        )
+
+        self.assertEqual(
+            center_angle_candidates[0].cost,
+            edge_angle_candidates[0].cost,
+        )
+
     def test_no_spatial_hint_has_no_pan_hint_score(self) -> None:
         layout = NoteBasedStereoLayout(
             origin=BlockPosition(0, 128, 0),
@@ -231,7 +411,7 @@ class NoteBasedStereoRailPreviewTest(unittest.TestCase):
             self.assertNotIn(key, used_slots)
             used_slots.add(key)
 
-    def test_y_movement_cost_is_lower_than_z_movement_cost(self) -> None:
+    def test_center_target_makes_z_movement_cheaper_than_y_movement(self) -> None:
         layout = NoteBasedStereoLayout(
             origin=BlockPosition(0, 128, 0),
             track_direction="east",
@@ -251,7 +431,7 @@ class NoteBasedStereoRailPreviewTest(unittest.TestCase):
             if candidate.y_movement == 0 and candidate.lateral_movement == 1
         )
 
-        self.assertLess(y_candidate.cost, z_candidate.cost)
+        self.assertLess(z_candidate.cost, y_candidate.cost)
 
     def test_pan_zone_layout_keeps_candidates_inside_zone_by_default(self) -> None:
         layout = NoteBasedStereoLayout(
@@ -495,7 +675,7 @@ class NoteBasedStereoRailPreviewTest(unittest.TestCase):
         self.assertEqual(preview.rail_collision_count_after, 0)
         self.assertGreaterEqual(len(preview.assignments), 3)
 
-    def test_depth_mirror_candidate_is_preferred_before_lateral_movement(self) -> None:
+    def test_depth_mirror_candidate_is_still_generated(self) -> None:
         layout = NoteBasedStereoLayout(
             origin=BlockPosition(0, 128, 0),
             track_direction="east",
@@ -522,8 +702,9 @@ class NoteBasedStereoRailPreviewTest(unittest.TestCase):
         )
 
         self.assertTrue(mirror.depth_mirrored)
-        self.assertLess(mirror.cost, lateral.cost)
-        self.assertLess(candidates.index(mirror), candidates.index(lateral))
+        self.assertFalse(lateral.depth_mirrored)
+        self.assertIn(mirror, candidates)
+        self.assertIn(lateral, candidates)
 
     def test_preview_reports_negative_depth_usage(self) -> None:
         preview = NoteBasedStereoLayout(
@@ -662,6 +843,18 @@ def _pan_zone_song() -> Song:
             _track_with_panning(0, 0),
             _track_with_panning(1, 100),
             _track_with_panning(2, 200),
+        ),
+    )
+
+
+def _pan_range_song(panning_values: tuple[float, ...]) -> Song:
+    return Song(
+        name="Pan range",
+        author="tests",
+        length=len(panning_values),
+        tracks=tuple(
+            _track_with_panning(track_id, panning)
+            for track_id, panning in enumerate(panning_values)
         ),
     )
 

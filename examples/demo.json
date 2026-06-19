@@ -1,9 +1,0 @@
-{
-  "groups": [
-    {
-      "name": "test_group",
-      "layers": [0,1,2],
-      "grouping_mode": "manual_mixed"
-    }
-  ]
-}
