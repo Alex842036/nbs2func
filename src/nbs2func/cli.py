@@ -339,8 +339,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--preview-time-limit-seconds",
         type=float,
-        default=300,
-        help="Time limit for note_based_stereo preview. Defaults to 300 seconds.",
+        default=600,
+        help="Time limit for note_based_stereo preview. Defaults to 600 seconds.",
     )
     parser.add_argument(
         "--no-fail-fast-on-too-many-collisions",
@@ -1224,6 +1224,91 @@ def _print_note_based_preview(report) -> None:
         print("  average candidate count by pass:")
         for pass_name, average in report.average_candidate_count_by_pass:
             print(f"    {pass_name}: {average:.2f}")
+    print("Note-based stereo performance diagnostics")
+    print(f"  total layout time: {report.total_note_based_layout_seconds:.3f}s")
+    print(f"  ideal emitter build time: {report.ideal_emitter_build_seconds:.3f}s")
+    print(f"  candidate generation time: {report.candidate_generation_seconds:.3f}s")
+    print(f"  assignment total time: {report.assignment_total_seconds:.3f}s")
+    print(f"  retry total time: {report.retry_total_seconds:.3f}s")
+    print(f"  center split time: {report.center_split_total_seconds:.3f}s")
+    print(f"  debug report build time: {report.debug_report_build_seconds:.3f}s")
+    print(f"  rail validation time: {report.rail_validation_total_seconds:.3f}s")
+    print(f"  footprint collision time: {report.footprint_collision_total_seconds:.3f}s")
+    print(f"  rail center upgrade time: {report.rail_center_upgrade_total_seconds:.3f}s")
+    print("  candidate attempts:")
+    print(f"    total: {report.candidate_attempt_count_total}")
+    for pass_name, count in report.candidate_attempt_count_by_pass:
+        print(f"    {pass_name}: {count}")
+    print(
+        "    existing active rail / new rail validation: "
+        f"{report.candidate_attempts_on_existing_active_rail} / "
+        f"{report.candidate_attempts_requiring_new_rail_validation}"
+    )
+    print(
+        "    rejected slot / rail validation / footprint: "
+        f"{report.candidate_attempts_rejected_by_slot_used} / "
+        f"{report.candidate_attempts_rejected_by_rail_validation} / "
+        f"{report.candidate_attempts_rejected_by_footprint_collision}"
+    )
+    print(f"    accepted: {report.candidate_attempts_accepted}")
+    print("  rail validation:")
+    print(f"    calls: {report.rail_validation_call_count}")
+    for pass_name, count in report.rail_validation_call_count_by_pass:
+        print(f"    calls {pass_name}: {count}")
+    print(f"    rail pairs checked: {report.rail_pairs_checked}")
+    for pass_name, count in report.rail_pairs_checked_by_pass:
+        print(f"    rail pairs {pass_name}: {count}")
+    print(
+        "    avg/max rails checked per validation: "
+        f"{report.average_rails_checked_per_candidate:.3f} / "
+        f"{report.max_rails_checked_per_candidate}"
+    )
+    print(f"    accepted: {report.rail_validation_accepted_count}")
+    print(
+        "    rejected overlap / footprint: "
+        f"{report.rail_validation_rejected_by_activation_overlap} / "
+        f"{report.rail_pairs_rejected_by_full_footprint_collision}"
+    )
+    print("  footprint collision:")
+    print(f"    checks: {report.footprint_collision_check_count}")
+    print(
+        "    avg check time: "
+        f"{report.average_footprint_collision_seconds:.6f}s"
+    )
+    print(
+        "    assignment / rail / upgrade time: "
+        f"{report.assignment_footprint_collision_elapsed_seconds:.3f}s / "
+        f"{report.rail_footprint_collision_elapsed_seconds:.3f}s / "
+        f"{report.upgrade_footprint_collision_elapsed_seconds:.3f}s"
+    )
+    print(
+        "  rail center upgrade attempted / accepted / rejected: "
+        f"{report.rail_center_upgrade_attempted} / "
+        f"{report.rail_center_upgrade_accepted} / "
+        f"{report.rail_center_upgrade_rejected}"
+    )
+    print(
+        "    rejected missing track / footprint / reserved air: "
+        f"{report.rail_center_upgrade_rejected_by_missing_track_block} / "
+        f"{report.rail_center_upgrade_rejected_by_center_footprint_collision} / "
+        f"{report.rail_center_upgrade_rejected_by_reserved_air_collision}"
+    )
+    if report.candidate_count_before_truncation_by_pass:
+        print("  candidate count before truncation by pass:")
+        for pass_name, count in report.candidate_count_before_truncation_by_pass:
+            print(f"    {pass_name}: {count}")
+    if report.candidate_count_after_truncation_by_pass:
+        print("  candidate count after truncation by pass:")
+        for pass_name, count in report.candidate_count_after_truncation_by_pass:
+            print(f"    {pass_name}: {count}")
+    if report.candidate_truncation_count_by_pass:
+        print("  candidate truncation count by pass:")
+        for pass_name, count in report.candidate_truncation_count_by_pass:
+            print(f"    {pass_name}: {count}")
+    if report.mirror_candidate_truncation_count_by_pass:
+        print("  mirror candidate truncation count by pass:")
+        for pass_name, count in report.mirror_candidate_truncation_count_by_pass:
+            print(f"    {pass_name}: {count}")
     print(f"  pan zone unchanged count: {report.pan_zone_unchanged_count}")
     print(f"  adjacent zone fallback count: {report.adjacent_zone_fallback_count}")
     print(f"  average radius error: {report.average_radius_error:.3f}")

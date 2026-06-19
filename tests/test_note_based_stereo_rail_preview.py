@@ -73,6 +73,70 @@ class NoteBasedStereoRailPreviewTest(unittest.TestCase):
         assert hint is not None
         self.assertEqual(hint.layer_id, 1)
 
+    def test_default_preview_time_limit_is_600_seconds(self) -> None:
+        self.assertEqual(StereoLayoutConfig().preview_time_limit_seconds, 600)
+
+    def test_preview_time_limit_override_is_preserved(self) -> None:
+        config = StereoLayoutConfig(preview_time_limit_seconds=42)
+
+        self.assertEqual(config.preview_time_limit_seconds, 42)
+
+    def test_note_based_preview_has_performance_diagnostics(self) -> None:
+        preview = NoteBasedStereoLayout(
+            origin=BlockPosition(0, 128, 0),
+            track_direction="east",
+        ).layout_song(_three_note_song()).note_based_preview
+        assert preview is not None
+
+        numeric_fields = (
+            "total_note_based_layout_seconds",
+            "ideal_emitter_build_seconds",
+            "candidate_generation_seconds",
+            "assignment_total_seconds",
+            "rail_validation_total_seconds",
+            "footprint_collision_total_seconds",
+            "rail_center_upgrade_total_seconds",
+            "retry_total_seconds",
+            "center_split_total_seconds",
+            "debug_report_build_seconds",
+            "candidate_attempt_count_total",
+            "candidate_attempts_on_existing_active_rail",
+            "candidate_attempts_requiring_new_rail_validation",
+            "candidate_attempts_rejected_before_rail_validation",
+            "candidate_attempts_rejected_by_slot_used",
+            "candidate_attempts_rejected_by_rail_validation",
+            "candidate_attempts_rejected_by_footprint_collision",
+            "candidate_attempts_accepted",
+            "rail_validation_call_count",
+            "rail_validation_elapsed_seconds",
+            "rail_validation_accepted_count",
+            "rail_validation_rejected_by_activation_overlap",
+            "footprint_collision_check_count",
+            "average_footprint_collision_seconds",
+            "assignment_footprint_collision_elapsed_seconds",
+            "rail_footprint_collision_elapsed_seconds",
+            "upgrade_footprint_collision_elapsed_seconds",
+            "rail_center_upgrade_attempted",
+            "rail_center_upgrade_accepted",
+            "rail_center_upgrade_rejected",
+        )
+        tuple_fields = (
+            "candidate_attempt_count_by_pass",
+            "rail_validation_call_count_by_pass",
+            "rail_pairs_checked_by_pass",
+            "candidate_count_before_truncation_by_pass",
+            "candidate_count_after_truncation_by_pass",
+            "candidate_truncation_count_by_pass",
+            "mirror_candidate_truncation_count_by_pass",
+        )
+
+        for field in numeric_fields:
+            self.assertGreaterEqual(getattr(preview, field), 0)
+        for field in tuple_fields:
+            self.assertIsInstance(getattr(preview, field), tuple)
+        self.assertGreater(preview.candidate_attempt_count_total, 0)
+        self.assertGreater(preview.candidate_attempts_accepted, 0)
+
     def test_pan_normalization_does_not_mutate_raw_song_pans(self) -> None:
         song = _pan_range_song((50, 150))
         raw_pans = [
@@ -774,6 +838,8 @@ class NoteBasedStereoRailPreviewTest(unittest.TestCase):
             {existing.rail_id: existing_footprint},
             _rail_index(layout, existing),
             stats,
+            note_stereo._PerformanceStats(),
+            "test",
         )
 
         self.assertFalse(valid)
@@ -808,6 +874,8 @@ class NoteBasedStereoRailPreviewTest(unittest.TestCase):
             {existing.rail_id: existing_footprint},
             _rail_index(layout, existing),
             stats,
+            note_stereo._PerformanceStats(),
+            "test",
         )
 
         self.assertTrue(valid)
@@ -834,6 +902,8 @@ class NoteBasedStereoRailPreviewTest(unittest.TestCase):
             {existing.rail_id: existing_footprint},
             _rail_index(layout, existing),
             stats,
+            note_stereo._PerformanceStats(),
+            "test",
         )
 
         self.assertFalse(valid)
@@ -862,6 +932,8 @@ class NoteBasedStereoRailPreviewTest(unittest.TestCase):
             {existing.rail_id: existing_footprint},
             _rail_index(layout, existing),
             stats,
+            note_stereo._PerformanceStats(),
+            "test",
         )
 
         self.assertFalse(valid)
@@ -1238,6 +1310,7 @@ class _AssignmentContext:
         self.rail_footprints = {}
         self.rails_by_transverse = {}
         self.rail_stats = _RailValidationStats()
+        self.perf_stats = note_stereo._PerformanceStats()
 
 
 def _try_assign_candidate(
@@ -1259,6 +1332,8 @@ def _try_assign_candidate(
         context.rail_footprints,
         context.rails_by_transverse,
         context.rail_stats,
+        context.perf_stats,
+        "test",
     )
 
 

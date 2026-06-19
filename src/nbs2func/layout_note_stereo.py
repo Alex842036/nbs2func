@@ -104,13 +104,22 @@ SEGMENT_PAN_TARGET_INTERVALS = {
 class _RailValidationStats:
     rail_pairs_checked: int = 0
     rejected_by_same_plane_y_gap: int = 0
+    rejected_by_activation_overlap: int = 0
     rejected_by_full_footprint_collision: int = 0
     candidate_validation_count: int = 0
     total_rails_checked_per_candidate: int = 0
     max_rails_checked_per_candidate: int = 0
+    accepted_count: int = 0
+    elapsed_seconds: float = 0
+    call_count_by_pass: dict[str, int] | None = None
+    rail_pairs_checked_by_pass: dict[str, int] | None = None
     issues: list[RailValidationIssue] | None = None
 
     def __post_init__(self) -> None:
+        if self.call_count_by_pass is None:
+            self.call_count_by_pass = defaultdict(int)
+        if self.rail_pairs_checked_by_pass is None:
+            self.rail_pairs_checked_by_pass = defaultdict(int)
         if self.issues is None:
             self.issues = []
 
@@ -135,10 +144,58 @@ class _CandidateGenerationStats:
     candidate_truncation_count: int = 0
     mirror_candidate_truncated_count: int = 0
     candidate_counts_by_pass: dict[str, list[int]] | None = None
+    candidate_count_before_truncation_by_pass: dict[str, int] | None = None
+    candidate_count_after_truncation_by_pass: dict[str, int] | None = None
+    candidate_truncation_count_by_pass: dict[str, int] | None = None
+    mirror_candidate_truncation_count_by_pass: dict[str, int] | None = None
 
     def __post_init__(self) -> None:
         if self.candidate_counts_by_pass is None:
             self.candidate_counts_by_pass = defaultdict(list)
+        if self.candidate_count_before_truncation_by_pass is None:
+            self.candidate_count_before_truncation_by_pass = defaultdict(int)
+        if self.candidate_count_after_truncation_by_pass is None:
+            self.candidate_count_after_truncation_by_pass = defaultdict(int)
+        if self.candidate_truncation_count_by_pass is None:
+            self.candidate_truncation_count_by_pass = defaultdict(int)
+        if self.mirror_candidate_truncation_count_by_pass is None:
+            self.mirror_candidate_truncation_count_by_pass = defaultdict(int)
+
+
+@dataclass
+class _PerformanceStats:
+    ideal_emitter_build_seconds: float = 0
+    candidate_generation_seconds: float = 0
+    assignment_total_seconds: float = 0
+    rail_validation_total_seconds: float = 0
+    footprint_collision_total_seconds: float = 0
+    rail_center_upgrade_total_seconds: float = 0
+    retry_total_seconds: float = 0
+    center_split_total_seconds: float = 0
+    debug_report_build_seconds: float = 0
+    candidate_attempt_count_total: int = 0
+    candidate_attempt_count_by_pass: dict[str, int] | None = None
+    candidate_attempts_on_existing_active_rail: int = 0
+    candidate_attempts_requiring_new_rail_validation: int = 0
+    candidate_attempts_rejected_before_rail_validation: int = 0
+    candidate_attempts_rejected_by_slot_used: int = 0
+    candidate_attempts_rejected_by_rail_validation: int = 0
+    candidate_attempts_rejected_by_footprint_collision: int = 0
+    candidate_attempts_accepted: int = 0
+    footprint_collision_check_count: int = 0
+    assignment_footprint_collision_elapsed_seconds: float = 0
+    rail_footprint_collision_elapsed_seconds: float = 0
+    upgrade_footprint_collision_elapsed_seconds: float = 0
+    rail_center_upgrade_attempted: int = 0
+    rail_center_upgrade_accepted: int = 0
+    rail_center_upgrade_rejected: int = 0
+    rail_center_upgrade_rejected_by_missing_track_block: int = 0
+    rail_center_upgrade_rejected_by_center_footprint_collision: int = 0
+    rail_center_upgrade_rejected_by_reserved_air_collision: int = 0
+
+    def __post_init__(self) -> None:
+        if self.candidate_attempt_count_by_pass is None:
+            self.candidate_attempt_count_by_pass = defaultdict(int)
 
 
 @dataclass
@@ -231,6 +288,7 @@ class NoteBasedStereoLayout:
     def layout_song(self, song: Song) -> LayoutResult:
         total_start = time.perf_counter()
         timings: list[StageTiming] = []
+        perf_stats = _PerformanceStats()
         note_count = sum(len(track.notes) for track in song.tracks)
         active_ticks = len(
             {
@@ -244,8 +302,9 @@ class NoteBasedStereoLayout:
         stage_start = time.perf_counter()
         self._log("stage: computing ideal positions")
         emitters = tuple(self._ideal_emitters(song))
+        perf_stats.ideal_emitter_build_seconds = time.perf_counter() - stage_start
         timings.append(
-            StageTiming("ideal position time", time.perf_counter() - stage_start)
+            StageTiming("ideal position time", perf_stats.ideal_emitter_build_seconds)
         )
 
         stage_start = time.perf_counter()
@@ -266,8 +325,12 @@ class NoteBasedStereoLayout:
             if index % 1000 == 0 or index == len(emitters):
                 self._log(f"generating candidates: {index}/{len(emitters)}")
             self._check_time_limit(total_start, "candidate generation")
+        perf_stats.candidate_generation_seconds = time.perf_counter() - stage_start
         timings.append(
-            StageTiming("candidate generation time", time.perf_counter() - stage_start)
+            StageTiming(
+                "candidate generation time",
+                perf_stats.candidate_generation_seconds,
+            )
         )
 
         stage_start = time.perf_counter()
@@ -298,9 +361,11 @@ class NoteBasedStereoLayout:
             candidate_values,
             candidate_cache,
             candidate_generation_stats,
+            perf_stats,
             total_start,
         )
-        timings.append(StageTiming("assignment time", time.perf_counter() - stage_start))
+        perf_stats.assignment_total_seconds = time.perf_counter() - stage_start
+        timings.append(StageTiming("assignment time", perf_stats.assignment_total_seconds))
 
         stage_start = time.perf_counter()
         self._log(
@@ -346,8 +411,9 @@ class NoteBasedStereoLayout:
         total_candidate_emitters = (
             len(all_candidate_counts) + center_split_stats.emitters_added
         )
+        perf_stats.debug_report_build_seconds = time.perf_counter() - stage_start
         timings.append(
-            StageTiming("report generation time", time.perf_counter() - stage_start)
+            StageTiming("report generation time", perf_stats.debug_report_build_seconds)
         )
 
         report = NoteBasedStereoRailLayoutPreview(
@@ -488,6 +554,98 @@ class NoteBasedStereoLayout:
             average_candidate_count_by_pass=(
                 _average_candidate_count_by_pass(candidate_generation_stats)
             ),
+            candidate_count_before_truncation_by_pass=_count_items(
+                candidate_generation_stats.candidate_count_before_truncation_by_pass
+            ),
+            candidate_count_after_truncation_by_pass=_count_items(
+                candidate_generation_stats.candidate_count_after_truncation_by_pass
+            ),
+            candidate_truncation_count_by_pass=_count_items(
+                candidate_generation_stats.candidate_truncation_count_by_pass
+            ),
+            mirror_candidate_truncation_count_by_pass=_count_items(
+                candidate_generation_stats.mirror_candidate_truncation_count_by_pass
+            ),
+            ideal_emitter_build_seconds=perf_stats.ideal_emitter_build_seconds,
+            candidate_generation_seconds=perf_stats.candidate_generation_seconds,
+            assignment_total_seconds=perf_stats.assignment_total_seconds,
+            rail_validation_total_seconds=perf_stats.rail_validation_total_seconds,
+            footprint_collision_total_seconds=(
+                perf_stats.footprint_collision_total_seconds
+            ),
+            rail_center_upgrade_total_seconds=(
+                perf_stats.rail_center_upgrade_total_seconds
+            ),
+            retry_total_seconds=perf_stats.retry_total_seconds,
+            center_split_total_seconds=perf_stats.center_split_total_seconds,
+            debug_report_build_seconds=perf_stats.debug_report_build_seconds,
+            candidate_attempt_count_total=perf_stats.candidate_attempt_count_total,
+            candidate_attempt_count_by_pass=_count_items(
+                perf_stats.candidate_attempt_count_by_pass
+            ),
+            candidate_attempts_on_existing_active_rail=(
+                perf_stats.candidate_attempts_on_existing_active_rail
+            ),
+            candidate_attempts_requiring_new_rail_validation=(
+                perf_stats.candidate_attempts_requiring_new_rail_validation
+            ),
+            candidate_attempts_rejected_before_rail_validation=(
+                perf_stats.candidate_attempts_rejected_before_rail_validation
+            ),
+            candidate_attempts_rejected_by_slot_used=(
+                perf_stats.candidate_attempts_rejected_by_slot_used
+            ),
+            candidate_attempts_rejected_by_rail_validation=(
+                perf_stats.candidate_attempts_rejected_by_rail_validation
+            ),
+            candidate_attempts_rejected_by_footprint_collision=(
+                perf_stats.candidate_attempts_rejected_by_footprint_collision
+            ),
+            candidate_attempts_accepted=perf_stats.candidate_attempts_accepted,
+            rail_validation_call_count=rail_validation_stats.candidate_validation_count,
+            rail_validation_call_count_by_pass=_count_items(
+                rail_validation_stats.call_count_by_pass
+            ),
+            rail_validation_elapsed_seconds=rail_validation_stats.elapsed_seconds,
+            rail_pairs_checked_by_pass=_count_items(
+                rail_validation_stats.rail_pairs_checked_by_pass
+            ),
+            rail_validation_accepted_count=rail_validation_stats.accepted_count,
+            rail_validation_rejected_by_activation_overlap=(
+                rail_validation_stats.rejected_by_activation_overlap
+            ),
+            footprint_collision_check_count=(
+                perf_stats.footprint_collision_check_count
+            ),
+            average_footprint_collision_seconds=(
+                perf_stats.footprint_collision_total_seconds
+                / perf_stats.footprint_collision_check_count
+                if perf_stats.footprint_collision_check_count
+                else 0
+            ),
+            assignment_footprint_collision_elapsed_seconds=(
+                perf_stats.assignment_footprint_collision_elapsed_seconds
+            ),
+            rail_footprint_collision_elapsed_seconds=(
+                perf_stats.rail_footprint_collision_elapsed_seconds
+            ),
+            upgrade_footprint_collision_elapsed_seconds=(
+                perf_stats.upgrade_footprint_collision_elapsed_seconds
+            ),
+            rail_center_upgrade_attempted=(
+                perf_stats.rail_center_upgrade_attempted
+            ),
+            rail_center_upgrade_accepted=perf_stats.rail_center_upgrade_accepted,
+            rail_center_upgrade_rejected=perf_stats.rail_center_upgrade_rejected,
+            rail_center_upgrade_rejected_by_missing_track_block=(
+                perf_stats.rail_center_upgrade_rejected_by_missing_track_block
+            ),
+            rail_center_upgrade_rejected_by_center_footprint_collision=(
+                perf_stats.rail_center_upgrade_rejected_by_center_footprint_collision
+            ),
+            rail_center_upgrade_rejected_by_reserved_air_collision=(
+                perf_stats.rail_center_upgrade_rejected_by_reserved_air_collision
+            ),
             failed_examples_after_pass1=retry_stats.failed_examples_after_pass1,
             failed_examples_after_pass2=retry_stats.failed_examples_after_pass2,
             failed_examples_after_pass3=retry_stats.failed_examples_after_pass3,
@@ -508,6 +666,7 @@ class NoteBasedStereoLayout:
             collision_records_stored=len(collisions),
             collision_records_skipped_due_to_cap=skipped_collisions,
             stage_timings=tuple(timings),
+            total_note_based_layout_seconds=time.perf_counter() - total_start,
         )
         self._log("stage: writing report / mcfunction")
         cells = tuple(self._preview_cells(report))
@@ -675,6 +834,7 @@ class NoteBasedStereoLayout:
         candidate_values: dict[tuple[int, int], int],
         candidate_cache: dict[str, tuple[EmitterCandidate, ...]],
         candidate_generation_stats: _CandidateGenerationStats,
+        perf_stats: _PerformanceStats,
         total_start: float,
     ) -> tuple[
         list[SlotAssignment],
@@ -704,6 +864,7 @@ class NoteBasedStereoLayout:
             state=state,
             rail_stats=rail_stats,
             center_split_stats=center_split_stats,
+            perf_stats=perf_stats,
             total_start=total_start,
             pass_name="pass1",
             allow_center_split=True,
@@ -713,6 +874,7 @@ class NoteBasedStereoLayout:
             failed_after_pass1
         )
 
+        retry_start = time.perf_counter()
         pass2_cache = self._retry_candidate_cache(
             failed_after_pass1,
             pass_name="pass2",
@@ -729,6 +891,7 @@ class NoteBasedStereoLayout:
             state=state,
             rail_stats=rail_stats,
             center_split_stats=center_split_stats,
+            perf_stats=perf_stats,
             total_start=total_start,
             pass_name="pass2",
             allow_center_split=False,
@@ -764,6 +927,7 @@ class NoteBasedStereoLayout:
                 state=state,
                 rail_stats=rail_stats,
                 center_split_stats=center_split_stats,
+                perf_stats=perf_stats,
                 total_start=total_start,
                 pass_name="pass3",
                 allow_center_split=False,
@@ -788,6 +952,7 @@ class NoteBasedStereoLayout:
                 for emitter in failed_after_pass2
                 if emitter.pan_zone == "CENTER"
             ) + tuple(pass3_failed_non_center)
+        perf_stats.retry_total_seconds += time.perf_counter() - retry_start
 
         retry_stats.failed_after_pass3 = len(failed_after_pass3)
         retry_stats.failed_examples_after_pass3 = _failed_emitter_examples(
@@ -813,6 +978,7 @@ class NoteBasedStereoLayout:
                     rails_by_transverse=state.rails_by_transverse,
                     rail_stats=rail_stats,
                     candidate_generation_stats=candidate_generation_stats,
+                    perf_stats=perf_stats,
                 )
                 if split_assignments:
                     state.assignments.extend(split_assignments)
@@ -835,6 +1001,7 @@ class NoteBasedStereoLayout:
                     rails_by_transverse=state.rails_by_transverse,
                     rail_stats=rail_stats,
                     split_stats=center_split_stats,
+                    perf_stats=perf_stats,
                 )
                 if split_assignments:
                     state.assignments.extend(split_assignments)
@@ -863,6 +1030,7 @@ class NoteBasedStereoLayout:
         rails_by_transverse: dict[int, set[str]],
         rail_stats: _RailValidationStats,
         candidate_generation_stats: _CandidateGenerationStats,
+        perf_stats: _PerformanceStats,
     ) -> list[SlotAssignment] | None:
         split_emitters = self._same_side_split_emitters(emitter)
         if split_emitters is None:
@@ -907,6 +1075,8 @@ class NoteBasedStereoLayout:
             rail_footprints_copy,
             rails_by_transverse_copy,
             rail_stats,
+            perf_stats,
+            "same_side_split",
         )
         second_assignment = None
         if first_assignment is not None:
@@ -923,6 +1093,8 @@ class NoteBasedStereoLayout:
                 rail_footprints_copy,
                 rails_by_transverse_copy,
                 rail_stats,
+                perf_stats,
+                "same_side_split",
             )
 
         if first_assignment is None or second_assignment is None:
@@ -1002,6 +1174,7 @@ class NoteBasedStereoLayout:
         state: _AssignmentState,
         rail_stats: _RailValidationStats,
         center_split_stats: _NoteLevelCenterSplitStats,
+        perf_stats: _PerformanceStats,
         total_start: float,
         pass_name: str,
         allow_center_split: bool,
@@ -1039,6 +1212,8 @@ class NoteBasedStereoLayout:
                     state.rail_footprints,
                     state.rails_by_transverse,
                     rail_stats,
+                    perf_stats,
+                    pass_name,
                 )
 
                 if selected is None and allow_center_split and emitter.pan_zone == "CENTER":
@@ -1056,6 +1231,7 @@ class NoteBasedStereoLayout:
                         rails_by_transverse=state.rails_by_transverse,
                         rail_stats=rail_stats,
                         split_stats=center_split_stats,
+                        perf_stats=perf_stats,
                     )
                     if split_assignments:
                         state.assignments.extend(split_assignments)
@@ -1137,8 +1313,13 @@ class NoteBasedStereoLayout:
         rail_footprints: dict[str, _Footprint],
         rails_by_transverse: dict[int, set[str]],
         rail_stats: _RailValidationStats,
+        perf_stats: _PerformanceStats,
+        pass_name: str,
     ) -> SlotAssignment | None:
         for candidate in candidates:
+            perf_stats.candidate_attempt_count_total += 1
+            assert perf_stats.candidate_attempt_count_by_pass is not None
+            perf_stats.candidate_attempt_count_by_pass[pass_name] += 1
             rail = registry.get_or_create(
                 candidate.rail_offset_y,
                 candidate.rail_offset_lateral,
@@ -1149,9 +1330,12 @@ class NoteBasedStereoLayout:
             )
             slot_key = (rail.rail_id, candidate.slot_index)
             if slot_key in used_slots:
+                perf_stats.candidate_attempts_rejected_by_slot_used += 1
+                perf_stats.candidate_attempts_rejected_before_rail_validation += 1
                 continue
 
             if rail.rail_id not in active_rails:
+                perf_stats.candidate_attempts_requiring_new_rail_validation += 1
                 rail_footprint = self._rail_local_footprint(rail)
                 if not self._validate_new_rail(
                     rail,
@@ -1160,8 +1344,13 @@ class NoteBasedStereoLayout:
                     rail_footprints,
                     rails_by_transverse,
                     rail_stats,
+                    perf_stats,
+                    pass_name,
                 ):
+                    perf_stats.candidate_attempts_rejected_by_rail_validation += 1
                     continue
+            else:
+                perf_stats.candidate_attempts_on_existing_active_rail += 1
 
             rail_has_center_note = active_rail_cells.get(rail.rail_id)
             if rail_has_center_note is False and candidate.slot_index == 0:
@@ -1175,9 +1364,11 @@ class NoteBasedStereoLayout:
                     active_rail_cells,
                     rail_footprints,
                     rails_by_transverse,
+                    perf_stats,
                 )
                 if selected is not None:
                     return selected
+                perf_stats.candidate_attempts_rejected_before_rail_validation += 1
                 continue
 
             rail_cell_is_active = rail.rail_id in active_rail_cells
@@ -1195,9 +1386,17 @@ class NoteBasedStereoLayout:
                 rail.rail_id,
                 rail_footprints,
                 rails_by_transverse,
+                perf_stats,
             ):
+                perf_stats.candidate_attempts_rejected_by_footprint_collision += 1
                 continue
-            if _footprint_collides(occupancy, footprint):
+            if _timed_footprint_collides(
+                occupancy,
+                footprint,
+                perf_stats,
+                "assignment",
+            ):
+                perf_stats.candidate_attempts_rejected_by_footprint_collision += 1
                 continue
 
             slot = ActivationSlot(
@@ -1223,6 +1422,7 @@ class NoteBasedStereoLayout:
                 active_rail_cells[rail.rail_id] = candidate.slot_index == 0
             elif candidate.slot_index == 0:
                 active_rail_cells[rail.rail_id] = True
+            perf_stats.candidate_attempts_accepted += 1
             return selected
 
         return None
@@ -1238,13 +1438,32 @@ class NoteBasedStereoLayout:
         active_rail_cells: dict[str, bool],
         rail_footprints: dict[str, _Footprint],
         rails_by_transverse: dict[int, set[str]],
+        perf_stats: _PerformanceStats,
     ) -> SlotAssignment | None:
+        upgrade_start = time.perf_counter()
+        perf_stats.rail_center_upgrade_attempted += 1
+
+        def reject(reason: str | None = None) -> None:
+            perf_stats.rail_center_upgrade_rejected += 1
+            if reason == "missing_track_block":
+                perf_stats.rail_center_upgrade_rejected_by_missing_track_block += 1
+            elif reason == "reserved_air_collision":
+                perf_stats.rail_center_upgrade_rejected_by_reserved_air_collision += 1
+            elif reason == "center_footprint_collision":
+                perf_stats.rail_center_upgrade_rejected_by_center_footprint_collision += 1
+            perf_stats.rail_center_upgrade_total_seconds += (
+                time.perf_counter() - upgrade_start
+            )
+
         if candidate.slot_index != 0:
+            reject()
             return None
         if active_rail_cells.get(rail.rail_id) is not False:
+            reject()
             return None
         slot_key = (rail.rail_id, candidate.slot_index)
         if slot_key in used_slots:
+            reject()
             return None
 
         local_footprint = self._assignment_local_footprint(
@@ -1257,7 +1476,9 @@ class NoteBasedStereoLayout:
             rail.rail_id,
             rail_footprints,
             rails_by_transverse,
+            perf_stats,
         ):
+            reject("center_footprint_collision")
             return None
 
         footprint = self._assignment_footprint(
@@ -1272,16 +1493,32 @@ class NoteBasedStereoLayout:
         )
         projected = _copy_footprint_occupancy(occupancy)
         if not _remove_one_occupied_block(projected, rail_center, "track_block"):
+            reject("missing_track_block")
             return None
         if not _remove_one_occupied_block(projected, below(rail_center), "track_block"):
+            reject("missing_track_block")
             return None
-        if _footprint_collides(projected, footprint):
+        if _timed_footprint_collides(
+            projected,
+            footprint,
+            perf_stats,
+            "upgrade",
+        ):
+            if any(position in projected.occupied for position, _ in footprint.reserved_air):
+                reject("reserved_air_collision")
+            else:
+                reject("center_footprint_collision")
             return None
 
         _occupy_footprint(projected, footprint)
         _replace_footprint_occupancy(occupancy, projected)
         active_rail_cells[rail.rail_id] = True
         used_slots.add(slot_key)
+        perf_stats.rail_center_upgrade_accepted += 1
+        perf_stats.candidate_attempts_accepted += 1
+        perf_stats.rail_center_upgrade_total_seconds += (
+            time.perf_counter() - upgrade_start
+        )
 
         slot = ActivationSlot(
             rail_id=rail.rail_id,
@@ -1310,8 +1547,11 @@ class NoteBasedStereoLayout:
         rails_by_transverse: dict[int, set[str]],
         rail_stats: _RailValidationStats,
         split_stats: _NoteLevelCenterSplitStats,
+        perf_stats: _PerformanceStats,
     ) -> list[SlotAssignment] | None:
+        split_start = time.perf_counter()
         if not self.config.enable_note_level_center_split:
+            perf_stats.center_split_total_seconds += time.perf_counter() - split_start
             return None
         if emitter.pan_zone != "CENTER":
             return None
@@ -1344,6 +1584,8 @@ class NoteBasedStereoLayout:
             rail_footprints_copy,
             rails_by_transverse_copy,
             rail_stats,
+            perf_stats,
+            "center_split",
         )
         right_assignment = None
         if left_assignment is not None:
@@ -1360,6 +1602,8 @@ class NoteBasedStereoLayout:
                 rail_footprints_copy,
                 rails_by_transverse_copy,
                 rail_stats,
+                perf_stats,
+                "center_split",
             )
 
         accepted = left_assignment is not None and right_assignment is not None
@@ -1384,6 +1628,7 @@ class NoteBasedStereoLayout:
 
         if not accepted:
             split_stats.failed += 1
+            perf_stats.center_split_total_seconds += time.perf_counter() - split_start
             return None
 
         _replace_footprint_occupancy(occupancy, occupancy_copy)
@@ -1394,6 +1639,7 @@ class NoteBasedStereoLayout:
         _replace_transverse_index(rails_by_transverse, rails_by_transverse_copy)
         split_stats.accepted += 1
         split_stats.emitters_added += 2
+        perf_stats.center_split_total_seconds += time.perf_counter() - split_start
         return [left_assignment, right_assignment]
 
     def _center_split_emitters(
@@ -1505,7 +1751,10 @@ class NoteBasedStereoLayout:
         rail_footprints: dict[str, _Footprint],
         rails_by_transverse: dict[int, set[str]],
         stats: _RailValidationStats,
+        perf_stats: _PerformanceStats,
+        pass_name: str,
     ) -> bool:
+        validation_start = time.perf_counter()
         rail_center = self._position_from_offsets(
             0,
             rail.offset_y,
@@ -1518,6 +1767,8 @@ class NoteBasedStereoLayout:
             for rail_id in rails_by_transverse.get(transverse, ())
         }
         stats.candidate_validation_count += 1
+        assert stats.call_count_by_pass is not None
+        stats.call_count_by_pass[pass_name] += 1
         stats.total_rails_checked_per_candidate += len(relevant_rail_ids)
         stats.max_rails_checked_per_candidate = max(
             stats.max_rails_checked_per_candidate,
@@ -1541,9 +1792,12 @@ class NoteBasedStereoLayout:
             ranges_overlap = _ranges_overlap(rail_range, existing_range)
             y_gap = abs(rail.offset_y - existing.offset_y)
             stats.rail_pairs_checked += 1
+            assert stats.rail_pairs_checked_by_pass is not None
+            stats.rail_pairs_checked_by_pass[pass_name] += 1
 
             if ranges_overlap and y_gap < self.config.min_rail_center_y_gap:
                 stats.rejected_by_same_plane_y_gap += 1
+                stats.rejected_by_activation_overlap += 1
                 self._append_rail_validation_issue(
                     stats,
                     rail,
@@ -1557,12 +1811,20 @@ class NoteBasedStereoLayout:
                     "activation transverse range y gap too small",
                     None,
                 )
+                elapsed = time.perf_counter() - validation_start
+                stats.elapsed_seconds += elapsed
+                perf_stats.rail_validation_total_seconds += elapsed
                 return False
 
+            collision_start = time.perf_counter()
             collision_position = _first_footprint_collision(
                 rail_footprint,
                 rail_footprints[existing.rail_id],
             )
+            collision_elapsed = time.perf_counter() - collision_start
+            perf_stats.footprint_collision_total_seconds += collision_elapsed
+            perf_stats.rail_footprint_collision_elapsed_seconds += collision_elapsed
+            perf_stats.footprint_collision_check_count += 1
             if collision_position is not None:
                 stats.rejected_by_full_footprint_collision += 1
                 self._append_rail_validation_issue(
@@ -1578,8 +1840,15 @@ class NoteBasedStereoLayout:
                     "rail footprint collision",
                     collision_position,
                 )
+                elapsed = time.perf_counter() - validation_start
+                stats.elapsed_seconds += elapsed
+                perf_stats.rail_validation_total_seconds += elapsed
                 return False
 
+        stats.accepted_count += 1
+        elapsed = time.perf_counter() - validation_start
+        stats.elapsed_seconds += elapsed
+        perf_stats.rail_validation_total_seconds += elapsed
         return True
 
     def _append_rail_validation_issue(
@@ -1632,6 +1901,7 @@ class NoteBasedStereoLayout:
         rail_id: str,
         rail_footprints: dict[str, _Footprint],
         rails_by_transverse: dict[int, set[str]],
+        perf_stats: _PerformanceStats,
     ) -> bool:
         relevant_rail_ids = {
             existing_rail_id
@@ -1646,8 +1916,17 @@ class NoteBasedStereoLayout:
             if existing_rail_id == rail_id:
                 continue
             rail_footprint = rail_footprints[existing_rail_id]
+            collision_start = time.perf_counter()
             if _first_footprint_collision(footprint, rail_footprint) is not None:
+                collision_elapsed = time.perf_counter() - collision_start
+                perf_stats.footprint_collision_total_seconds += collision_elapsed
+                perf_stats.rail_footprint_collision_elapsed_seconds += collision_elapsed
+                perf_stats.footprint_collision_check_count += 1
                 return True
+            collision_elapsed = time.perf_counter() - collision_start
+            perf_stats.footprint_collision_total_seconds += collision_elapsed
+            perf_stats.rail_footprint_collision_elapsed_seconds += collision_elapsed
+            perf_stats.footprint_collision_check_count += 1
         return False
 
     def _assignment_footprint(
@@ -1977,16 +2256,33 @@ class NoteBasedStereoLayout:
         sorted_candidates = _sort_pan_zone_candidates(candidates)
         if generation_stats is not None:
             assert generation_stats.candidate_counts_by_pass is not None
+            assert generation_stats.candidate_count_before_truncation_by_pass is not None
+            assert generation_stats.candidate_count_after_truncation_by_pass is not None
+            assert generation_stats.candidate_truncation_count_by_pass is not None
+            assert generation_stats.mirror_candidate_truncation_count_by_pass is not None
+            before_truncation = len(sorted_candidates)
+            after_truncation = min(before_truncation, candidate_limit_value)
             generation_stats.candidate_counts_by_pass[pass_name].append(
-                min(len(sorted_candidates), candidate_limit_value)
+                after_truncation
             )
-            if len(sorted_candidates) > candidate_limit_value:
+            generation_stats.candidate_count_before_truncation_by_pass[pass_name] += (
+                before_truncation
+            )
+            generation_stats.candidate_count_after_truncation_by_pass[pass_name] += (
+                after_truncation
+            )
+            if before_truncation > candidate_limit_value:
                 generation_stats.candidate_truncation_count += 1
-                generation_stats.mirror_candidate_truncated_count += sum(
+                generation_stats.candidate_truncation_count_by_pass[pass_name] += 1
+                truncated_mirrors = sum(
                     1
                     for candidate in sorted_candidates[candidate_limit_value:]
                     if candidate.depth_mirrored
                 )
+                generation_stats.mirror_candidate_truncated_count += truncated_mirrors
+                generation_stats.mirror_candidate_truncation_count_by_pass[
+                    pass_name
+                ] += truncated_mirrors
 
         return sorted_candidates[:candidate_limit_value]
 
@@ -2442,6 +2738,16 @@ def _sort_pan_zone_candidates(
     )
 
 
+def _count_items(values: dict[str, int] | None) -> tuple[tuple[str, int], ...]:
+    if not values:
+        return ()
+    return tuple(
+        (key, int(value))
+        for key, value in sorted(values.items())
+        if value
+    )
+
+
 def _pan_normalization_scale_for_song(song: Song) -> float:
     return _pan_normalization_scale(
         note.final_panning
@@ -2744,6 +3050,24 @@ def _remove_one_occupied_block(
     if not block_types:
         del occupancy.occupied[position]
     return True
+
+
+def _timed_footprint_collides(
+    occupancy: _FootprintOccupancy,
+    footprint: _Footprint,
+    perf_stats: _PerformanceStats,
+    category: str,
+) -> bool:
+    start = time.perf_counter()
+    collides = _footprint_collides(occupancy, footprint)
+    elapsed = time.perf_counter() - start
+    perf_stats.footprint_collision_total_seconds += elapsed
+    perf_stats.footprint_collision_check_count += 1
+    if category == "upgrade":
+        perf_stats.upgrade_footprint_collision_elapsed_seconds += elapsed
+    else:
+        perf_stats.assignment_footprint_collision_elapsed_seconds += elapsed
+    return collides
 
 
 def _note_based_preview_footprint_entries(
