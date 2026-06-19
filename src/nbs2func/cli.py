@@ -281,8 +281,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--depth-mirror-penalty",
         type=float,
-        default=0.1,
-        help="Extra cost for -Y mirror candidates. Defaults to 0.1.",
+        default=0.0,
+        help="Extra cost for -Y mirror candidates. Defaults to 0.0.",
     )
     parser.add_argument(
         "--lateral-step-penalty",

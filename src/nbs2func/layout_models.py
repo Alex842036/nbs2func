@@ -471,7 +471,7 @@ class StereoLayoutConfig:
     enable_depth_mirror_candidates: bool = True
     preferred_depth_sign: int = 1
     allow_negative_depth_offsets: bool = True
-    depth_mirror_penalty: float = 0.1
+    depth_mirror_penalty: float = 0.0
     lateral_step_penalty: float = 0.5
     allow_adjacent_pan_zone_fallback_for_failed: bool = True
     adjacent_zone_fallback_only_after_strict_failed: bool = True

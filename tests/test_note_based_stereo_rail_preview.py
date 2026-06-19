@@ -943,6 +943,60 @@ class NoteBasedStereoRailPreviewTest(unittest.TestCase):
         self.assertIn(mirror, candidates)
         self.assertIn(lateral, candidates)
 
+    def test_default_depth_mirror_penalty_is_zero(self) -> None:
+        self.assertEqual(StereoLayoutConfig().depth_mirror_penalty, 0.0)
+
+    def test_depth_mirrored_candidate_has_no_intrinsic_cost_penalty(self) -> None:
+        layout = NoteBasedStereoLayout(
+            origin=BlockPosition(0, 128, 0),
+            track_direction="east",
+        )
+        emitter = layout._ideal_emitters(_single_note_song())[0]
+        candidates: list = []
+
+        layout._add_candidates_for_position(
+            candidates,
+            set(),
+            emitter,
+            offset_y=emitter.ideal_offset_y,
+            offset_lateral=emitter.ideal_offset_lateral,
+            level=1,
+            y_movement=0,
+            lateral_movement=0,
+            slots=(0,),
+            pan_zone="CENTER",
+            candidate_panning=100,
+            radius_error=0,
+            pan_error_inside_zone=0,
+            movement_distance=0,
+            y_height_penalty=0,
+            depth_mirrored=False,
+            chosen_angle_degrees=0,
+        )
+        layout._add_candidates_for_position(
+            candidates,
+            set(),
+            emitter,
+            offset_y=emitter.ideal_offset_y,
+            offset_lateral=emitter.ideal_offset_lateral,
+            level=1,
+            y_movement=0,
+            lateral_movement=0,
+            slots=(0,),
+            pan_zone="CENTER",
+            candidate_panning=100,
+            radius_error=0,
+            pan_error_inside_zone=0,
+            movement_distance=0,
+            y_height_penalty=0,
+            depth_mirrored=True,
+            chosen_angle_degrees=0,
+        )
+
+        self.assertFalse(candidates[0].depth_mirrored)
+        self.assertTrue(candidates[1].depth_mirrored)
+        self.assertEqual(candidates[0].cost, candidates[1].cost)
+
     def test_preview_reports_negative_depth_usage(self) -> None:
         preview = NoteBasedStereoLayout(
             origin=BlockPosition(0, 128, 0),
