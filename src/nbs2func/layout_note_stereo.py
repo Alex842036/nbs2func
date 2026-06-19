@@ -1165,6 +1165,19 @@ class NoteBasedStereoLayout:
 
             rail_has_center_note = active_rail_cells.get(rail.rail_id)
             if rail_has_center_note is False and candidate.slot_index == 0:
+                selected = self._try_upgrade_side_only_rail_center(
+                    emitter,
+                    candidate,
+                    rail,
+                    tick,
+                    occupancy,
+                    used_slots,
+                    active_rail_cells,
+                    rail_footprints,
+                    rails_by_transverse,
+                )
+                if selected is not None:
+                    return selected
                 continue
 
             rail_cell_is_active = rail.rail_id in active_rail_cells
@@ -1213,6 +1226,75 @@ class NoteBasedStereoLayout:
             return selected
 
         return None
+
+    def _try_upgrade_side_only_rail_center(
+        self,
+        emitter: NoteEmitter,
+        candidate: EmitterCandidate,
+        rail: ActivationRail,
+        tick: int,
+        occupancy: _FootprintOccupancy,
+        used_slots: set[tuple[str, int]],
+        active_rail_cells: dict[str, bool],
+        rail_footprints: dict[str, _Footprint],
+        rails_by_transverse: dict[int, set[str]],
+    ) -> SlotAssignment | None:
+        if candidate.slot_index != 0:
+            return None
+        if active_rail_cells.get(rail.rail_id) is not False:
+            return None
+        slot_key = (rail.rail_id, candidate.slot_index)
+        if slot_key in used_slots:
+            return None
+
+        local_footprint = self._assignment_local_footprint(
+            emitter,
+            candidate,
+            rail_cell_is_active=True,
+        )
+        if self._emitter_collides_with_projected_rails(
+            local_footprint,
+            rail.rail_id,
+            rail_footprints,
+            rails_by_transverse,
+        ):
+            return None
+
+        footprint = self._assignment_footprint(
+            emitter,
+            candidate,
+            rail_cell_is_active=True,
+        )
+        rail_center = self._position_from_offsets(
+            tick,
+            rail.offset_y,
+            rail.offset_lateral,
+        )
+        projected = _copy_footprint_occupancy(occupancy)
+        if not _remove_one_occupied_block(projected, rail_center, "track_block"):
+            return None
+        if not _remove_one_occupied_block(projected, below(rail_center), "track_block"):
+            return None
+        if _footprint_collides(projected, footprint):
+            return None
+
+        _occupy_footprint(projected, footprint)
+        _replace_footprint_occupancy(occupancy, projected)
+        active_rail_cells[rail.rail_id] = True
+        used_slots.add(slot_key)
+
+        slot = ActivationSlot(
+            rail_id=rail.rail_id,
+            tick=tick,
+            slot_index=candidate.slot_index,
+            position=candidate.position,
+        )
+        return SlotAssignment(
+            emitter=emitter,
+            rail=rail,
+            slot=slot,
+            candidate=candidate,
+        )
 
     def _try_note_level_center_split(
         self,
@@ -2648,6 +2730,20 @@ def _replace_dict(target: dict, source: dict) -> None:
 def _replace_set(target: set, source: set) -> None:
     target.clear()
     target.update(source)
+
+
+def _remove_one_occupied_block(
+    occupancy: _FootprintOccupancy,
+    position: BlockPosition,
+    block_type: str,
+) -> bool:
+    block_types = occupancy.occupied.get(position)
+    if not block_types or block_type not in block_types:
+        return False
+    block_types.remove(block_type)
+    if not block_types:
+        del occupancy.occupied[position]
+    return True
 
 
 def _note_based_preview_footprint_entries(

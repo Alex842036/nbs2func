@@ -1,6 +1,12 @@
 import unittest
 
 import nbs2func.layout_note_stereo as note_stereo
+from nbs2func.layout_collision import (
+    _Footprint,
+    _FootprintOccupancy,
+    _footprint_collides,
+)
+from nbs2func.layout_geometry import above, below
 from nbs2func.layout import (
     ActivationRail,
     BlockPosition,
@@ -18,7 +24,7 @@ from nbs2func.layout_spatial_analyzer import (
     analyze_layout_spatial,
     build_layout_spatial_hint_index,
 )
-from nbs2func.layout_models import EmitterCandidate
+from nbs2func.layout_models import EmitterCandidate, RailRegistry
 from nbs2func.models import NoteEvent, Song, Track
 
 
@@ -582,6 +588,171 @@ class NoteBasedStereoRailPreviewTest(unittest.TestCase):
         self.assertIn("CENTER", zones)
         self.assertTrue({"L_INNER", "R_INNER"} & zones)
 
+    def test_side_first_rail_center_upgrade_allows_center_assignment(self) -> None:
+        layout = NoteBasedStereoLayout(
+            origin=BlockPosition(0, 128, 0),
+            track_direction="east",
+        )
+        emitter = layout._ideal_emitters(_single_note_song())[0]
+        context = _AssignmentContext()
+        side_candidate = _rail_slot_candidate(layout, slot_index=-1)
+        center_candidate = _rail_slot_candidate(layout, slot_index=0)
+
+        side_assignment = _try_assign_candidate(
+            layout,
+            emitter,
+            side_candidate,
+            context,
+        )
+        assert side_assignment is not None
+        rail_id = side_assignment.rail.rail_id
+
+        self.assertIs(context.active_rail_cells[rail_id], False)
+
+        center_assignment = _try_assign_candidate(
+            layout,
+            emitter,
+            center_candidate,
+            context,
+        )
+
+        self.assertIsNotNone(center_assignment)
+        self.assertIs(context.active_rail_cells[rail_id], True)
+        rail_center = center_candidate.position
+        self.assertNotIn("track_block", context.occupancy.occupied[rail_center])
+        self.assertIn("note_block", context.occupancy.occupied[rail_center])
+        self.assertNotIn("track_block", context.occupancy.occupied[below(rail_center)])
+        self.assertIn("instrument_block", context.occupancy.occupied[below(rail_center)])
+        self.assertIn("reserved_air", context.occupancy.reserved_air[above(rail_center)])
+
+    def test_center_first_same_rail_side_assignment_still_succeeds(self) -> None:
+        layout = NoteBasedStereoLayout(
+            origin=BlockPosition(0, 128, 0),
+            track_direction="east",
+        )
+        emitter = layout._ideal_emitters(_single_note_song())[0]
+        context = _AssignmentContext()
+        center_candidate = _rail_slot_candidate(layout, slot_index=0)
+        side_candidate = _rail_slot_candidate(layout, slot_index=1)
+
+        center_assignment = _try_assign_candidate(
+            layout,
+            emitter,
+            center_candidate,
+            context,
+        )
+        assert center_assignment is not None
+
+        side_assignment = _try_assign_candidate(
+            layout,
+            emitter,
+            side_candidate,
+            context,
+        )
+
+        self.assertIsNotNone(side_assignment)
+        self.assertIs(context.active_rail_cells[center_assignment.rail.rail_id], True)
+
+    def test_side_first_center_upgrade_fails_when_reserved_air_is_blocked(self) -> None:
+        layout = NoteBasedStereoLayout(
+            origin=BlockPosition(0, 128, 0),
+            track_direction="east",
+        )
+        emitter = layout._ideal_emitters(_single_note_song())[0]
+        context = _AssignmentContext()
+        side_candidate = _rail_slot_candidate(layout, slot_index=-1)
+        center_candidate = _rail_slot_candidate(layout, slot_index=0)
+        side_assignment = _try_assign_candidate(
+            layout,
+            emitter,
+            side_candidate,
+            context,
+        )
+        assert side_assignment is not None
+        rail_center = center_candidate.position
+        context.occupancy.occupied.setdefault(above(rail_center), []).append(
+            "track_block"
+        )
+
+        center_assignment = _try_assign_candidate(
+            layout,
+            emitter,
+            center_candidate,
+            context,
+        )
+
+        self.assertIsNone(center_assignment)
+        self.assertIs(context.active_rail_cells[side_assignment.rail.rail_id], False)
+        self.assertIn("track_block", context.occupancy.occupied[rail_center])
+        self.assertNotIn("note_block", context.occupancy.occupied[rail_center])
+
+    def test_side_first_center_upgrade_fails_with_unrelated_below_occupancy(self) -> None:
+        layout = NoteBasedStereoLayout(
+            origin=BlockPosition(0, 128, 0),
+            track_direction="east",
+        )
+        emitter = layout._ideal_emitters(_single_note_song())[0]
+        context = _AssignmentContext()
+        side_candidate = _rail_slot_candidate(layout, slot_index=-1)
+        center_candidate = _rail_slot_candidate(layout, slot_index=0)
+        side_assignment = _try_assign_candidate(
+            layout,
+            emitter,
+            side_candidate,
+            context,
+        )
+        assert side_assignment is not None
+        rail_center = center_candidate.position
+        context.occupancy.occupied[below(rail_center)].append("note_block")
+
+        center_assignment = _try_assign_candidate(
+            layout,
+            emitter,
+            center_candidate,
+            context,
+        )
+
+        self.assertIsNone(center_assignment)
+        self.assertIs(context.active_rail_cells[side_assignment.rail.rail_id], False)
+        self.assertIn("track_block", context.occupancy.occupied[below(rail_center)])
+        self.assertIn("note_block", context.occupancy.occupied[below(rail_center)])
+        self.assertNotIn("instrument_block", context.occupancy.occupied[below(rail_center)])
+
+    def test_second_center_assignment_on_same_rail_is_rejected(self) -> None:
+        layout = NoteBasedStereoLayout(
+            origin=BlockPosition(0, 128, 0),
+            track_direction="east",
+        )
+        emitter = layout._ideal_emitters(_single_note_song())[0]
+        context = _AssignmentContext()
+        center_candidate = _rail_slot_candidate(layout, slot_index=0)
+        first = _try_assign_candidate(layout, emitter, center_candidate, context)
+        assert first is not None
+
+        second = _try_assign_candidate(layout, emitter, center_candidate, context)
+
+        self.assertIsNone(second)
+
+    def test_track_block_note_block_collision_is_not_globally_allowed(self) -> None:
+        position = BlockPosition(0, 128, 0)
+        occupancy = _FootprintOccupancy(
+            occupied={position: ["track_block"]},
+            reserved_air={},
+        )
+        footprint = _Footprint(occupied=((position, "note_block"),))
+
+        self.assertTrue(_footprint_collides(occupancy, footprint))
+
+    def test_track_block_instrument_block_collision_is_not_globally_allowed(self) -> None:
+        position = BlockPosition(0, 127, 0)
+        occupancy = _FootprintOccupancy(
+            occupied={position: ["track_block"]},
+            reserved_air={},
+        )
+        footprint = _Footprint(occupied=((position, "instrument_block"),))
+
+        self.assertTrue(_footprint_collides(occupancy, footprint))
+
     def test_overlapping_lateral_range_close_rails_are_rejected(self) -> None:
         layout = NoteBasedStereoLayout(
             origin=BlockPosition(0, 128, 0),
@@ -1000,6 +1171,70 @@ class _StaticSpatialHintIndex:
         ):
             return self.segment
         return None
+
+
+class _AssignmentContext:
+    def __init__(self) -> None:
+        self.registry = RailRegistry(rails={})
+        self.candidate_values: dict[tuple[int, int], int] = {}
+        self.occupancy = _FootprintOccupancy(occupied={}, reserved_air={})
+        self.used_slots: set[tuple[str, int]] = set()
+        self.active_rail_cells: dict[str, bool] = {}
+        self.active_rails = {}
+        self.rail_footprints = {}
+        self.rails_by_transverse = {}
+        self.rail_stats = _RailValidationStats()
+
+
+def _try_assign_candidate(
+    layout: NoteBasedStereoLayout,
+    emitter,
+    candidate: EmitterCandidate,
+    context: _AssignmentContext,
+):
+    return layout._try_assign_emitter(
+        emitter,
+        (candidate,),
+        emitter.tick,
+        context.registry,
+        context.candidate_values,
+        context.occupancy,
+        context.used_slots,
+        context.active_rail_cells,
+        context.active_rails,
+        context.rail_footprints,
+        context.rails_by_transverse,
+        context.rail_stats,
+    )
+
+
+def _rail_slot_candidate(
+    layout: NoteBasedStereoLayout,
+    *,
+    slot_index: int,
+    tick: int = 0,
+    rail_offset_y: int = 12,
+    rail_offset_lateral: int = 0,
+) -> EmitterCandidate:
+    offset_lateral = rail_offset_lateral + slot_index
+    return EmitterCandidate(
+        emitter_id=f"candidate:{slot_index}",
+        position=layout._position_from_offsets(
+            tick,
+            rail_offset_y,
+            offset_lateral,
+        ),
+        offset_y=rail_offset_y,
+        offset_lateral=offset_lateral,
+        rail_offset_y=rail_offset_y,
+        rail_offset_lateral=rail_offset_lateral,
+        slot_index=slot_index,
+        level=0,
+        cost=0,
+        y_movement=0,
+        lateral_movement=slot_index,
+        pan_zone="CENTER",
+    )
 
 
 def _spatial_segment_hint(
