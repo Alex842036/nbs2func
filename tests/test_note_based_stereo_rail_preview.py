@@ -1,5 +1,6 @@
 import unittest
 
+import nbs2func.layout_note_stereo as note_stereo
 from nbs2func.layout import (
     ActivationRail,
     BlockPosition,
@@ -13,6 +14,7 @@ from nbs2func.layout import (
     build_layout_strategy,
 )
 from nbs2func.layout_spatial_analyzer import (
+    LayoutSpatialSegmentHint,
     analyze_layout_spatial,
     build_layout_spatial_hint_index,
 )
@@ -63,6 +65,154 @@ class NoteBasedStereoRailPreviewTest(unittest.TestCase):
         self.assertIsNotNone(hint)
         assert hint is not None
         self.assertEqual(hint.layer_id, 1)
+
+    def test_no_spatial_hint_has_no_pan_hint_score(self) -> None:
+        layout = NoteBasedStereoLayout(
+            origin=BlockPosition(0, 128, 0),
+            track_direction="east",
+        )
+        emitter = layout._ideal_emitters(_single_note_song())[0]
+
+        self.assertEqual(layout._candidate_pan_hint_score(emitter, "L_INNER"), 0.0)
+
+    def test_zero_weight_spatial_hint_keeps_candidate_costs_unchanged(self) -> None:
+        base_layout = NoteBasedStereoLayout(
+            origin=BlockPosition(0, 128, 0),
+            track_direction="east",
+            config=StereoLayoutConfig(allow_adjacent_pan_zone_fallback=True),
+        )
+        hint_layout = NoteBasedStereoLayout(
+            origin=BlockPosition(0, 128, 0),
+            track_direction="east",
+            config=StereoLayoutConfig(allow_adjacent_pan_zone_fallback=True),
+            spatial_hint_index=_StaticSpatialHintIndex(
+                _spatial_segment_hint("center_stable", layout_hint_weight=0.0)
+            ),
+        )
+        emitter = base_layout._ideal_emitters(_single_note_song())[0]
+
+        self.assertEqual(
+            base_layout._emitter_candidates(emitter),
+            hint_layout._emitter_candidates(emitter),
+        )
+
+    def test_center_stable_pan_hint_prefers_center_zone(self) -> None:
+        emitter = _emitter_for_panning(100)
+        hint = _spatial_segment_hint("center_stable")
+
+        center = _pan_hint_score(hint, emitter, "CENTER")
+        left_inner = _pan_hint_score(hint, emitter, "L_INNER")
+        right_inner = _pan_hint_score(hint, emitter, "R_INNER")
+
+        self.assertEqual(center, 0.0)
+        self.assertGreater(left_inner, center)
+        self.assertGreater(right_inner, center)
+
+    def test_left_stable_accepts_inner_and_mid_zones(self) -> None:
+        emitter = _emitter_for_panning(40)
+        hint = _spatial_segment_hint("left_stable")
+
+        self.assertAlmostEqual(_pan_hint_score(hint, emitter, "L_INNER"), 0.0)
+        self.assertAlmostEqual(_pan_hint_score(hint, emitter, "L_MID"), 0.0)
+        self.assertLess(
+            _pan_hint_score(hint, emitter, "L_EDGE"),
+            _pan_hint_score(hint, emitter, "R_MID"),
+        )
+
+    def test_far_left_stable_uses_angular_distance_not_zone_index(self) -> None:
+        emitter = _emitter_for_panning(0)
+        hint = _spatial_segment_hint("far_left_stable")
+
+        l_edge = _pan_hint_score(hint, emitter, "L_EDGE")
+        l_mid = _pan_hint_score(hint, emitter, "L_MID")
+        center = _pan_hint_score(hint, emitter, "CENTER")
+        r_mid = _pan_hint_score(hint, emitter, "R_MID")
+
+        self.assertEqual(l_edge, 0.0)
+        self.assertGreater(l_mid, l_edge)
+        self.assertLess(l_mid, center)
+        self.assertLess(l_mid, r_mid)
+
+    def test_right_side_pan_hint_is_symmetric(self) -> None:
+        emitter = _emitter_for_panning(200)
+        hint = _spatial_segment_hint("far_right_stable")
+
+        self.assertEqual(_pan_hint_score(hint, emitter, "R_EDGE"), 0.0)
+        self.assertLess(
+            _pan_hint_score(hint, emitter, "R_MID"),
+            _pan_hint_score(hint, emitter, "CENTER"),
+        )
+        self.assertLess(
+            _pan_hint_score(hint, emitter, "R_MID"),
+            _pan_hint_score(hint, emitter, "L_MID"),
+        )
+
+    def test_layout_hint_weight_scales_pan_hint_score(self) -> None:
+        emitter = _emitter_for_panning(100)
+        high = _spatial_segment_hint("center_stable", layout_hint_weight=1.0)
+        low = _spatial_segment_hint("center_stable", layout_hint_weight=0.25)
+
+        self.assertGreater(
+            _pan_hint_score(high, emitter, "R_EDGE"),
+            _pan_hint_score(low, emitter, "R_EDGE"),
+        )
+
+    def test_wide_or_split_uses_reduced_pan_mode_factor(self) -> None:
+        emitter = _emitter_for_panning(40)
+        stable = _spatial_segment_hint("left_stable")
+        wide = _spatial_segment_hint("wide_or_split")
+
+        self.assertAlmostEqual(
+            _pan_hint_score(wide, emitter, "R_MID"),
+            _pan_hint_score(stable, emitter, "R_MID") * 0.5,
+        )
+
+    def test_inactive_and_unknown_pan_hints_do_not_score(self) -> None:
+        emitter = _emitter_for_panning(100)
+
+        self.assertEqual(
+            _pan_hint_score(_spatial_segment_hint("inactive"), emitter, "R_EDGE"),
+            0.0,
+        )
+        self.assertEqual(
+            _pan_hint_score(_spatial_segment_hint("unknown"), emitter, "R_EDGE"),
+            0.0,
+        )
+
+    def test_insufficient_data_caps_pan_hint_score(self) -> None:
+        emitter = _emitter_for_panning(100)
+        flat = _spatial_segment_hint("center_stable", volume_contour_mode="flat")
+        insufficient = _spatial_segment_hint(
+            "center_stable",
+            volume_contour_mode="insufficient_data",
+        )
+
+        self.assertLess(
+            _pan_hint_score(insufficient, emitter, "R_EDGE"),
+            _pan_hint_score(flat, emitter, "R_EDGE"),
+        )
+
+    def test_spatial_pan_hint_does_not_change_candidate_generation_count(self) -> None:
+        config = StereoLayoutConfig(allow_adjacent_pan_zone_fallback=True)
+        base_layout = NoteBasedStereoLayout(
+            origin=BlockPosition(0, 128, 0),
+            track_direction="east",
+            config=config,
+        )
+        hint_layout = NoteBasedStereoLayout(
+            origin=BlockPosition(0, 128, 0),
+            track_direction="east",
+            config=config,
+            spatial_hint_index=_StaticSpatialHintIndex(
+                _spatial_segment_hint("center_stable")
+            ),
+        )
+        emitter = base_layout._ideal_emitters(_single_note_song())[0]
+
+        self.assertEqual(
+            len(base_layout._emitter_candidates(emitter)),
+            len(hint_layout._emitter_candidates(emitter)),
+        )
 
     def test_assignments_use_each_rail_slot_once_per_tick(self) -> None:
         preview = NoteBasedStereoLayout(
@@ -574,6 +724,78 @@ def _rail_index(
         transverse: {rail.rail_id}
         for transverse in layout._activation_transverse_keys(rail)
     }
+
+
+class _StaticSpatialHintIndex:
+    def __init__(self, segment: LayoutSpatialSegmentHint) -> None:
+        self.segment = segment
+
+    def get_segment(
+        self,
+        layer_id: int,
+        tick: int,
+    ) -> LayoutSpatialSegmentHint | None:
+        if (
+            layer_id == self.segment.layer_id
+            and self.segment.start_tick <= tick < self.segment.end_tick
+        ):
+            return self.segment
+        return None
+
+
+def _spatial_segment_hint(
+    pan_mode: str,
+    *,
+    layout_hint_weight: float = 1.0,
+    volume_contour_mode: str = "flat",
+) -> LayoutSpatialSegmentHint:
+    return LayoutSpatialSegmentHint(
+        layer_id=0,
+        start_tick=0,
+        end_tick=1024,
+        duration_ticks=1024,
+        window_count=1,
+        pan_mode=pan_mode,
+        pan_contour_mode="flat",
+        volume_mode="mid_stable",
+        volume_contour_mode=volume_contour_mode,
+        volume_contour={},
+        radius_layer_hint={"type": "none"},
+        lateral_substream_hint={"type": "none"},
+        layout_intent={},
+        continuity_priority="medium",
+        segment_note_count=8,
+        layout_hint_weight=layout_hint_weight,
+        hint_strength="strong" if layout_hint_weight >= 0.70 else "medium",
+    )
+
+
+def _emitter_for_panning(panning: float):
+    layout = NoteBasedStereoLayout(
+        origin=BlockPosition(0, 128, 0),
+        track_direction="east",
+    )
+    return layout._ideal_emitters(
+        Song(
+            name="Emitter",
+            author="tests",
+            length=1,
+            tracks=(_track_with_panning(0, panning),),
+        )
+    )[0]
+
+
+def _pan_hint_score(
+    hint: LayoutSpatialSegmentHint,
+    emitter,
+    candidate_pan_zone: str,
+) -> float:
+    return note_stereo._segment_pan_hint_score(
+        hint,
+        emitter,
+        candidate_pan_zone,
+        max_stereo_angle_degrees=90.0,
+    )
 
 
 def _delta(first: BlockPosition, second: BlockPosition) -> tuple[int, int, int]:

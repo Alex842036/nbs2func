@@ -72,6 +72,29 @@ from .layout_pan import (
 )
 from .models import NoteEvent, Song
 
+PAN_HINT_WEIGHT = 1.0
+
+PAN_MODE_FACTORS = {
+    "center_stable": 1.0,
+    "left_stable": 1.0,
+    "right_stable": 1.0,
+    "far_left_stable": 1.0,
+    "far_right_stable": 1.0,
+    "bimodal_left_right": 0.75,
+    "center_plus_side": 0.75,
+    "wide_or_split": 0.5,
+    "unknown": 0.0,
+    "inactive": 0.0,
+}
+
+SEGMENT_PAN_TARGET_INTERVALS = {
+    "center_stable": (-10.0, 10.0),
+    "left_stable": (-40.0, -10.0001),
+    "right_stable": (10.0001, 40.0),
+    "far_left_stable": (-90.0, -40.0001),
+    "far_right_stable": (40.0001, 90.0),
+}
+
 @dataclass
 class _RailValidationStats:
     rail_pairs_checked: int = 0
@@ -167,6 +190,21 @@ class NoteBasedStereoLayout:
         if self.spatial_hint_index is None:
             return None
         return self.spatial_hint_index.get_segment(layer_id, tick)
+
+    def _candidate_pan_hint_score(
+        self,
+        emitter: NoteEmitter,
+        candidate_pan_zone: str,
+    ) -> float:
+        segment = self._get_layout_spatial_segment_hint(emitter.track_id, emitter.tick)
+        if segment is None:
+            return 0.0
+        return _segment_pan_hint_score(
+            segment,
+            emitter,
+            candidate_pan_zone,
+            max_stereo_angle_degrees=self.config.max_stereo_angle_degrees,
+        )
 
     def _check_time_limit(self, total_start: float, stage: str) -> None:
         limit = self.config.preview_time_limit_seconds
@@ -2029,6 +2067,10 @@ class NoteBasedStereoLayout:
                     + abs(slot_index) * 0.2
                     + y_height_penalty * 0.2
                 )
+                cost += self._candidate_pan_hint_score(
+                    emitter,
+                    candidate_pan_zone,
+                )
                 if depth_mirrored:
                     cost += self.config.depth_mirror_penalty
                 if adjacent_zone_fallback:
@@ -2287,6 +2329,105 @@ def _merge_candidate_values(
         for candidate in candidates:
             key = (candidate.rail_offset_y, candidate.rail_offset_lateral)
             candidate_values[key] = candidate_values.get(key, 0) + 1
+
+
+def _segment_pan_hint_score(
+    segment: LayoutSpatialSegmentHint,
+    emitter: NoteEmitter,
+    candidate_pan_zone: str,
+    *,
+    max_stereo_angle_degrees: float,
+) -> float:
+    pan_mode_factor = PAN_MODE_FACTORS.get(segment.pan_mode, 0.0)
+    if pan_mode_factor <= 0.0 or segment.layout_hint_weight <= 0.0:
+        return 0.0
+
+    target_interval = _segment_pan_target_interval(
+        segment.pan_mode,
+        emitter,
+        max_stereo_angle_degrees=max_stereo_angle_degrees,
+    )
+    if target_interval is None:
+        return 0.0
+
+    effective_weight = segment.layout_hint_weight
+    if segment.volume_contour_mode == "insufficient_data":
+        effective_weight = min(effective_weight, 0.15)
+
+    candidate_interval = _pan_zone_angle_range(
+        candidate_pan_zone,
+        max_stereo_angle_degrees,
+    )
+    angular_distance = _interval_distance(candidate_interval, target_interval)
+    angular_pan_penalty = _clamp_unit(angular_distance / 90.0)
+    return (
+        effective_weight
+        * pan_mode_factor
+        * PAN_HINT_WEIGHT
+        * angular_pan_penalty
+    )
+
+
+def _segment_pan_target_interval(
+    pan_mode: str,
+    emitter: NoteEmitter,
+    *,
+    max_stereo_angle_degrees: float,
+) -> tuple[float, float] | None:
+    if pan_mode in SEGMENT_PAN_TARGET_INTERVALS:
+        return SEGMENT_PAN_TARGET_INTERVALS[pan_mode]
+    if pan_mode == "bimodal_left_right":
+        if emitter.final_panning < 100:
+            return _side_pan_target_interval("left", max_stereo_angle_degrees)
+        if emitter.final_panning > 100:
+            return _side_pan_target_interval("right", max_stereo_angle_degrees)
+        return None
+    if pan_mode == "center_plus_side":
+        note_zone = _pan_zone_for_panning(emitter.final_panning)
+        if note_zone == "CENTER":
+            return SEGMENT_PAN_TARGET_INTERVALS["center_stable"]
+        if emitter.final_panning < 100:
+            return SEGMENT_PAN_TARGET_INTERVALS["left_stable"]
+        if emitter.final_panning > 100:
+            return SEGMENT_PAN_TARGET_INTERVALS["right_stable"]
+        return None
+    if pan_mode == "wide_or_split":
+        if emitter.final_panning < 100:
+            return _side_pan_target_interval("left", max_stereo_angle_degrees)
+        if emitter.final_panning > 100:
+            return _side_pan_target_interval("right", max_stereo_angle_degrees)
+        return SEGMENT_PAN_TARGET_INTERVALS["center_stable"]
+    return None
+
+
+def _side_pan_target_interval(
+    side: str,
+    max_stereo_angle_degrees: float,
+) -> tuple[float, float]:
+    if side == "left":
+        edge_start = _pan_zone_angle_range("L_EDGE", max_stereo_angle_degrees)[0]
+        inner_end = _pan_zone_angle_range("L_INNER", max_stereo_angle_degrees)[1]
+        return (edge_start, inner_end)
+    inner_start = _pan_zone_angle_range("R_INNER", max_stereo_angle_degrees)[0]
+    edge_end = _pan_zone_angle_range("R_EDGE", max_stereo_angle_degrees)[1]
+    return (inner_start, edge_end)
+
+
+def _interval_distance(
+    a: tuple[float, float],
+    b: tuple[float, float],
+) -> float:
+    a_min, a_max = a
+    b_min, b_max = b
+    if a_max < b_min:
+        return b_min - a_max
+    if b_max < a_min:
+        return a_min - b_max
+    return 0.0
+
+
+def _clamp_unit(value: float) -> float:
+    return max(0.0, min(1.0, value))
 
 
 def _failed_emitter_examples(
