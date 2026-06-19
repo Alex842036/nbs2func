@@ -1892,18 +1892,7 @@ class NoteBasedStereoLayout:
             if len(candidates) >= generation_limit:
                 break
 
-        sorted_candidates = sorted(
-            candidates,
-            key=lambda candidate: (
-                abs(candidate.lateral_movement),
-                candidate.cost,
-                candidate.radius_error,
-                candidate.pan_error_inside_zone,
-                candidate.level,
-                abs(candidate.slot_index),
-                candidate.slot_index,
-            ),
-        )
+        sorted_candidates = _sort_pan_zone_candidates(candidates)
         if generation_stats is not None:
             assert generation_stats.candidate_counts_by_pass is not None
             generation_stats.candidate_counts_by_pass[pass_name].append(
@@ -2353,6 +2342,22 @@ def _merge_candidate_values(
         for candidate in candidates:
             key = (candidate.rail_offset_y, candidate.rail_offset_lateral)
             candidate_values[key] = candidate_values.get(key, 0) + 1
+
+
+def _sort_pan_zone_candidates(
+    candidates: list[EmitterCandidate],
+) -> list[EmitterCandidate]:
+    return sorted(
+        candidates,
+        key=lambda candidate: (
+            candidate.cost,
+            candidate.radius_error,
+            candidate.pan_error_inside_zone,
+            candidate.level,
+            abs(candidate.slot_index),
+            candidate.slot_index,
+        ),
+    )
 
 
 def _pan_normalization_scale_for_song(song: Song) -> float:

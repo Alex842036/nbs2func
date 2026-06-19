@@ -18,6 +18,7 @@ from nbs2func.layout_spatial_analyzer import (
     analyze_layout_spatial,
     build_layout_spatial_hint_index,
 )
+from nbs2func.layout_models import EmitterCandidate
 from nbs2func.models import NoteEvent, Song, Track
 
 
@@ -245,6 +246,71 @@ class NoteBasedStereoRailPreviewTest(unittest.TestCase):
             center_angle_candidates[0].cost,
             edge_angle_candidates[0].cost,
         )
+
+    def test_pan_zone_candidate_sort_uses_cost_before_lateral_movement(self) -> None:
+        zero_lateral_higher_cost = _candidate(
+            cost=2.0,
+            lateral_movement=0,
+        )
+        lateral_lower_cost = _candidate(
+            cost=1.0,
+            lateral_movement=3,
+        )
+
+        sorted_candidates = note_stereo._sort_pan_zone_candidates(
+            [zero_lateral_higher_cost, lateral_lower_cost]
+        )
+
+        self.assertIs(sorted_candidates[0], lateral_lower_cost)
+
+    def test_near_center_dynamic_cost_is_not_overridden_by_lateral_movement(self) -> None:
+        layout = NoteBasedStereoLayout(
+            origin=BlockPosition(0, 128, 0),
+            track_direction="east",
+        )
+        emitter = layout._ideal_emitters(_single_note_song())[0]
+        candidates: list = []
+        seen: set = set()
+
+        layout._add_candidates_for_position(
+            candidates,
+            seen,
+            emitter,
+            offset_y=emitter.ideal_offset_y + 1,
+            offset_lateral=emitter.ideal_offset_lateral,
+            level=1,
+            y_movement=1,
+            lateral_movement=0,
+            slots=(0,),
+            pan_zone="CENTER",
+            candidate_panning=100,
+            radius_error=0,
+            pan_error_inside_zone=0,
+            y_height_penalty=0,
+            chosen_angle_degrees=0,
+        )
+        layout._add_candidates_for_position(
+            candidates,
+            seen,
+            emitter,
+            offset_y=emitter.ideal_offset_y,
+            offset_lateral=emitter.ideal_offset_lateral + 1,
+            level=1,
+            y_movement=0,
+            lateral_movement=1,
+            slots=(0,),
+            pan_zone="CENTER",
+            candidate_panning=100,
+            radius_error=0,
+            pan_error_inside_zone=0,
+            y_height_penalty=0,
+            chosen_angle_degrees=0,
+        )
+
+        sorted_candidates = note_stereo._sort_pan_zone_candidates(candidates)
+
+        self.assertGreater(candidates[0].cost, candidates[1].cost)
+        self.assertEqual(sorted_candidates[0].lateral_movement, 1)
 
     def test_no_spatial_hint_has_no_pan_hint_score(self) -> None:
         layout = NoteBasedStereoLayout(
@@ -988,6 +1054,27 @@ def _pan_hint_score(
         emitter,
         candidate_pan_zone,
         max_stereo_angle_degrees=90.0,
+    )
+
+
+def _candidate(
+    *,
+    cost: float,
+    lateral_movement: int,
+) -> EmitterCandidate:
+    return EmitterCandidate(
+        emitter_id="candidate",
+        position=BlockPosition(0, 0, 0),
+        offset_y=0,
+        offset_lateral=lateral_movement,
+        rail_offset_y=0,
+        rail_offset_lateral=lateral_movement,
+        slot_index=0,
+        level=0,
+        cost=cost,
+        y_movement=0,
+        lateral_movement=lateral_movement,
+        pan_zone="CENTER",
     )
 
 

@@ -464,7 +464,6 @@ class StereoLayoutConfig:
     max_collision_records_before_abort: int = 50000
     enable_progress_logging: bool = False
     enable_note_level_center_split: bool = True
-    center_split_only_on_failed_assignment: bool = True
     center_split_left_pan: float = 75
     center_split_right_pan: float = 125
     center_split_volume_factor: float = 0.5
