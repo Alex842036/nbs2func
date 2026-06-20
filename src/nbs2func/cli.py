@@ -1235,6 +1235,23 @@ def _print_note_based_preview(report) -> None:
     print(f"  rail validation time: {report.rail_validation_total_seconds:.3f}s")
     print(f"  footprint collision time: {report.footprint_collision_total_seconds:.3f}s")
     print(f"  rail center upgrade time: {report.rail_center_upgrade_total_seconds:.3f}s")
+    print("  geometry skeleton cache:")
+    print(
+        "    hits / misses / unique keys: "
+        f"{report.geometry_skeleton_cache_hits} / "
+        f"{report.geometry_skeleton_cache_misses} / "
+        f"{report.geometry_skeleton_unique_key_count}"
+    )
+    print(
+        "    generated / reused skeleton candidates: "
+        f"{report.geometry_skeleton_candidates_generated} / "
+        f"{report.geometry_skeleton_candidates_reused}"
+    )
+    print(f"    hit rate: {report.geometry_skeleton_cache_hit_rate:.3f}")
+    if report.geometry_skeleton_top_key_counts:
+        print("    top key counts:")
+        for key_label, count in report.geometry_skeleton_top_key_counts:
+            print(f"      {key_label}: {count}")
     print("  candidate attempts:")
     print(f"    total: {report.candidate_attempt_count_total}")
     for pass_name, count in report.candidate_attempt_count_by_pass:

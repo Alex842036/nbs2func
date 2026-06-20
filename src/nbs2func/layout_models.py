@@ -433,6 +433,13 @@ class NoteBasedStereoRailLayoutPreview:
     rail_center_upgrade_rejected_by_missing_track_block: int = 0
     rail_center_upgrade_rejected_by_center_footprint_collision: int = 0
     rail_center_upgrade_rejected_by_reserved_air_collision: int = 0
+    geometry_skeleton_cache_hits: int = 0
+    geometry_skeleton_cache_misses: int = 0
+    geometry_skeleton_unique_key_count: int = 0
+    geometry_skeleton_candidates_generated: int = 0
+    geometry_skeleton_candidates_reused: int = 0
+    geometry_skeleton_cache_hit_rate: float = 0
+    geometry_skeleton_top_key_counts: tuple[tuple[str, int], ...] = ()
     failed_examples_after_pass1: tuple[str, ...] = ()
     failed_examples_after_pass2: tuple[str, ...] = ()
     failed_examples_after_pass3: tuple[str, ...] = ()

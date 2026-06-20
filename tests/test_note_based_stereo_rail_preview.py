@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 
 import nbs2func.layout_note_stereo as note_stereo
 from nbs2func.layout_collision import (
@@ -119,6 +120,12 @@ class NoteBasedStereoRailPreviewTest(unittest.TestCase):
             "rail_center_upgrade_attempted",
             "rail_center_upgrade_accepted",
             "rail_center_upgrade_rejected",
+            "geometry_skeleton_cache_hits",
+            "geometry_skeleton_cache_misses",
+            "geometry_skeleton_unique_key_count",
+            "geometry_skeleton_candidates_generated",
+            "geometry_skeleton_candidates_reused",
+            "geometry_skeleton_cache_hit_rate",
         )
         tuple_fields = (
             "candidate_attempt_count_by_pass",
@@ -128,6 +135,7 @@ class NoteBasedStereoRailPreviewTest(unittest.TestCase):
             "candidate_count_after_truncation_by_pass",
             "candidate_truncation_count_by_pass",
             "mirror_candidate_truncation_count_by_pass",
+            "geometry_skeleton_top_key_counts",
         )
 
         for field in numeric_fields:
@@ -136,6 +144,122 @@ class NoteBasedStereoRailPreviewTest(unittest.TestCase):
             self.assertIsInstance(getattr(preview, field), tuple)
         self.assertGreater(preview.candidate_attempt_count_total, 0)
         self.assertGreater(preview.candidate_attempts_accepted, 0)
+
+    def test_geometry_skeleton_cache_preserves_candidate_order(self) -> None:
+        layout = NoteBasedStereoLayout(
+            origin=BlockPosition(0, 128, 0),
+            track_direction="east",
+        )
+        emitter = layout._ideal_emitters(_single_note_song())[0]
+
+        uncached = layout._emitter_candidates(emitter)
+        cache: dict = {}
+        perf_stats = note_stereo._PerformanceStats()
+        cached = layout._emitter_candidates(
+            emitter,
+            geometry_skeleton_cache=cache,
+            perf_stats=perf_stats,
+        )
+
+        self.assertEqual(cached, uncached)
+        self.assertEqual(perf_stats.geometry_skeleton_cache_misses, 1)
+        self.assertEqual(perf_stats.geometry_skeleton_cache_hits, 0)
+        self.assertEqual(len(cache), 1)
+
+    def test_geometry_skeleton_cache_hits_for_repeated_geometry(self) -> None:
+        layout = NoteBasedStereoLayout(
+            origin=BlockPosition(0, 128, 0),
+            track_direction="east",
+        )
+        emitters = layout._ideal_emitters(_two_tick_song())
+        cache: dict = {}
+        perf_stats = note_stereo._PerformanceStats()
+
+        first = layout._emitter_candidates(
+            emitters[0],
+            geometry_skeleton_cache=cache,
+            perf_stats=perf_stats,
+        )
+        second = layout._emitter_candidates(
+            emitters[1],
+            geometry_skeleton_cache=cache,
+            perf_stats=perf_stats,
+        )
+
+        self.assertEqual(len(cache), 1)
+        self.assertEqual(perf_stats.geometry_skeleton_cache_misses, 1)
+        self.assertEqual(perf_stats.geometry_skeleton_cache_hits, 1)
+        self.assertGreater(perf_stats.geometry_skeleton_candidates_generated, 0)
+        self.assertEqual(
+            perf_stats.geometry_skeleton_candidates_reused,
+            perf_stats.geometry_skeleton_candidates_generated,
+        )
+        self.assertNotEqual(first[0].position, second[0].position)
+        self.assertEqual(first[0].cost, second[0].cost)
+
+    def test_geometry_skeleton_cache_separates_different_pan_zones(self) -> None:
+        layout = NoteBasedStereoLayout(
+            origin=BlockPosition(0, 128, 0),
+            track_direction="east",
+        )
+        cache: dict = {}
+        perf_stats = note_stereo._PerformanceStats()
+
+        for emitter in layout._ideal_emitters(_pan_zone_song()):
+            layout._emitter_candidates(
+                emitter,
+                geometry_skeleton_cache=cache,
+                perf_stats=perf_stats,
+            )
+
+        self.assertEqual(len(cache), 3)
+        self.assertEqual(perf_stats.geometry_skeleton_cache_misses, 3)
+        self.assertEqual(perf_stats.geometry_skeleton_cache_hits, 0)
+
+    def test_geometry_skeleton_cache_does_not_merge_distinct_angles(self) -> None:
+        layout = NoteBasedStereoLayout(
+            origin=BlockPosition(0, 128, 0),
+            track_direction="east",
+        )
+        emitter = layout._ideal_emitters(_single_note_song())[0]
+        shifted = replace(
+            emitter,
+            emitter_id=f"{emitter.emitter_id}:shifted",
+            target_angle_degrees=emitter.target_angle_degrees + 0.01,
+        )
+        cache: dict = {}
+        perf_stats = note_stereo._PerformanceStats()
+
+        layout._emitter_candidates(
+            emitter,
+            geometry_skeleton_cache=cache,
+            perf_stats=perf_stats,
+        )
+        layout._emitter_candidates(
+            shifted,
+            geometry_skeleton_cache=cache,
+            perf_stats=perf_stats,
+        )
+
+        self.assertEqual(len(cache), 2)
+        self.assertEqual(perf_stats.geometry_skeleton_cache_misses, 2)
+        self.assertEqual(perf_stats.geometry_skeleton_cache_hits, 0)
+
+    def test_preview_reports_geometry_skeleton_cache_diagnostics(self) -> None:
+        preview = NoteBasedStereoLayout(
+            origin=BlockPosition(0, 128, 0),
+            track_direction="east",
+        ).layout_song(_three_note_song()).note_based_preview
+        assert preview is not None
+
+        self.assertGreaterEqual(preview.geometry_skeleton_cache_hits, 0)
+        self.assertGreaterEqual(preview.geometry_skeleton_cache_misses, 0)
+        self.assertGreater(preview.geometry_skeleton_unique_key_count, 0)
+        self.assertGreater(preview.geometry_skeleton_candidates_generated, 0)
+        self.assertGreaterEqual(preview.geometry_skeleton_candidates_reused, 0)
+        self.assertGreaterEqual(preview.geometry_skeleton_cache_hit_rate, 0)
+        self.assertLessEqual(preview.geometry_skeleton_cache_hit_rate, 1)
+        self.assertIsInstance(preview.geometry_skeleton_top_key_counts, tuple)
 
     def test_pan_normalization_does_not_mutate_raw_song_pans(self) -> None:
         song = _pan_range_song((50, 150))
