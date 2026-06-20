@@ -36,6 +36,69 @@ class MinecraftVersionProfile:
         return self.version_id
 
 
+JAVA_1_14_TO_1_20_NOTE_BLOCK_INSTRUMENTS = frozenset(
+    {
+        "harp",
+        "bass",
+        "basedrum",
+        "snare",
+        "hat",
+        "guitar",
+        "flute",
+        "bell",
+        "chime",
+        "xylophone",
+        "iron_xylophone",
+        "cow_bell",
+        "didgeridoo",
+        "bit",
+        "banjo",
+        "pling",
+    }
+)
+
+JAVA_1_21_NOTE_BLOCK_INSTRUMENTS = frozenset(
+    {
+        *JAVA_1_14_TO_1_20_NOTE_BLOCK_INSTRUMENTS,
+        "copper",
+        "exposed_copper",
+        "weathered_copper",
+        "oxidized_copper",
+    }
+)
+
+JAVA_1_14_TO_1_20_NOTE_BLOCK_BASE_BLOCKS = frozenset(
+    {
+        "minecraft:dirt",
+        "minecraft:oak_planks",
+        "minecraft:stone",
+        "minecraft:sand",
+        "minecraft:glass",
+        "minecraft:white_wool",
+        "minecraft:clay",
+        "minecraft:gold_block",
+        "minecraft:packed_ice",
+        "minecraft:bone_block",
+        "minecraft:iron_block",
+        "minecraft:soul_sand",
+        "minecraft:pumpkin",
+        "minecraft:emerald_block",
+        "minecraft:hay_block",
+        "minecraft:glowstone",
+    }
+)
+
+JAVA_1_21_NOTE_BLOCK_BASE_BLOCKS = frozenset(
+    {
+        *JAVA_1_14_TO_1_20_NOTE_BLOCK_BASE_BLOCKS,
+        "minecraft:copper_block",
+        "minecraft:exposed_copper",
+        "minecraft:weathered_copper",
+        "minecraft:oxidized_copper",
+    }
+)
+
+
 JAVA_1_16_5 = MinecraftVersionProfile(
     version_id="1.16.5",
     pack_format=6,
@@ -44,6 +107,8 @@ JAVA_1_16_5 = MinecraftVersionProfile(
     namespace="nbs",
     function_dir_name="functions",
     function_tag_dir_name="functions",
+    supported_note_block_instruments=JAVA_1_14_TO_1_20_NOTE_BLOCK_INSTRUMENTS,
+    supported_base_blocks=JAVA_1_14_TO_1_20_NOTE_BLOCK_BASE_BLOCKS,
 )
 
 
@@ -58,6 +123,10 @@ SUPPORTED_VERSION_PROFILES: dict[str, MinecraftVersionProfile] = {
         namespace="nbs",
         function_dir_name="functions",
         function_tag_dir_name="functions",
+        supported_note_block_instruments=(
+            JAVA_1_14_TO_1_20_NOTE_BLOCK_INSTRUMENTS
+        ),
+        supported_base_blocks=JAVA_1_14_TO_1_20_NOTE_BLOCK_BASE_BLOCKS,
         notes=("Profile data must be verified before public release.",),
     ),
     JAVA_1_16_5.version_id: JAVA_1_16_5,
@@ -69,6 +138,10 @@ SUPPORTED_VERSION_PROFILES: dict[str, MinecraftVersionProfile] = {
         namespace="nbs",
         function_dir_name="functions",
         function_tag_dir_name="functions",
+        supported_note_block_instruments=(
+            JAVA_1_14_TO_1_20_NOTE_BLOCK_INSTRUMENTS
+        ),
+        supported_base_blocks=JAVA_1_14_TO_1_20_NOTE_BLOCK_BASE_BLOCKS,
         notes=("Profile data must be verified before public release.",),
     ),
     "1.20.1": MinecraftVersionProfile(
@@ -79,6 +152,10 @@ SUPPORTED_VERSION_PROFILES: dict[str, MinecraftVersionProfile] = {
         namespace="nbs",
         function_dir_name="functions",
         function_tag_dir_name="functions",
+        supported_note_block_instruments=(
+            JAVA_1_14_TO_1_20_NOTE_BLOCK_INSTRUMENTS
+        ),
+        supported_base_blocks=JAVA_1_14_TO_1_20_NOTE_BLOCK_BASE_BLOCKS,
         notes=("Profile data must be verified before public release.",),
     ),
     "1.21.1": MinecraftVersionProfile(
@@ -89,6 +166,8 @@ SUPPORTED_VERSION_PROFILES: dict[str, MinecraftVersionProfile] = {
         namespace="nbs",
         function_dir_name="function",
         function_tag_dir_name="function",
+        supported_note_block_instruments=JAVA_1_21_NOTE_BLOCK_INSTRUMENTS,
+        supported_base_blocks=JAVA_1_21_NOTE_BLOCK_BASE_BLOCKS,
         notes=("Profile data must be verified before public release.",),
     ),
 }

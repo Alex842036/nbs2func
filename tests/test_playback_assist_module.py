@@ -1,6 +1,8 @@
 import unittest
+from dataclasses import replace
 
 from nbs2func.layout import BlockPosition
+from nbs2func.minecraft_version import JAVA_1_16_5, MinecraftVersionError
 from nbs2func.playback_assist_module import (
     PlaybackAssistModuleConfig,
     default_vehicle_spawn_position,
@@ -51,6 +53,20 @@ class PlaybackAssistCoordinateTests(unittest.TestCase):
         self.assertNotIn("Saddle:1b", text)
         self.assertNotIn("NoAI:1b", text)
         self.assertNotIn("@e[type=minecraft:pig,tag=toolpig]", text)
+
+    def test_playback_assist_rejects_unsupported_profile(self) -> None:
+        profile = replace(JAVA_1_16_5, supports_playback_assist=False)
+        config = PlaybackAssistModuleConfig(
+            enable_playback_assist=True,
+            minecraft_version_profile=profile,
+        )
+
+        with self.assertRaises(MinecraftVersionError) as context:
+            playback_assist_lines(config)
+
+        message = str(context.exception)
+        self.assertIn("Playback assist is not supported", message)
+        self.assertIn("1.16.5", message)
 
 
 if __name__ == "__main__":

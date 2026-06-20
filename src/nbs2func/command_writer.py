@@ -14,6 +14,7 @@ from .layout_models import (
 )
 from .minecraft_version import (
     DEFAULT_MINECRAFT_VERSION_PROFILE,
+    MinecraftVersionError,
     MinecraftVersionProfile,
     write_pack_mcmeta,
 )
@@ -51,7 +52,9 @@ class CommandWriterConfig:
     split_functions: bool = True
     function_namespace: str = "nbs"
     build_function_dir: str = "build"
-    minecraft_version_profile: MinecraftVersionProfile = DEFAULT_MINECRAFT_VERSION_PROFILE
+    minecraft_version_profile: MinecraftVersionProfile = (
+        DEFAULT_MINECRAFT_VERSION_PROFILE
+    )
     max_commands_per_build_part: int = 500
     schedule_delay_ticks_between_parts: int = 10
     build_player_name: str = "Alex842036"
@@ -75,6 +78,7 @@ class CommandWriterConfig:
     playback_button_block: str = "minecraft:stone_button"
     prepare_button_position: BlockPosition | None = None
     start_button_position: BlockPosition | None = None
+    requested_origin_y: int | None = None
 
 
 @dataclass(frozen=True)
@@ -151,7 +155,9 @@ class BasicMcfunctionWriter:
 
     def write_file(self, layout: LayoutResult, path: str | Path) -> CommandWriteResult:
         output_path = Path(path)
+        self._validate_config_capabilities()
         lines = self._lines(layout)
+        _validate_build_height(lines, self.config)
         command_count = _command_count(lines)
 
         if not self.config.split_functions:
@@ -170,7 +176,24 @@ class BasicMcfunctionWriter:
         )
 
     def write_text(self, layout: LayoutResult) -> str:
-        return _join_lines(self._lines(layout))
+        self._validate_config_capabilities(player_tp_build=False)
+        lines = self._lines(layout)
+        _validate_build_height(lines, self.config)
+        return _join_lines(lines)
+
+    def _validate_config_capabilities(self, player_tp_build: bool | None = None) -> None:
+        profile = self.config.minecraft_version_profile
+        uses_player_tp_build = (
+            self.config.split_functions
+            if player_tp_build is None
+            else player_tp_build
+        )
+        if uses_player_tp_build and not profile.supports_player_tp_build:
+            raise MinecraftVersionError(
+                "Player-tp build output is not supported for Minecraft Java "
+                f"{profile.version_id} by the current version profile. Disable "
+                "split functions or choose a supported target version."
+            )
 
     def _lines(self, layout: LayoutResult) -> list[str]:
         unknown_instruments = _unknown_instruments(layout)
@@ -202,6 +225,9 @@ class BasicMcfunctionWriter:
                     starter_tag=self.config.starter_tag,
                     starter_track_block=self.config.starter_track_block,
                     starter_cell_offset=self.config.starter_cell_offset,
+                    minecraft_version_profile=(
+                        self.config.minecraft_version_profile
+                    ),
                 ),
                 default_track_block=self.config.track_block,
                 repeater_block=self.config.repeater_block,
@@ -239,6 +265,9 @@ class BasicMcfunctionWriter:
                     playback_button_block=self.config.playback_button_block,
                     prepare_button_position=self.config.prepare_button_position,
                     start_button_position=self.config.start_button_position,
+                    minecraft_version_profile=(
+                        self.config.minecraft_version_profile
+                    ),
                 )
             )
         )
@@ -761,6 +790,35 @@ def _parse_coordinate(value: str) -> int:
     if value.startswith("~") or value.startswith("^"):
         raise ValueError(value)
     return int(float(value))
+
+
+def _validate_build_height(lines: list[str], config: CommandWriterConfig) -> None:
+    positions = tuple(
+        position
+        for line in lines
+        if (position := _line_primary_position(line)) is not None
+    )
+    if not positions:
+        return
+
+    min_y = min(position.y for position in positions)
+    max_y = max(position.y for position in positions)
+    profile = config.minecraft_version_profile
+    if profile.min_build_y <= min_y and max_y <= profile.max_build_y:
+        return
+
+    requested_origin_y = (
+        str(config.requested_origin_y)
+        if config.requested_origin_y is not None
+        else "unknown"
+    )
+    raise MinecraftVersionError(
+        "Generated structure exceeds Minecraft Java "
+        f"{profile.version_id} build height. Allowed Y range: "
+        f"{profile.min_build_y}..{profile.max_build_y}; "
+        f"requested origin_y={requested_origin_y}; generated min_y={min_y}; "
+        f"generated max_y={max_y}."
+    )
 
 
 def _build_bounding_box(positions: tuple[BlockPosition, ...]) -> BuildBoundingBox:

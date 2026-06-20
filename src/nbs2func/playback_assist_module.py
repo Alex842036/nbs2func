@@ -5,6 +5,11 @@ from pathlib import Path
 
 from .layout_geometry import DIRECTION_VECTORS, BlockPosition, normalize_direction
 from .layout_models import LayoutResult
+from .minecraft_version import (
+    DEFAULT_MINECRAFT_VERSION_PROFILE,
+    MinecraftVersionError,
+    MinecraftVersionProfile,
+)
 
 DEFAULT_START_MUSIC_COUNT = 10
 VEHICLE_STEP_DISTANCE = 1
@@ -29,6 +34,9 @@ class PlaybackAssistModuleConfig:
     playback_button_block: str = "minecraft:stone_button"
     prepare_button_position: BlockPosition | None = None
     start_button_position: BlockPosition | None = None
+    minecraft_version_profile: MinecraftVersionProfile = (
+        DEFAULT_MINECRAFT_VERSION_PROFILE
+    )
 
 
 @dataclass(frozen=True)
@@ -60,6 +68,7 @@ def playback_assist_lines(config: PlaybackAssistModuleConfig) -> list[str]:
 
     if not config.enable_playback_assist:
         return []
+    _validate_playback_assist_supported(config)
     if not config.player_name:
         raise ValueError("player_name is required when playback assist is enabled.")
 
@@ -206,6 +215,8 @@ def write_playback_assist_file(
 def playback_assist_debug_info(
     config: PlaybackAssistModuleConfig,
 ) -> PlaybackAssistDebugInfo:
+    if config.enable_playback_assist:
+        _validate_playback_assist_supported(config)
     start_count = start_music_count(config)
     total_track_length = max(0, config.total_track_length)
     direction = normalize_direction(config.track_direction)
@@ -328,6 +339,22 @@ def total_track_length_from_layout(
         for cell in layout.cells
     ]
     return max(0, max(distances)) + 2
+
+
+def _validate_playback_assist_supported(config: PlaybackAssistModuleConfig) -> None:
+    profile = config.minecraft_version_profile
+    if not profile.supports_playback_assist:
+        raise MinecraftVersionError(
+            "Playback assist is not supported for Minecraft Java "
+            f"{profile.version_id} by the current version profile. Disable "
+            "playback assist or choose a supported target version."
+        )
+    if not profile.supports_minecart_playback_assist:
+        raise MinecraftVersionError(
+            "Minecart playback assist is not supported for Minecraft Java "
+            f"{profile.version_id} by the current version profile. Disable "
+            "playback assist or choose a supported target version."
+        )
 
 
 def _prepare_chain_commands(

@@ -72,10 +72,19 @@ def test_parser_accepts_minecraft_version_argument() -> None:
     assert alias_args.minecraft_version == "1.16"
 
 
+@pytest.mark.parametrize(
+    ("version_arg", "expected_profile"),
+    (
+        ("1.16", "1.16.5"),
+        ("1.20", "1.20.1"),
+    ),
+)
 def test_generation_uses_minecraft_version_alias_profile(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    version_arg: str,
+    expected_profile: str,
 ) -> None:
     nbs_path = _write_placeholder_nbs(tmp_path)
     captured = {}
@@ -86,7 +95,7 @@ def test_generation_uses_minecraft_version_alias_profile(
             "main.py",
             str(nbs_path),
             "--minecraft-version",
-            "1.16",
+            version_arg,
             "--output",
             str(tmp_path / "out"),
         ],
@@ -115,7 +124,33 @@ def test_generation_uses_minecraft_version_alias_profile(
 
     capsys.readouterr()
     assert result == 0
-    assert captured["profile"].version_id == "1.16.5"
+    assert captured["profile"].version_id == expected_profile
+
+
+def test_cli_unknown_minecraft_version_exits_before_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    nbs_path = _write_placeholder_nbs(tmp_path)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            str(nbs_path),
+            "--minecraft-version",
+            "1.12.2",
+        ],
+    )
+
+    result = cli.main()
+
+    stdout = capsys.readouterr().out
+    assert result == 1
+    assert "Unsupported Minecraft Java version" in stdout
+    assert "1.16.5" in stdout
+    assert "1.20" in stdout
 
 
 def test_analyze_layout_spatial_does_not_call_layout_writer_or_create_build_output(

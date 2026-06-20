@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Final
 
+from .minecraft_version import MinecraftVersionError, MinecraftVersionProfile
+from .models import Song
+
 DEFAULT_INSTRUMENT_BLOCK: Final = "minecraft:stone"
 
 GRAVITY_BLOCKS: Final[set[str]] = {
@@ -51,6 +54,29 @@ INSTRUMENT_BLOCKS: Final[dict[int, str]] = {
     19: "minecraft:oxidized_copper",  # oxidized copper
 }
 
+INSTRUMENT_NOTE_BLOCK_INSTRUMENTS: Final[dict[int, str]] = {
+    0: "harp",
+    1: "bass",
+    2: "basedrum",
+    3: "snare",
+    4: "hat",
+    5: "guitar",
+    6: "flute",
+    7: "bell",
+    8: "chime",
+    9: "xylophone",
+    10: "iron_xylophone",
+    11: "cow_bell",
+    12: "didgeridoo",
+    13: "bit",
+    14: "banjo",
+    15: "pling",
+    16: "copper",
+    17: "exposed_copper",
+    18: "weathered_copper",
+    19: "oxidized_copper",
+}
+
 INSTRUMENT_NAME_ALIASES: Final[dict[str, int]] = {
     "harp": 0,
     "piano": 0,
@@ -93,6 +119,64 @@ def get_instrument_block(instrument: int | str) -> str:
 def has_instrument_mapping(instrument: int | str) -> bool:
     instrument_id = _normalize_instrument(instrument)
     return instrument_id in INSTRUMENT_BLOCKS if instrument_id is not None else False
+
+
+def get_note_block_instrument(instrument: int | str) -> str | None:
+    instrument_id = _normalize_instrument(instrument)
+    if instrument_id is None:
+        return None
+
+    return INSTRUMENT_NOTE_BLOCK_INSTRUMENTS.get(instrument_id)
+
+
+def validate_song_instruments_for_version(
+    song: Song,
+    profile: MinecraftVersionProfile,
+) -> None:
+    if (
+        not profile.supported_note_block_instruments
+        or not profile.supported_base_blocks
+    ):
+        raise MinecraftVersionError(
+            "Minecraft Java "
+            f"{profile.version_id} profile is missing instrument compatibility "
+            "data. Cannot safely generate output for this target version."
+        )
+
+    for track in song.tracks:
+        for note in track.notes:
+            minecraft_instrument = get_note_block_instrument(note.instrument)
+            base_block = get_instrument_block(note.instrument)
+            if minecraft_instrument is None:
+                raise MinecraftVersionError(
+                    "Unsupported NBS instrument for Minecraft Java "
+                    f"{profile.version_id}: instrument={note.instrument!r}, "
+                    f"mapped Minecraft instrument=<unknown>, "
+                    f"mapped base block={base_block}, first seen tick={note.tick}, "
+                    f"track={track.id}, layer={note.layer}. "
+                    "Use a supported instrument, edit the NBS file, or choose a "
+                    "target version/profile that supports this mapping."
+                )
+            if minecraft_instrument not in profile.supported_note_block_instruments:
+                raise MinecraftVersionError(
+                    "Unsupported note block instrument for Minecraft Java "
+                    f"{profile.version_id}: NBS instrument={note.instrument!r}, "
+                    f"mapped Minecraft instrument={minecraft_instrument}, "
+                    f"mapped base block={base_block}, first seen tick={note.tick}, "
+                    f"track={track.id}, layer={note.layer}. "
+                    "Use a supported instrument, edit the NBS file, or choose a "
+                    "higher/supported target version."
+                )
+            if base_block not in profile.supported_base_blocks:
+                raise MinecraftVersionError(
+                    "Unsupported note block base block for Minecraft Java "
+                    f"{profile.version_id}: NBS instrument={note.instrument!r}, "
+                    f"mapped Minecraft instrument={minecraft_instrument}, "
+                    f"mapped base block={base_block}, first seen tick={note.tick}, "
+                    f"track={track.id}, layer={note.layer}. "
+                    "Use a supported instrument, edit the NBS file, or choose a "
+                    "higher/supported target version."
+                )
 
 
 def is_gravity_block(block_id: str) -> bool:

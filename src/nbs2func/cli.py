@@ -9,6 +9,7 @@ import pstats
 import re
 
 from .command_writer import CommandWriterConfig, write_mcfunction
+from .instrument_mapping import validate_song_instruments_for_version
 from .layout import build_layout_strategy, layout_song
 from .layout_geometry import BlockPosition, LayoutError
 from .layout_models import StereoLayoutConfig
@@ -677,6 +678,12 @@ def main() -> int:
     if args.analyze_layout_spatial:
         return _run_analyze_layout_spatial(args, song)
 
+    try:
+        validate_song_instruments_for_version(song, version_profile)
+    except MinecraftVersionError as exc:
+        print(f"Error: {exc}")
+        return 1
+
     print("Song")
     print(f"  file: {path}")
     print(f"  name: {song.name}")
@@ -1013,6 +1020,7 @@ def main() -> int:
             args.start_button_y,
             args.start_button_z,
         ),
+        minecraft_version_profile=version_profile,
     )
     if args.enable_playback_assist:
         try:
@@ -1117,6 +1125,7 @@ def main() -> int:
             playback_button_block=args.playback_button_block,
             prepare_button_position=playback_config.prepare_button_position,
             start_button_position=playback_config.start_button_position,
+            requested_origin_y=args.origin_y,
         ),
     )
 

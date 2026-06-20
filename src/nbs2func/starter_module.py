@@ -9,6 +9,11 @@ from .layout_geometry import (
     opposite_direction,
 )
 from .layout_models import LayoutCell, LayoutResult
+from .minecraft_version import (
+    DEFAULT_MINECRAFT_VERSION_PROFILE,
+    MinecraftVersionError,
+    MinecraftVersionProfile,
+)
 
 
 @dataclass(frozen=True)
@@ -21,6 +26,9 @@ class StarterModuleConfig:
     starter_tag: str = "nbs_starter"
     starter_track_block: str | None = None
     starter_cell_offset: int = -1
+    minecraft_version_profile: MinecraftVersionProfile = (
+        DEFAULT_MINECRAFT_VERSION_PROFILE
+    )
 
 
 @dataclass(frozen=True)
@@ -46,6 +54,13 @@ def starter_module_lines(
 
     if not config.enable_starter_module:
         return []
+    if not config.minecraft_version_profile.supports_starter_module:
+        raise MinecraftVersionError(
+            "Starter module is not supported for Minecraft Java "
+            f"{config.minecraft_version_profile.version_id} by the current "
+            "version profile. Disable starter module or choose a supported "
+            "target version."
+        )
 
     starter_track_block = config.starter_track_block or default_track_block
     cells = _starter_cells(layout, config)
