@@ -1,5 +1,7 @@
-# No external runtime dependencies yet.
+# No external runtime dependencies.
+
 #
-# nbs2func currently parses NBS files with Python's standard library.
-# To run the test suite locally, install pytest separately if needed:
-#   pip install pytest
+
+# nbs2func currently parses NBS files using Python's standard library.
+
+# Install development/test dependencies from requirements-dev.txt if needed.
