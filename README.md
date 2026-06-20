@@ -6,8 +6,6 @@ Current status: **v0.1.0-preview**.
 
 The project is usable for preview builds, including large note-based stereo tests, but it is still experimental. Back up your world before running generated functions.
 
-> **License note:** no open-source license has been selected yet. Until a license is added, all rights are reserved by default. See `LICENSE` before publishing or redistributing the project.
-
 ## What it generates
 
 `nbs2func` reads an `.nbs` file, computes note positions, and writes a generated datapack containing build functions. The build functions place:
