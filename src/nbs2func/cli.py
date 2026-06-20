@@ -339,7 +339,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--preview-time-limit-seconds",
         type=float,
-        default=600,
+        default=1200,
         help="Time limit for note_based_stereo preview. Defaults to 600 seconds.",
     )
     parser.add_argument(
