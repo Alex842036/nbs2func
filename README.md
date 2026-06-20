@@ -96,8 +96,8 @@ python main.py path\to\song.nbs `
   --layout-mode note_based_stereo `
   --direction east `
   --enable-playback-assist `
-  --playback-player-name YourName `
-  --build-player-name YourName
+  --playback-player-name <YourName> `
+  --build-player-name <YourName>
 ```
 
 For a small single-file debug output:
@@ -202,7 +202,7 @@ The optional playback assist module generates a minecart-based playback helper.
 Enable it with:
 
 ```powershell
---enable-playback-assist --playback-player-name YourName
+--enable-playback-assist --playback-player-name <YourName>
 ```
 
 Typical flow:
@@ -298,17 +298,6 @@ python main.py path\to\song.nbs `
 
 The old `--analyze-stereo` option has been removed.
 
-## Testing
-
-Run the test suite:
-
-```powershell
-$env:PYTHONPATH = "src"
-python -m pytest
-```
-
-The current test suite covers NBS reading, layout modes, datapack output, instrument/base-block validation, version profile behavior, playback assist, and note-based stereo preview behavior.
-
 ## Known limitations
 
 - `note_based_stereo` is still preview-quality and heuristic.
@@ -317,7 +306,8 @@ The current test suite covers NBS reading, layout modes, datapack output, instru
 - The split build mode teleports the configured build player between build windows.
 - Unsupported target-version instruments cause generation to fail; there is no silent fallback.
 - The project currently targets Minecraft Java Edition only, not Bedrock Edition.
-- No open-source license has been selected yet.
+- Song tempo adaptation is not implemented yet. 
+
 
 ## Project structure
 
