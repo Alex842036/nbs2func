@@ -5,44 +5,162 @@ import json
 from pathlib import Path
 
 
+class MinecraftVersionError(ValueError):
+    pass
+
+
 @dataclass(frozen=True)
 class MinecraftVersionProfile:
-    version: str
+    version_id: str
     pack_format: int
+    min_build_y: int
+    max_build_y: int
     namespace: str
     function_dir_name: str
     function_tag_dir_name: str
+    command_syntax_profile: str = "java_1_13_plus"
+    datapack_layout_profile: str = "java_functions"
+    supports_function_tags: bool = True
+    supports_player_tp_build: bool = True
+    supports_starter_module: bool = True
+    supports_playback_assist: bool = True
+    supports_minecart_playback_assist: bool = True
+    supported_note_block_instruments: frozenset[str] = frozenset()
+    supported_base_blocks: frozenset[str] = frozenset()
+    notes: tuple[str, ...] = ()
+
+    @property
+    def version(self) -> str:
+        """Compatibility alias for older callers."""
+
+        return self.version_id
 
 
 JAVA_1_16_5 = MinecraftVersionProfile(
-    version="1.16.5",
+    version_id="1.16.5",
     pack_format=6,
+    min_build_y=0,
+    max_build_y=255,
     namespace="nbs",
     function_dir_name="functions",
     function_tag_dir_name="functions",
 )
 
 
-def get_version_profile(version: str) -> MinecraftVersionProfile:
-    if version == JAVA_1_16_5.version:
-        return JAVA_1_16_5
-    raise ValueError(f"Unsupported Minecraft Java version: {version}")
+# Profile data for versions other than 1.16.5 is centralized here so it can be
+# verified before public release without changing writer or CLI code.
+SUPPORTED_VERSION_PROFILES: dict[str, MinecraftVersionProfile] = {
+    "1.14.4": MinecraftVersionProfile(
+        version_id="1.14.4",
+        pack_format=4,
+        min_build_y=0,
+        max_build_y=255,
+        namespace="nbs",
+        function_dir_name="functions",
+        function_tag_dir_name="functions",
+        notes=("Profile data must be verified before public release.",),
+    ),
+    JAVA_1_16_5.version_id: JAVA_1_16_5,
+    "1.18.2": MinecraftVersionProfile(
+        version_id="1.18.2",
+        pack_format=9,
+        min_build_y=-64,
+        max_build_y=319,
+        namespace="nbs",
+        function_dir_name="functions",
+        function_tag_dir_name="functions",
+        notes=("Profile data must be verified before public release.",),
+    ),
+    "1.20.1": MinecraftVersionProfile(
+        version_id="1.20.1",
+        pack_format=15,
+        min_build_y=-64,
+        max_build_y=319,
+        namespace="nbs",
+        function_dir_name="functions",
+        function_tag_dir_name="functions",
+        notes=("Profile data must be verified before public release.",),
+    ),
+    "1.21.1": MinecraftVersionProfile(
+        version_id="1.21.1",
+        pack_format=48,
+        min_build_y=-64,
+        max_build_y=319,
+        namespace="nbs",
+        function_dir_name="function",
+        function_tag_dir_name="function",
+        notes=("Profile data must be verified before public release.",),
+    ),
+}
+
+# Aliases select one explicit profile and do not imply compatibility with an
+# entire Minecraft minor-version series.
+VERSION_ALIASES: dict[str, str] = {
+    "1.14": "1.14.4",
+    "1.14.x": "1.14.4",
+    "1.16": "1.16.5",
+    "1.16.x": "1.16.5",
+    "1.18": "1.18.2",
+    "1.18.x": "1.18.2",
+    "1.20": "1.20.1",
+    "1.21": "1.21.1",
+}
+
+DEFAULT_MINECRAFT_VERSION = JAVA_1_16_5.version_id
+DEFAULT_MINECRAFT_VERSION_PROFILE = JAVA_1_16_5
+
+
+def get_minecraft_version_profile(version: str | None) -> MinecraftVersionProfile:
+    normalized = (version or "").strip()
+    if not normalized:
+        normalized = DEFAULT_MINECRAFT_VERSION
+
+    profile = SUPPORTED_VERSION_PROFILES.get(normalized)
+    if profile is not None:
+        return profile
+
+    alias_target = VERSION_ALIASES.get(normalized)
+    if alias_target is not None:
+        return SUPPORTED_VERSION_PROFILES[alias_target]
+
+    raise MinecraftVersionError(
+        "Unsupported Minecraft Java version: "
+        f"{version!r}. Supported exact profiles: "
+        f"{', '.join(supported_minecraft_versions())}. "
+        "Supported profile aliases: "
+        f"{', '.join(supported_minecraft_version_aliases())}. "
+        "Aliases select a specific profile and do not mean every patch version "
+        "in that series is supported."
+    )
+
+
+def get_version_profile(version: str | None) -> MinecraftVersionProfile:
+    return get_minecraft_version_profile(version)
+
+
+def supported_minecraft_versions() -> tuple[str, ...]:
+    return tuple(SUPPORTED_VERSION_PROFILES)
+
+
+def supported_minecraft_version_aliases() -> tuple[str, ...]:
+    return tuple(VERSION_ALIASES)
 
 
 def write_pack_mcmeta(
     datapack_root: Path,
-    profile: MinecraftVersionProfile,
+    profile: MinecraftVersionProfile | None = None,
     description: str | None = None,
 ) -> None:
+    version_profile = profile or DEFAULT_MINECRAFT_VERSION_PROFILE
     datapack_root.mkdir(parents=True, exist_ok=True)
     pack_description = (
         description
         if description is not None
-        else f"Generated by nbs2func for Minecraft Java {profile.version}"
+        else f"Generated by nbs2func for Minecraft Java {version_profile.version_id}"
     )
     data = {
         "pack": {
-            "pack_format": profile.pack_format,
+            "pack_format": version_profile.pack_format,
             "description": pack_description,
         }
     }

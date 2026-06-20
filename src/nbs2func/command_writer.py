@@ -12,7 +12,11 @@ from .layout_models import (
     NoteBasedStereoRailLayoutPreview,
     SlotAssignment,
 )
-from .minecraft_version import JAVA_1_16_5, MinecraftVersionProfile, write_pack_mcmeta
+from .minecraft_version import (
+    DEFAULT_MINECRAFT_VERSION_PROFILE,
+    MinecraftVersionProfile,
+    write_pack_mcmeta,
+)
 from .layout_geometry import (
     DIRECTION_VECTORS,
     BlockPosition,
@@ -47,7 +51,7 @@ class CommandWriterConfig:
     split_functions: bool = True
     function_namespace: str = "nbs"
     build_function_dir: str = "build"
-    minecraft_version_profile: MinecraftVersionProfile = JAVA_1_16_5
+    minecraft_version_profile: MinecraftVersionProfile = DEFAULT_MINECRAFT_VERSION_PROFILE
     max_commands_per_build_part: int = 500
     schedule_delay_ticks_between_parts: int = 10
     build_player_name: str = "Alex842036"

@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 
 from nbs2func import cli
+from nbs2func.command_writer import CommandWriteResult
+from nbs2func.layout_models import LayoutResult
 from nbs2func.models import NoteEvent, Song, Track
 
 
@@ -54,7 +56,66 @@ def test_parser_keeps_existing_cli_arguments_available() -> None:
     assert args.analyze_stereo is False
     assert args.analysis_detail == "summary"
     assert args.layout_mode == "basic_linear"
+    assert args.minecraft_version == "1.16.5"
     assert args.output == "build"
+
+
+def test_parser_accepts_minecraft_version_argument() -> None:
+    exact_args = cli.build_parser().parse_args(
+        ["song.nbs", "--minecraft-version", "1.16.5"]
+    )
+    alias_args = cli.build_parser().parse_args(
+        ["song.nbs", "--minecraft-version", "1.16"]
+    )
+
+    assert exact_args.minecraft_version == "1.16.5"
+    assert alias_args.minecraft_version == "1.16"
+
+
+def test_generation_uses_minecraft_version_alias_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    nbs_path = _write_placeholder_nbs(tmp_path)
+    captured = {}
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            str(nbs_path),
+            "--minecraft-version",
+            "1.16",
+            "--output",
+            str(tmp_path / "out"),
+        ],
+    )
+    monkeypatch.setattr(cli, "read_nbs", lambda path: _song())
+    monkeypatch.setattr(cli, "build_layout_strategy", lambda **kwargs: object())
+    monkeypatch.setattr(
+        cli,
+        "layout_song",
+        lambda song, strategy: LayoutResult(
+            mode="test",
+            cells=(),
+            notes=(),
+            conflicts=(),
+        ),
+    )
+    monkeypatch.setattr(cli, "total_track_length_from_layout", lambda *args: 0)
+
+    def fake_write_mcfunction(layout, path, config):
+        captured["profile"] = config.minecraft_version_profile
+        return CommandWriteResult(total_commands=0, split_function_parts=1)
+
+    monkeypatch.setattr(cli, "write_mcfunction", fake_write_mcfunction)
+
+    result = cli.main()
+
+    capsys.readouterr()
+    assert result == 0
+    assert captured["profile"].version_id == "1.16.5"
 
 
 def test_analyze_layout_spatial_does_not_call_layout_writer_or_create_build_output(

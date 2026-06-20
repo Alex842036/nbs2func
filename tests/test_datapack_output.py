@@ -6,7 +6,12 @@ from pathlib import Path
 from nbs2func.cli import sanitize_datapack_name
 from nbs2func.command_writer import BasicMcfunctionWriter, CommandWriterConfig
 from nbs2func.layout import BlockPosition, LayoutCell, LayoutResult
-from nbs2func.minecraft_version import JAVA_1_16_5, get_version_profile
+from nbs2func.minecraft_version import (
+    JAVA_1_16_5,
+    MinecraftVersionError,
+    get_minecraft_version_profile,
+    get_version_profile,
+)
 
 
 class DatapackOutputTest(unittest.TestCase):
@@ -55,10 +60,39 @@ class DatapackOutputTest(unittest.TestCase):
         profile = get_version_profile("1.16.5")
 
         self.assertEqual(profile.version, "1.16.5")
+        self.assertEqual(profile.version_id, "1.16.5")
         self.assertEqual(profile.pack_format, 6)
         self.assertEqual(profile.namespace, "nbs")
         self.assertEqual(profile.function_dir_name, "functions")
         self.assertEqual(profile.function_tag_dir_name, "functions")
+
+    def test_default_minecraft_profile_is_java_1_16_5(self) -> None:
+        self.assertEqual(get_minecraft_version_profile(None).version_id, "1.16.5")
+        self.assertEqual(get_minecraft_version_profile("").version_id, "1.16.5")
+
+    def test_minecraft_version_exact_profiles_and_aliases(self) -> None:
+        self.assertEqual(
+            get_minecraft_version_profile("1.16.5").version_id,
+            "1.16.5",
+        )
+        self.assertEqual(
+            get_minecraft_version_profile("1.16").version_id,
+            "1.16.5",
+        )
+        self.assertEqual(
+            get_minecraft_version_profile("1.20").version_id,
+            "1.20.1",
+        )
+
+    def test_unknown_minecraft_version_raises_clear_error(self) -> None:
+        with self.assertRaises(MinecraftVersionError) as context:
+            get_minecraft_version_profile("1.12.2")
+
+        message = str(context.exception)
+        self.assertIn("1.12.2", message)
+        self.assertIn("1.16.5", message)
+        self.assertIn("1.16", message)
+        self.assertIn("Aliases select a specific profile", message)
 
 
 def _cell(tick: int) -> LayoutCell:

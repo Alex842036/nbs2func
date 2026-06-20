@@ -16,7 +16,12 @@ from .layout_spatial_analyzer import (
     analysis_report_to_jsonable,
     analyze_layout_spatial,
 )
-from .minecraft_version import get_version_profile, write_pack_mcmeta
+from .minecraft_version import (
+    DEFAULT_MINECRAFT_VERSION,
+    MinecraftVersionError,
+    get_minecraft_version_profile,
+    write_pack_mcmeta,
+)
 from .nbs_reader import read_nbs
 from .playback_assist_module import (
     PlaybackAssistModuleConfig,
@@ -632,13 +637,26 @@ def build_parser() -> argparse.ArgumentParser:
         default="build",
         help="Function directory for split output. Defaults to build.",
     )
+    parser.add_argument(
+        "--minecraft-version",
+        default=DEFAULT_MINECRAFT_VERSION,
+        help=(
+            "Target Minecraft Java Edition profile. Defaults to 1.16.5. "
+            "Aliases such as 1.16 select a specific profile, not a full "
+            "minor-version series."
+        ),
+    )
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
     path = Path(args.file)
-    version_profile = get_version_profile("1.16.5")
+    try:
+        version_profile = get_minecraft_version_profile(args.minecraft_version)
+    except MinecraftVersionError as exc:
+        print(f"Error: {exc}")
+        return 1
 
     if not path.exists():
         print(f"Error: NBS file not found: {path}")
