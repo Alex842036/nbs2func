@@ -369,3 +369,11 @@ Possible future work:
 - `.schem` output;
 - GUI or visual preview tooling;
 - RCON or server-assisted build modes.
+
+## License
+
+This project is licensed under the MIT License. See `LICENSE` for the full license text.
+
+The MIT License applies to the `nbs2func` source code.
+
+Generated datapacks and `.mcfunction` files may contain musical arrangements derived from the input `.nbs` file. Users are responsible for ensuring they have the right to use, modify, and distribute their input songs and generated outputs.
