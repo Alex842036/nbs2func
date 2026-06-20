@@ -14,6 +14,7 @@ class MinecraftVersionProfile:
     version_id: str
     pack_format: int
     min_build_y: int
+    # Highest placeable block Y, inclusive. For example, 1.16.5 allows Y=255.
     max_build_y: int
     namespace: str
     function_dir_name: str
@@ -28,6 +29,18 @@ class MinecraftVersionProfile:
     supported_note_block_instruments: frozenset[str] = frozenset()
     supported_base_blocks: frozenset[str] = frozenset()
     notes: tuple[str, ...] = ()
+    data_status: str = "verified"
+
+    def __post_init__(self) -> None:
+        if self.data_status not in {"verified", "needs_verification", "experimental"}:
+            raise ValueError(
+                f"Invalid Minecraft profile data_status: {self.data_status}"
+            )
+        if self.min_build_y > self.max_build_y:
+            raise ValueError(
+                f"Invalid Minecraft build height range for {self.version_id}: "
+                f"{self.min_build_y}..{self.max_build_y}"
+            )
 
     @property
     def version(self) -> str:
@@ -36,18 +49,31 @@ class MinecraftVersionProfile:
         return self.version_id
 
 
-JAVA_1_14_TO_1_20_NOTE_BLOCK_INSTRUMENTS = frozenset(
+# Note block instrument names match instrument_mapping.INSTRUMENT_NOTE_BLOCK_INSTRUMENTS.
+BASE_NOTE_BLOCK_INSTRUMENTS = frozenset(
     {
         "harp",
         "bass",
         "basedrum",
         "snare",
         "hat",
+    }
+)
+
+JAVA_1_12_NOTE_BLOCK_INSTRUMENTS = frozenset(
+    {
+        *BASE_NOTE_BLOCK_INSTRUMENTS,
         "guitar",
         "flute",
         "bell",
         "chime",
         "xylophone",
+    }
+)
+
+JAVA_1_14_NOTE_BLOCK_INSTRUMENTS = frozenset(
+    {
+        *JAVA_1_12_NOTE_BLOCK_INSTRUMENTS,
         "iron_xylophone",
         "cow_bell",
         "didgeridoo",
@@ -59,7 +85,7 @@ JAVA_1_14_TO_1_20_NOTE_BLOCK_INSTRUMENTS = frozenset(
 
 JAVA_1_21_NOTE_BLOCK_INSTRUMENTS = frozenset(
     {
-        *JAVA_1_14_TO_1_20_NOTE_BLOCK_INSTRUMENTS,
+        *JAVA_1_14_NOTE_BLOCK_INSTRUMENTS,
         "copper",
         "exposed_copper",
         "weathered_copper",
@@ -67,7 +93,7 @@ JAVA_1_21_NOTE_BLOCK_INSTRUMENTS = frozenset(
     }
 )
 
-JAVA_1_14_TO_1_20_NOTE_BLOCK_BASE_BLOCKS = frozenset(
+JAVA_1_14_NOTE_BLOCK_BASE_BLOCKS = frozenset(
     {
         "minecraft:dirt",
         "minecraft:oak_planks",
@@ -90,7 +116,7 @@ JAVA_1_14_TO_1_20_NOTE_BLOCK_BASE_BLOCKS = frozenset(
 
 JAVA_1_21_NOTE_BLOCK_BASE_BLOCKS = frozenset(
     {
-        *JAVA_1_14_TO_1_20_NOTE_BLOCK_BASE_BLOCKS,
+        *JAVA_1_14_NOTE_BLOCK_BASE_BLOCKS,
         "minecraft:copper_block",
         "minecraft:exposed_copper",
         "minecraft:weathered_copper",
@@ -99,6 +125,8 @@ JAVA_1_21_NOTE_BLOCK_BASE_BLOCKS = frozenset(
 )
 
 
+# Pack format values are centralized here and verified against Java Edition data
+# pack format history; keep 1.16.5 at pack_format=6 to preserve existing output.
 JAVA_1_16_5 = MinecraftVersionProfile(
     version_id="1.16.5",
     pack_format=6,
@@ -107,13 +135,11 @@ JAVA_1_16_5 = MinecraftVersionProfile(
     namespace="nbs",
     function_dir_name="functions",
     function_tag_dir_name="functions",
-    supported_note_block_instruments=JAVA_1_14_TO_1_20_NOTE_BLOCK_INSTRUMENTS,
-    supported_base_blocks=JAVA_1_14_TO_1_20_NOTE_BLOCK_BASE_BLOCKS,
+    supported_note_block_instruments=JAVA_1_14_NOTE_BLOCK_INSTRUMENTS,
+    supported_base_blocks=JAVA_1_14_NOTE_BLOCK_BASE_BLOCKS,
 )
 
 
-# Profile data for versions other than 1.16.5 is centralized here so it can be
-# verified before public release without changing writer or CLI code.
 SUPPORTED_VERSION_PROFILES: dict[str, MinecraftVersionProfile] = {
     "1.14.4": MinecraftVersionProfile(
         version_id="1.14.4",
@@ -123,11 +149,8 @@ SUPPORTED_VERSION_PROFILES: dict[str, MinecraftVersionProfile] = {
         namespace="nbs",
         function_dir_name="functions",
         function_tag_dir_name="functions",
-        supported_note_block_instruments=(
-            JAVA_1_14_TO_1_20_NOTE_BLOCK_INSTRUMENTS
-        ),
-        supported_base_blocks=JAVA_1_14_TO_1_20_NOTE_BLOCK_BASE_BLOCKS,
-        notes=("Profile data must be verified before public release.",),
+        supported_note_block_instruments=JAVA_1_14_NOTE_BLOCK_INSTRUMENTS,
+        supported_base_blocks=JAVA_1_14_NOTE_BLOCK_BASE_BLOCKS,
     ),
     JAVA_1_16_5.version_id: JAVA_1_16_5,
     "1.18.2": MinecraftVersionProfile(
@@ -138,11 +161,8 @@ SUPPORTED_VERSION_PROFILES: dict[str, MinecraftVersionProfile] = {
         namespace="nbs",
         function_dir_name="functions",
         function_tag_dir_name="functions",
-        supported_note_block_instruments=(
-            JAVA_1_14_TO_1_20_NOTE_BLOCK_INSTRUMENTS
-        ),
-        supported_base_blocks=JAVA_1_14_TO_1_20_NOTE_BLOCK_BASE_BLOCKS,
-        notes=("Profile data must be verified before public release.",),
+        supported_note_block_instruments=JAVA_1_14_NOTE_BLOCK_INSTRUMENTS,
+        supported_base_blocks=JAVA_1_14_NOTE_BLOCK_BASE_BLOCKS,
     ),
     "1.20.1": MinecraftVersionProfile(
         version_id="1.20.1",
@@ -152,11 +172,8 @@ SUPPORTED_VERSION_PROFILES: dict[str, MinecraftVersionProfile] = {
         namespace="nbs",
         function_dir_name="functions",
         function_tag_dir_name="functions",
-        supported_note_block_instruments=(
-            JAVA_1_14_TO_1_20_NOTE_BLOCK_INSTRUMENTS
-        ),
-        supported_base_blocks=JAVA_1_14_TO_1_20_NOTE_BLOCK_BASE_BLOCKS,
-        notes=("Profile data must be verified before public release.",),
+        supported_note_block_instruments=JAVA_1_14_NOTE_BLOCK_INSTRUMENTS,
+        supported_base_blocks=JAVA_1_14_NOTE_BLOCK_BASE_BLOCKS,
     ),
     "1.21.1": MinecraftVersionProfile(
         version_id="1.21.1",
@@ -168,7 +185,6 @@ SUPPORTED_VERSION_PROFILES: dict[str, MinecraftVersionProfile] = {
         function_tag_dir_name="function",
         supported_note_block_instruments=JAVA_1_21_NOTE_BLOCK_INSTRUMENTS,
         supported_base_blocks=JAVA_1_21_NOTE_BLOCK_BASE_BLOCKS,
-        notes=("Profile data must be verified before public release.",),
     ),
 }
 
@@ -196,11 +212,11 @@ def get_minecraft_version_profile(version: str | None) -> MinecraftVersionProfil
 
     profile = SUPPORTED_VERSION_PROFILES.get(normalized)
     if profile is not None:
-        return profile
+        return _verified_profile(profile)
 
     alias_target = VERSION_ALIASES.get(normalized)
     if alias_target is not None:
-        return SUPPORTED_VERSION_PROFILES[alias_target]
+        return _verified_profile(SUPPORTED_VERSION_PROFILES[alias_target])
 
     raise MinecraftVersionError(
         "Unsupported Minecraft Java version: "
@@ -210,6 +226,17 @@ def get_minecraft_version_profile(version: str | None) -> MinecraftVersionProfil
         f"{', '.join(supported_minecraft_version_aliases())}. "
         "Aliases select a specific profile and do not mean every patch version "
         "in that series is supported."
+    )
+
+
+def _verified_profile(profile: MinecraftVersionProfile) -> MinecraftVersionProfile:
+    if profile.data_status == "verified":
+        return profile
+
+    raise MinecraftVersionError(
+        "Minecraft Java "
+        f"{profile.version_id} profile data is {profile.data_status}; "
+        "this target version is not enabled for generation yet."
     )
 
 

@@ -111,23 +111,73 @@ class DatapackOutputTest(unittest.TestCase):
         self.assertEqual(profile.function_dir_name, "functions")
         self.assertEqual(profile.function_tag_dir_name, "functions")
 
+    def test_supported_profiles_have_expected_pack_formats(self) -> None:
+        expected = {
+            "1.14.4": 4,
+            "1.16.5": 6,
+            "1.18.2": 9,
+            "1.20.1": 15,
+            "1.21.1": 48,
+        }
+
+        for version_id, pack_format in expected.items():
+            with self.subTest(version_id=version_id):
+                self.assertEqual(
+                    get_minecraft_version_profile(version_id).pack_format,
+                    pack_format,
+                )
+
+    def test_supported_profiles_have_inclusive_build_height_ranges(self) -> None:
+        expected = {
+            "1.14.4": (0, 255),
+            "1.16.5": (0, 255),
+            "1.18.2": (-64, 319),
+            "1.20.1": (-64, 319),
+            "1.21.1": (-64, 319),
+        }
+
+        for version_id, build_height in expected.items():
+            with self.subTest(version_id=version_id):
+                profile = get_minecraft_version_profile(version_id)
+                self.assertEqual(
+                    (profile.min_build_y, profile.max_build_y),
+                    build_height,
+                )
+
+    def test_supported_profiles_have_verified_data_and_module_flags(self) -> None:
+        for version_id in ("1.14.4", "1.16.5", "1.18.2", "1.20.1", "1.21.1"):
+            with self.subTest(version_id=version_id):
+                profile = get_minecraft_version_profile(version_id)
+                self.assertEqual(profile.data_status, "verified")
+                self.assertTrue(profile.supports_function_tags)
+                self.assertTrue(profile.supports_player_tp_build)
+                self.assertTrue(profile.supports_starter_module)
+                self.assertTrue(profile.supports_playback_assist)
+                self.assertTrue(profile.supports_minecart_playback_assist)
+
     def test_default_minecraft_profile_is_java_1_16_5(self) -> None:
         self.assertEqual(get_minecraft_version_profile(None).version_id, "1.16.5")
         self.assertEqual(get_minecraft_version_profile("").version_id, "1.16.5")
 
     def test_minecraft_version_exact_profiles_and_aliases(self) -> None:
+        expected_aliases = {
+            "1.14": "1.14.4",
+            "1.16": "1.16.5",
+            "1.18": "1.18.2",
+            "1.20": "1.20.1",
+            "1.21": "1.21.1",
+        }
+
         self.assertEqual(
             get_minecraft_version_profile("1.16.5").version_id,
             "1.16.5",
         )
-        self.assertEqual(
-            get_minecraft_version_profile("1.16").version_id,
-            "1.16.5",
-        )
-        self.assertEqual(
-            get_minecraft_version_profile("1.20").version_id,
-            "1.20.1",
-        )
+        for alias, version_id in expected_aliases.items():
+            with self.subTest(alias=alias):
+                self.assertEqual(
+                    get_minecraft_version_profile(alias).version_id,
+                    version_id,
+                )
 
     def test_unknown_minecraft_version_raises_clear_error(self) -> None:
         with self.assertRaises(MinecraftVersionError) as context:
