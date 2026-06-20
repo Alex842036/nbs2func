@@ -11,6 +11,8 @@ build/
 *.tmp
 generated_datapacks/
 test_outputs/
+analysis/
+codex_tasks/
 
 # Keep only the tiny demo file by default. Do not publish NBS files unless you
 # have the rights to distribute them.
