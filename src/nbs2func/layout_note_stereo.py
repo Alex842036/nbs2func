@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Iterable
 from collections import defaultdict
 from dataclasses import dataclass, replace
 
@@ -227,6 +228,9 @@ class _PerformanceStats:
     rail_center_upgrade_rejected_by_missing_track_block: int = 0
     rail_center_upgrade_rejected_by_center_footprint_collision: int = 0
     rail_center_upgrade_rejected_by_reserved_air_collision: int = 0
+    rail_center_upgrade_occupancy_copy_count: int = 0
+    rail_center_upgrade_local_rollback_count: int = 0
+    rail_center_upgrade_local_remove_count: int = 0
     geometry_skeleton_cache_hits: int = 0
     geometry_skeleton_cache_misses: int = 0
     geometry_skeleton_candidates_generated: int = 0
@@ -709,6 +713,15 @@ class NoteBasedStereoLayout:
             ),
             rail_center_upgrade_rejected_by_reserved_air_collision=(
                 perf_stats.rail_center_upgrade_rejected_by_reserved_air_collision
+            ),
+            rail_center_upgrade_occupancy_copy_count=(
+                perf_stats.rail_center_upgrade_occupancy_copy_count
+            ),
+            rail_center_upgrade_local_rollback_count=(
+                perf_stats.rail_center_upgrade_local_rollback_count
+            ),
+            rail_center_upgrade_local_remove_count=(
+                perf_stats.rail_center_upgrade_local_remove_count
             ),
             failed_examples_after_pass1=retry_stats.failed_examples_after_pass1,
             failed_examples_after_pass2=retry_stats.failed_examples_after_pass2,
@@ -1588,27 +1601,56 @@ class NoteBasedStereoLayout:
             rail.offset_y,
             rail.offset_lateral,
         )
-        projected = _copy_footprint_occupancy(occupancy)
-        if not _remove_one_occupied_block(projected, rail_center, "track_block"):
+        rail_center_below = below(rail_center)
+        removed_positions = (rail_center, rail_center_below)
+        occupied_before_remove = _snapshot_position_entries(
+            occupancy.occupied,
+            removed_positions,
+        )
+        if not _remove_one_occupied_block(occupancy, rail_center, "track_block"):
             reject("missing_track_block")
             return None
-        if not _remove_one_occupied_block(projected, below(rail_center), "track_block"):
+        perf_stats.rail_center_upgrade_local_remove_count += 1
+        if not _remove_one_occupied_block(occupancy, rail_center_below, "track_block"):
+            _restore_position_entries(occupancy.occupied, occupied_before_remove)
+            perf_stats.rail_center_upgrade_local_rollback_count += 1
             reject("missing_track_block")
             return None
+        perf_stats.rail_center_upgrade_local_remove_count += 1
         if _timed_footprint_collides(
-            projected,
+            occupancy,
             footprint,
             perf_stats,
             "upgrade",
         ):
-            if any(position in projected.occupied for position, _ in footprint.reserved_air):
+            reserved_air_collision = any(
+                position in occupancy.occupied
+                for position, _ in footprint.reserved_air
+            )
+            _restore_position_entries(occupancy.occupied, occupied_before_remove)
+            perf_stats.rail_center_upgrade_local_rollback_count += 1
+            if reserved_air_collision:
                 reject("reserved_air_collision")
             else:
                 reject("center_footprint_collision")
             return None
 
-        _occupy_footprint(projected, footprint)
-        _replace_footprint_occupancy(occupancy, projected)
+        occupied_before_commit = _snapshot_position_entries(
+            occupancy.occupied,
+            _positions_with_removed_first(footprint.occupied, removed_positions),
+        )
+        occupied_before_commit.update(occupied_before_remove)
+        reserved_air_before_commit = _snapshot_position_entries(
+            occupancy.reserved_air,
+            (position for position, _ in footprint.reserved_air),
+        )
+        try:
+            _occupy_footprint(occupancy, footprint)
+        except Exception:
+            _restore_position_entries(occupancy.occupied, occupied_before_commit)
+            _restore_position_entries(occupancy.reserved_air, reserved_air_before_commit)
+            perf_stats.rail_center_upgrade_local_rollback_count += 1
+            raise
         active_rail_cells[rail.rail_id] = True
         used_slots.add(slot_key)
         perf_stats.rail_center_upgrade_accepted += 1
@@ -3408,6 +3450,41 @@ def _remove_one_occupied_block(
     if not block_types:
         del occupancy.occupied[position]
     return True
+
+
+def _snapshot_position_entries(
+    entries_by_position: dict[BlockPosition, list[str]],
+    positions: Iterable[BlockPosition],
+) -> dict[BlockPosition, list[str] | None]:
+    snapshot: dict[BlockPosition, list[str] | None] = {}
+    for position in positions:
+        entries = entries_by_position.get(position)
+        snapshot[position] = list(entries) if entries is not None else None
+    return snapshot
+
+
+def _restore_position_entries(
+    entries_by_position: dict[BlockPosition, list[str]],
+    snapshot: dict[BlockPosition, list[str] | None],
+) -> None:
+    for position, entries in snapshot.items():
+        if entries is None:
+            entries_by_position.pop(position, None)
+        else:
+            entries_by_position[position] = list(entries)
+
+
+def _positions_with_removed_first(
+    footprint_entries: tuple[tuple[BlockPosition, str], ...],
+    removed_positions: tuple[BlockPosition, ...],
+) -> tuple[BlockPosition, ...]:
+    positions = list(removed_positions)
+    seen = set(positions)
+    for position, _ in footprint_entries:
+        if position not in seen:
+            positions.append(position)
+            seen.add(position)
+    return tuple(positions)
 
 
 def _timed_footprint_collides(

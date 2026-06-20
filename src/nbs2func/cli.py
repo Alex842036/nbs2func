@@ -1310,6 +1310,12 @@ def _print_note_based_preview(report) -> None:
         f"{report.rail_center_upgrade_rejected_by_center_footprint_collision} / "
         f"{report.rail_center_upgrade_rejected_by_reserved_air_collision}"
     )
+    print(
+        "    occupancy copies / local removes / local rollbacks: "
+        f"{report.rail_center_upgrade_occupancy_copy_count} / "
+        f"{report.rail_center_upgrade_local_remove_count} / "
+        f"{report.rail_center_upgrade_local_rollback_count}"
+    )
     if report.candidate_count_before_truncation_by_pass:
         print("  candidate count before truncation by pass:")
         for pass_name, count in report.candidate_count_before_truncation_by_pass:

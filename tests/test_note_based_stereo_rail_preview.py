@@ -1,5 +1,6 @@
 import unittest
 from dataclasses import replace
+from unittest import mock
 
 import nbs2func.layout_note_stereo as note_stereo
 from nbs2func.layout_collision import (
@@ -812,6 +813,9 @@ class NoteBasedStereoRailPreviewTest(unittest.TestCase):
         self.assertNotIn("track_block", context.occupancy.occupied[below(rail_center)])
         self.assertIn("instrument_block", context.occupancy.occupied[below(rail_center)])
         self.assertIn("reserved_air", context.occupancy.reserved_air[above(rail_center)])
+        self.assertEqual(context.perf_stats.rail_center_upgrade_occupancy_copy_count, 0)
+        self.assertEqual(context.perf_stats.rail_center_upgrade_local_remove_count, 2)
+        self.assertEqual(context.perf_stats.rail_center_upgrade_local_rollback_count, 0)
 
     def test_center_first_same_rail_side_assignment_still_succeeds(self) -> None:
         layout = NoteBasedStereoLayout(
@@ -861,6 +865,14 @@ class NoteBasedStereoRailPreviewTest(unittest.TestCase):
         context.occupancy.occupied.setdefault(above(rail_center), []).append(
             "track_block"
         )
+        occupied_before = {
+            position: list(blocks)
+            for position, blocks in context.occupancy.occupied.items()
+        }
+        reserved_air_before = {
+            position: list(blocks)
+            for position, blocks in context.occupancy.reserved_air.items()
+        }
 
         center_assignment = _try_assign_candidate(
             layout,
@@ -873,6 +885,10 @@ class NoteBasedStereoRailPreviewTest(unittest.TestCase):
         self.assertIs(context.active_rail_cells[side_assignment.rail.rail_id], False)
         self.assertIn("track_block", context.occupancy.occupied[rail_center])
         self.assertNotIn("note_block", context.occupancy.occupied[rail_center])
+        self.assertEqual(context.occupancy.occupied, occupied_before)
+        self.assertEqual(context.occupancy.reserved_air, reserved_air_before)
+        self.assertEqual(context.perf_stats.rail_center_upgrade_occupancy_copy_count, 0)
+        self.assertEqual(context.perf_stats.rail_center_upgrade_local_rollback_count, 1)
 
     def test_side_first_center_upgrade_fails_with_unrelated_below_occupancy(self) -> None:
         layout = NoteBasedStereoLayout(
@@ -905,6 +921,96 @@ class NoteBasedStereoRailPreviewTest(unittest.TestCase):
         self.assertIn("track_block", context.occupancy.occupied[below(rail_center)])
         self.assertIn("note_block", context.occupancy.occupied[below(rail_center)])
         self.assertNotIn("instrument_block", context.occupancy.occupied[below(rail_center)])
+
+    def test_side_first_center_upgrade_restores_center_when_below_track_is_missing(
+        self,
+    ) -> None:
+        layout = NoteBasedStereoLayout(
+            origin=BlockPosition(0, 128, 0),
+            track_direction="east",
+        )
+        emitter = layout._ideal_emitters(_single_note_song())[0]
+        context = _AssignmentContext()
+        side_candidate = _rail_slot_candidate(layout, slot_index=-1)
+        center_candidate = _rail_slot_candidate(layout, slot_index=0)
+        side_assignment = _try_assign_candidate(
+            layout,
+            emitter,
+            side_candidate,
+            context,
+        )
+        assert side_assignment is not None
+        rail_center = center_candidate.position
+        rail_center_below = below(rail_center)
+        center_entries_before = list(context.occupancy.occupied[rail_center])
+        note_stereo._remove_one_occupied_block(
+            context.occupancy,
+            rail_center_below,
+            "track_block",
+        )
+
+        center_assignment = _try_assign_candidate(
+            layout,
+            emitter,
+            center_candidate,
+            context,
+        )
+
+        self.assertIsNone(center_assignment)
+        self.assertEqual(context.occupancy.occupied[rail_center], center_entries_before)
+        self.assertNotIn(rail_center_below, context.occupancy.occupied)
+        self.assertIs(context.active_rail_cells[side_assignment.rail.rail_id], False)
+        self.assertEqual(context.perf_stats.rail_center_upgrade_local_remove_count, 1)
+        self.assertEqual(context.perf_stats.rail_center_upgrade_local_rollback_count, 1)
+
+    def test_side_first_center_upgrade_rolls_back_if_commit_raises(self) -> None:
+        layout = NoteBasedStereoLayout(
+            origin=BlockPosition(0, 128, 0),
+            track_direction="east",
+        )
+        emitter = layout._ideal_emitters(_single_note_song())[0]
+        context = _AssignmentContext()
+        side_candidate = _rail_slot_candidate(layout, slot_index=-1)
+        center_candidate = _rail_slot_candidate(layout, slot_index=0)
+        side_assignment = _try_assign_candidate(
+            layout,
+            emitter,
+            side_candidate,
+            context,
+        )
+        assert side_assignment is not None
+        rail_center = center_candidate.position
+        occupied_before = {
+            position: list(blocks)
+            for position, blocks in context.occupancy.occupied.items()
+        }
+        reserved_air_before = {
+            position: list(blocks)
+            for position, blocks in context.occupancy.reserved_air.items()
+        }
+        used_slots_before = set(context.used_slots)
+
+        def dirty_occupy(occupancy, footprint):
+            occupancy.occupied.setdefault(rail_center, []).append("note_block")
+            occupancy.reserved_air.setdefault(above(rail_center), []).append(
+                "reserved_air"
+            )
+            raise RuntimeError("forced commit failure")
+
+        with mock.patch.object(note_stereo, "_occupy_footprint", dirty_occupy):
+            with self.assertRaisesRegex(RuntimeError, "forced commit failure"):
+                _try_assign_candidate(
+                    layout,
+                    emitter,
+                    center_candidate,
+                    context,
+                )
+
+        self.assertEqual(context.occupancy.occupied, occupied_before)
+        self.assertEqual(context.occupancy.reserved_air, reserved_air_before)
+        self.assertEqual(context.used_slots, used_slots_before)
+        self.assertIs(context.active_rail_cells[side_assignment.rail.rail_id], False)
+        self.assertEqual(context.perf_stats.rail_center_upgrade_local_rollback_count, 1)
 
     def test_second_center_assignment_on_same_rail_is_rejected(self) -> None:
         layout = NoteBasedStereoLayout(
