@@ -279,10 +279,7 @@ Write analysis JSON to a file:
 
 ```powershell
 $env:PYTHONPATH = "src"
-python main.py path\to\song.nbs `
-  --analyze-layout-spatial `
-  --analysis-detail full `
-  --analysis-output analysis.json
+python main.py path\to\song.nbs --analyze-layout-spatial --analysis-detail full --analysis-output analysis.json
 ```
 
 The old `--analyze-stereo` option has been removed.
