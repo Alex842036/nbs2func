@@ -91,23 +91,14 @@ Recommended preview command for a large stereo test:
 
 ```powershell
 $env:PYTHONPATH = "src"
-python main.py path\to\song.nbs `
-  --minecraft-version 1.16.5 `
-  --layout-mode note_based_stereo `
-  --direction east `
-  --enable-playback-assist `
-  --playback-player-name <YourName> `
-  --build-player-name <YourName>
+python main.py path\to\song.nbs --minecraft-version 1.16.5 --layout-mode note_based_stereo --direction east --enable-playback-assist --playback-player-name YourName --build-player-name YourName
 ```
 
 For a small single-file debug output:
 
 ```powershell
 $env:PYTHONPATH = "src"
-python main.py examples\demo.nbs `
-  --layout-mode basic_linear `
-  --track-id 0 `
-  --no-split-functions
+python main.py examples\demo.nbs --layout-mode basic_linear --track-id 0 --no-split-functions
 ```
 
 ## Output layout
@@ -202,7 +193,7 @@ The optional playback assist module generates a minecart-based playback helper.
 Enable it with:
 
 ```powershell
---enable-playback-assist --playback-player-name <YourName>
+--enable-playback-assist --playback-player-name YourName
 ```
 
 Typical flow:
