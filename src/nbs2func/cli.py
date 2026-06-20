@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import cProfile
 import io
+import json
 from pathlib import Path
 import pstats
 import re
@@ -11,6 +12,10 @@ from .command_writer import CommandWriterConfig, write_mcfunction
 from .layout import build_layout_strategy, layout_song
 from .layout_geometry import BlockPosition, LayoutError
 from .layout_models import StereoLayoutConfig
+from .layout_spatial_analyzer import (
+    analysis_report_to_jsonable,
+    analyze_layout_spatial,
+)
 from .minecraft_version import get_version_profile, write_pack_mcmeta
 from .nbs_reader import read_nbs
 from .playback_assist_module import (
@@ -38,6 +43,44 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         default=str(DEFAULT_OUTPUT_PATH),
         help="Parent directory for the generated datapack. Defaults to output.",
+    )
+    parser.add_argument(
+        "--analyze-stereo",
+        action="store_true",
+        help="Removed. Use --analyze-layout-spatial instead.",
+    )
+    parser.add_argument(
+        "--analyze-layout-spatial",
+        action="store_true",
+        help="Analyze layer-local layout spatial features and output JSON without building.",
+    )
+    parser.add_argument(
+        "--group-config",
+        default=None,
+        help="Removed for layout spatial analysis. Group configs are not consumed.",
+    )
+    parser.add_argument(
+        "--analysis-output",
+        default=None,
+        help="Optional output path for the analysis JSON report.",
+    )
+    parser.add_argument(
+        "--analysis-window-size",
+        type=int,
+        default=128,
+        help="Window size in ticks for layout spatial analysis. Defaults to 128.",
+    )
+    parser.add_argument(
+        "--analysis-hop-size",
+        type=int,
+        default=32,
+        help="Hop size in ticks for layout spatial analysis. Defaults to 32.",
+    )
+    parser.add_argument(
+        "--analysis-detail",
+        choices=("summary", "full"),
+        default="summary",
+        help="Analysis output detail for layout spatial analysis. Defaults to summary.",
     )
     parser.add_argument("--origin-x", type=int, default=0, help="World origin X.")
     parser.add_argument("--origin-y", type=int, default=128, help="World origin Y.")
@@ -238,8 +281,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--depth-mirror-penalty",
         type=float,
-        default=0.1,
-        help="Extra cost for -Y mirror candidates. Defaults to 0.1.",
+        default=0.0,
+        help="Extra cost for -Y mirror candidates. Defaults to 0.0.",
     )
     parser.add_argument(
         "--lateral-step-penalty",
@@ -296,8 +339,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--preview-time-limit-seconds",
         type=float,
-        default=300,
-        help="Time limit for note_based_stereo preview. Defaults to 300 seconds.",
+        default=1200,
+        help="Time limit for note_based_stereo preview. Defaults to 600 seconds.",
     )
     parser.add_argument(
         "--no-fail-fast-on-too-many-collisions",
@@ -608,6 +651,13 @@ def main() -> int:
 
     song = read_nbs(path)
     note_count = sum(len(track.notes) for track in song.tracks)
+
+    if args.analyze_stereo:
+        print("Error: --analyze-stereo was removed. Use --analyze-layout-spatial.")
+        return 1
+
+    if args.analyze_layout_spatial:
+        return _run_analyze_layout_spatial(args, song)
 
     print("Song")
     print(f"  file: {path}")
@@ -1072,6 +1122,39 @@ def main() -> int:
     return 0
 
 
+def _run_analyze_layout_spatial(args, song) -> int:
+    if args.group_config is not None:
+        print(
+            "Error: --group-config is not supported by "
+            "--analyze-layout-spatial."
+        )
+        return 1
+
+    try:
+        report = analyze_layout_spatial(
+            song,
+            window_size=args.analysis_window_size,
+            hop_size=args.analysis_hop_size,
+            detail=args.analysis_detail,
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        return 1
+
+    json_text = json.dumps(
+        analysis_report_to_jsonable(report, detail=args.analysis_detail),
+        indent=2,
+    )
+    if args.analysis_output is not None:
+        output_path = Path(args.analysis_output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json_text + "\n", encoding="utf-8")
+    else:
+        print(json_text)
+
+    return 0
+
+
 def sanitize_datapack_name(name: str) -> str:
     sanitized = re.sub(r"[^a-z0-9._-]+", "_", name.lower())
     sanitized = re.sub(r"_+", "_", sanitized).strip("_")
@@ -1141,6 +1224,108 @@ def _print_note_based_preview(report) -> None:
         print("  average candidate count by pass:")
         for pass_name, average in report.average_candidate_count_by_pass:
             print(f"    {pass_name}: {average:.2f}")
+    print("Note-based stereo performance diagnostics")
+    print(f"  total layout time: {report.total_note_based_layout_seconds:.3f}s")
+    print(f"  ideal emitter build time: {report.ideal_emitter_build_seconds:.3f}s")
+    print(f"  candidate generation time: {report.candidate_generation_seconds:.3f}s")
+    print(f"  assignment total time: {report.assignment_total_seconds:.3f}s")
+    print(f"  retry total time: {report.retry_total_seconds:.3f}s")
+    print(f"  center split time: {report.center_split_total_seconds:.3f}s")
+    print(f"  debug report build time: {report.debug_report_build_seconds:.3f}s")
+    print(f"  rail validation time: {report.rail_validation_total_seconds:.3f}s")
+    print(f"  footprint collision time: {report.footprint_collision_total_seconds:.3f}s")
+    print(f"  rail center upgrade time: {report.rail_center_upgrade_total_seconds:.3f}s")
+    print("  geometry skeleton cache:")
+    print(
+        "    hits / misses / unique keys: "
+        f"{report.geometry_skeleton_cache_hits} / "
+        f"{report.geometry_skeleton_cache_misses} / "
+        f"{report.geometry_skeleton_unique_key_count}"
+    )
+    print(
+        "    generated / reused skeleton candidates: "
+        f"{report.geometry_skeleton_candidates_generated} / "
+        f"{report.geometry_skeleton_candidates_reused}"
+    )
+    print(f"    hit rate: {report.geometry_skeleton_cache_hit_rate:.3f}")
+    if report.geometry_skeleton_top_key_counts:
+        print("    top key counts:")
+        for key_label, count in report.geometry_skeleton_top_key_counts:
+            print(f"      {key_label}: {count}")
+    print("  candidate attempts:")
+    print(f"    total: {report.candidate_attempt_count_total}")
+    for pass_name, count in report.candidate_attempt_count_by_pass:
+        print(f"    {pass_name}: {count}")
+    print(
+        "    existing active rail / new rail validation: "
+        f"{report.candidate_attempts_on_existing_active_rail} / "
+        f"{report.candidate_attempts_requiring_new_rail_validation}"
+    )
+    print(
+        "    rejected slot / rail validation / footprint: "
+        f"{report.candidate_attempts_rejected_by_slot_used} / "
+        f"{report.candidate_attempts_rejected_by_rail_validation} / "
+        f"{report.candidate_attempts_rejected_by_footprint_collision}"
+    )
+    print(f"    accepted: {report.candidate_attempts_accepted}")
+    print("  rail validation:")
+    print(f"    calls: {report.rail_validation_call_count}")
+    for pass_name, count in report.rail_validation_call_count_by_pass:
+        print(f"    calls {pass_name}: {count}")
+    print(f"    rail pairs checked: {report.rail_pairs_checked}")
+    for pass_name, count in report.rail_pairs_checked_by_pass:
+        print(f"    rail pairs {pass_name}: {count}")
+    print(
+        "    avg/max rails checked per validation: "
+        f"{report.average_rails_checked_per_candidate:.3f} / "
+        f"{report.max_rails_checked_per_candidate}"
+    )
+    print(f"    accepted: {report.rail_validation_accepted_count}")
+    print(
+        "    rejected overlap / footprint: "
+        f"{report.rail_validation_rejected_by_activation_overlap} / "
+        f"{report.rail_pairs_rejected_by_full_footprint_collision}"
+    )
+    print("  footprint collision:")
+    print(f"    checks: {report.footprint_collision_check_count}")
+    print(
+        "    avg check time: "
+        f"{report.average_footprint_collision_seconds:.6f}s"
+    )
+    print(
+        "    assignment / rail / upgrade time: "
+        f"{report.assignment_footprint_collision_elapsed_seconds:.3f}s / "
+        f"{report.rail_footprint_collision_elapsed_seconds:.3f}s / "
+        f"{report.upgrade_footprint_collision_elapsed_seconds:.3f}s"
+    )
+    print(
+        "  rail center upgrade attempted / accepted / rejected: "
+        f"{report.rail_center_upgrade_attempted} / "
+        f"{report.rail_center_upgrade_accepted} / "
+        f"{report.rail_center_upgrade_rejected}"
+    )
+    print(
+        "    rejected missing track / footprint / reserved air: "
+        f"{report.rail_center_upgrade_rejected_by_missing_track_block} / "
+        f"{report.rail_center_upgrade_rejected_by_center_footprint_collision} / "
+        f"{report.rail_center_upgrade_rejected_by_reserved_air_collision}"
+    )
+    if report.candidate_count_before_truncation_by_pass:
+        print("  candidate count before truncation by pass:")
+        for pass_name, count in report.candidate_count_before_truncation_by_pass:
+            print(f"    {pass_name}: {count}")
+    if report.candidate_count_after_truncation_by_pass:
+        print("  candidate count after truncation by pass:")
+        for pass_name, count in report.candidate_count_after_truncation_by_pass:
+            print(f"    {pass_name}: {count}")
+    if report.candidate_truncation_count_by_pass:
+        print("  candidate truncation count by pass:")
+        for pass_name, count in report.candidate_truncation_count_by_pass:
+            print(f"    {pass_name}: {count}")
+    if report.mirror_candidate_truncation_count_by_pass:
+        print("  mirror candidate truncation count by pass:")
+        for pass_name, count in report.mirror_candidate_truncation_count_by_pass:
+            print(f"    {pass_name}: {count}")
     print(f"  pan zone unchanged count: {report.pan_zone_unchanged_count}")
     print(f"  adjacent zone fallback count: {report.adjacent_zone_fallback_count}")
     print(f"  average radius error: {report.average_radius_error:.3f}")

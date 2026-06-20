@@ -5,6 +5,7 @@ __pycache__/
 .vscode/
 .idea/
 output/
+analysis/
 dist/
 build/
 *.log
@@ -17,4 +18,6 @@ codex_tasks/
 # Keep only the tiny demo file by default. Do not publish NBS files unless you
 # have the rights to distribute them.
 examples/*.nbs
+examples/*.json
+!examples/demo.json
 !examples/demo.nbs

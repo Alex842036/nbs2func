@@ -52,6 +52,10 @@ from .layout_models import (
     TrackLayoutInfo,
     _StereoOffset,
 )
+from .layout_spatial_analyzer import (
+    LayoutSpatialHintIndex,
+    LayoutSpatialSegmentHint,
+)
 from .layout_pan import (
     PAN_ZONES,
     _angle_error_inside_zone,
@@ -68,17 +72,89 @@ from .layout_pan import (
 )
 from .models import NoteEvent, Song
 
+PAN_HINT_WEIGHT = 1.0
+PAN_NORMALIZE_MIN_EXTENT = 20.0
+PAN_NORMALIZE_MAX_SCALE = 3.0
+PAN_ZONE_ORIGINAL_Y_MOVE_PENALTY = 0.3
+LEGACY_ORIGINAL_Y_MOVE_PENALTY = 1.0
+LEGACY_ORIGINAL_Z_MOVE_PENALTY = 2.0
+
+PAN_MODE_FACTORS = {
+    "center_stable": 1.0,
+    "left_stable": 1.0,
+    "right_stable": 1.0,
+    "far_left_stable": 1.0,
+    "far_right_stable": 1.0,
+    "bimodal_left_right": 0.75,
+    "center_plus_side": 0.75,
+    "wide_or_split": 0.5,
+    "unknown": 0.0,
+    "inactive": 0.0,
+}
+
+SEGMENT_PAN_TARGET_INTERVALS = {
+    "center_stable": (-10.0, 10.0),
+    "left_stable": (-40.0, -10.0001),
+    "right_stable": (10.0001, 40.0),
+    "far_left_stable": (-90.0, -40.0001),
+    "far_right_stable": (40.0001, 90.0),
+}
+
+
+@dataclass(frozen=True)
+class _CandidateGeometrySkeletonKey:
+    pass_name: str
+    candidate_limit_value: int
+    generation_limit: int
+    target_angle_degrees: float
+    target_radius: float
+    ideal_radius: float
+    allowed_zones: tuple[str, ...]
+    angle_values: tuple[float, ...]
+    radius_values: tuple[int, ...]
+    y_radius: int
+    lateral_count: int
+    max_stereo_angle_degrees: float
+    preferred_depth_sign: int
+    allow_negative_depth_offsets: bool
+    enable_depth_mirror_candidates: bool
+    slot_indexes: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class _CandidateGeometrySkeleton:
+    offset_y: int
+    offset_lateral: int
+    slot_index: int
+    depth_mirrored: bool
+    candidate_angle_degrees: float
+    candidate_radius: float
+    candidate_pan_zone: str
+    radius_error: float
+    pan_error_inside_zone: float
+    chosen_radius: float
+
+
 @dataclass
 class _RailValidationStats:
     rail_pairs_checked: int = 0
     rejected_by_same_plane_y_gap: int = 0
+    rejected_by_activation_overlap: int = 0
     rejected_by_full_footprint_collision: int = 0
     candidate_validation_count: int = 0
     total_rails_checked_per_candidate: int = 0
     max_rails_checked_per_candidate: int = 0
+    accepted_count: int = 0
+    elapsed_seconds: float = 0
+    call_count_by_pass: dict[str, int] | None = None
+    rail_pairs_checked_by_pass: dict[str, int] | None = None
     issues: list[RailValidationIssue] | None = None
 
     def __post_init__(self) -> None:
+        if self.call_count_by_pass is None:
+            self.call_count_by_pass = defaultdict(int)
+        if self.rail_pairs_checked_by_pass is None:
+            self.rail_pairs_checked_by_pass = defaultdict(int)
         if self.issues is None:
             self.issues = []
 
@@ -103,10 +179,65 @@ class _CandidateGenerationStats:
     candidate_truncation_count: int = 0
     mirror_candidate_truncated_count: int = 0
     candidate_counts_by_pass: dict[str, list[int]] | None = None
+    candidate_count_before_truncation_by_pass: dict[str, int] | None = None
+    candidate_count_after_truncation_by_pass: dict[str, int] | None = None
+    candidate_truncation_count_by_pass: dict[str, int] | None = None
+    mirror_candidate_truncation_count_by_pass: dict[str, int] | None = None
 
     def __post_init__(self) -> None:
         if self.candidate_counts_by_pass is None:
             self.candidate_counts_by_pass = defaultdict(list)
+        if self.candidate_count_before_truncation_by_pass is None:
+            self.candidate_count_before_truncation_by_pass = defaultdict(int)
+        if self.candidate_count_after_truncation_by_pass is None:
+            self.candidate_count_after_truncation_by_pass = defaultdict(int)
+        if self.candidate_truncation_count_by_pass is None:
+            self.candidate_truncation_count_by_pass = defaultdict(int)
+        if self.mirror_candidate_truncation_count_by_pass is None:
+            self.mirror_candidate_truncation_count_by_pass = defaultdict(int)
+
+
+@dataclass
+class _PerformanceStats:
+    ideal_emitter_build_seconds: float = 0
+    candidate_generation_seconds: float = 0
+    assignment_total_seconds: float = 0
+    rail_validation_total_seconds: float = 0
+    footprint_collision_total_seconds: float = 0
+    rail_center_upgrade_total_seconds: float = 0
+    retry_total_seconds: float = 0
+    center_split_total_seconds: float = 0
+    debug_report_build_seconds: float = 0
+    candidate_attempt_count_total: int = 0
+    candidate_attempt_count_by_pass: dict[str, int] | None = None
+    candidate_attempts_on_existing_active_rail: int = 0
+    candidate_attempts_requiring_new_rail_validation: int = 0
+    candidate_attempts_rejected_before_rail_validation: int = 0
+    candidate_attempts_rejected_by_slot_used: int = 0
+    candidate_attempts_rejected_by_rail_validation: int = 0
+    candidate_attempts_rejected_by_footprint_collision: int = 0
+    candidate_attempts_accepted: int = 0
+    footprint_collision_check_count: int = 0
+    assignment_footprint_collision_elapsed_seconds: float = 0
+    rail_footprint_collision_elapsed_seconds: float = 0
+    upgrade_footprint_collision_elapsed_seconds: float = 0
+    rail_center_upgrade_attempted: int = 0
+    rail_center_upgrade_accepted: int = 0
+    rail_center_upgrade_rejected: int = 0
+    rail_center_upgrade_rejected_by_missing_track_block: int = 0
+    rail_center_upgrade_rejected_by_center_footprint_collision: int = 0
+    rail_center_upgrade_rejected_by_reserved_air_collision: int = 0
+    geometry_skeleton_cache_hits: int = 0
+    geometry_skeleton_cache_misses: int = 0
+    geometry_skeleton_candidates_generated: int = 0
+    geometry_skeleton_candidates_reused: int = 0
+    geometry_skeleton_key_use_counts: dict[str, int] | None = None
+
+    def __post_init__(self) -> None:
+        if self.candidate_attempt_count_by_pass is None:
+            self.candidate_attempt_count_by_pass = defaultdict(int)
+        if self.geometry_skeleton_key_use_counts is None:
+            self.geometry_skeleton_key_use_counts = defaultdict(int)
 
 
 @dataclass
@@ -149,10 +280,35 @@ class NoteBasedStereoLayout:
     track_direction: str = "east"
     config: StereoLayoutConfig = StereoLayoutConfig()
     tick_spacing: int = 2
+    spatial_hint_index: LayoutSpatialHintIndex | None = None
 
     def _log(self, message: str) -> None:
         if self.config.enable_progress_logging:
             print(f"[NoteBasedRail] {message}", flush=True)
+
+    def _get_layout_spatial_segment_hint(
+        self,
+        layer_id: int,
+        tick: int,
+    ) -> LayoutSpatialSegmentHint | None:
+        if self.spatial_hint_index is None:
+            return None
+        return self.spatial_hint_index.get_segment(layer_id, tick)
+
+    def _candidate_pan_hint_score(
+        self,
+        emitter: NoteEmitter,
+        candidate_pan_zone: str,
+    ) -> float:
+        segment = self._get_layout_spatial_segment_hint(emitter.track_id, emitter.tick)
+        if segment is None:
+            return 0.0
+        return _segment_pan_hint_score(
+            segment,
+            emitter,
+            candidate_pan_zone,
+            max_stereo_angle_degrees=self.config.max_stereo_angle_degrees,
+        )
 
     def _check_time_limit(self, total_start: float, stage: str) -> None:
         limit = self.config.preview_time_limit_seconds
@@ -174,6 +330,11 @@ class NoteBasedStereoLayout:
     def layout_song(self, song: Song) -> LayoutResult:
         total_start = time.perf_counter()
         timings: list[StageTiming] = []
+        perf_stats = _PerformanceStats()
+        geometry_skeleton_cache: dict[
+            _CandidateGeometrySkeletonKey,
+            tuple[_CandidateGeometrySkeleton, ...],
+        ] = {}
         note_count = sum(len(track.notes) for track in song.tracks)
         active_ticks = len(
             {
@@ -187,8 +348,9 @@ class NoteBasedStereoLayout:
         stage_start = time.perf_counter()
         self._log("stage: computing ideal positions")
         emitters = tuple(self._ideal_emitters(song))
+        perf_stats.ideal_emitter_build_seconds = time.perf_counter() - stage_start
         timings.append(
-            StageTiming("ideal position time", time.perf_counter() - stage_start)
+            StageTiming("ideal position time", perf_stats.ideal_emitter_build_seconds)
         )
 
         stage_start = time.perf_counter()
@@ -202,6 +364,8 @@ class NoteBasedStereoLayout:
                     emitter,
                     generation_stats=candidate_generation_stats,
                     pass_name="pass1",
+                    geometry_skeleton_cache=geometry_skeleton_cache,
+                    perf_stats=perf_stats,
                 )
             )
             candidate_cache[emitter.emitter_id] = candidates
@@ -209,8 +373,12 @@ class NoteBasedStereoLayout:
             if index % 1000 == 0 or index == len(emitters):
                 self._log(f"generating candidates: {index}/{len(emitters)}")
             self._check_time_limit(total_start, "candidate generation")
+        perf_stats.candidate_generation_seconds = time.perf_counter() - stage_start
         timings.append(
-            StageTiming("candidate generation time", time.perf_counter() - stage_start)
+            StageTiming(
+                "candidate generation time",
+                perf_stats.candidate_generation_seconds,
+            )
         )
 
         stage_start = time.perf_counter()
@@ -241,9 +409,12 @@ class NoteBasedStereoLayout:
             candidate_values,
             candidate_cache,
             candidate_generation_stats,
+            perf_stats,
+            geometry_skeleton_cache,
             total_start,
         )
-        timings.append(StageTiming("assignment time", time.perf_counter() - stage_start))
+        perf_stats.assignment_total_seconds = time.perf_counter() - stage_start
+        timings.append(StageTiming("assignment time", perf_stats.assignment_total_seconds))
 
         stage_start = time.perf_counter()
         self._log(
@@ -289,8 +460,9 @@ class NoteBasedStereoLayout:
         total_candidate_emitters = (
             len(all_candidate_counts) + center_split_stats.emitters_added
         )
+        perf_stats.debug_report_build_seconds = time.perf_counter() - stage_start
         timings.append(
-            StageTiming("report generation time", time.perf_counter() - stage_start)
+            StageTiming("report generation time", perf_stats.debug_report_build_seconds)
         )
 
         report = NoteBasedStereoRailLayoutPreview(
@@ -431,6 +603,113 @@ class NoteBasedStereoLayout:
             average_candidate_count_by_pass=(
                 _average_candidate_count_by_pass(candidate_generation_stats)
             ),
+            candidate_count_before_truncation_by_pass=_count_items(
+                candidate_generation_stats.candidate_count_before_truncation_by_pass
+            ),
+            candidate_count_after_truncation_by_pass=_count_items(
+                candidate_generation_stats.candidate_count_after_truncation_by_pass
+            ),
+            candidate_truncation_count_by_pass=_count_items(
+                candidate_generation_stats.candidate_truncation_count_by_pass
+            ),
+            mirror_candidate_truncation_count_by_pass=_count_items(
+                candidate_generation_stats.mirror_candidate_truncation_count_by_pass
+            ),
+            geometry_skeleton_cache_hits=perf_stats.geometry_skeleton_cache_hits,
+            geometry_skeleton_cache_misses=perf_stats.geometry_skeleton_cache_misses,
+            geometry_skeleton_unique_key_count=len(geometry_skeleton_cache),
+            geometry_skeleton_candidates_generated=(
+                perf_stats.geometry_skeleton_candidates_generated
+            ),
+            geometry_skeleton_candidates_reused=(
+                perf_stats.geometry_skeleton_candidates_reused
+            ),
+            geometry_skeleton_cache_hit_rate=(
+                _geometry_skeleton_cache_hit_rate(perf_stats)
+            ),
+            geometry_skeleton_top_key_counts=(
+                _top_geometry_skeleton_key_counts(perf_stats)
+            ),
+            ideal_emitter_build_seconds=perf_stats.ideal_emitter_build_seconds,
+            candidate_generation_seconds=perf_stats.candidate_generation_seconds,
+            assignment_total_seconds=perf_stats.assignment_total_seconds,
+            rail_validation_total_seconds=perf_stats.rail_validation_total_seconds,
+            footprint_collision_total_seconds=(
+                perf_stats.footprint_collision_total_seconds
+            ),
+            rail_center_upgrade_total_seconds=(
+                perf_stats.rail_center_upgrade_total_seconds
+            ),
+            retry_total_seconds=perf_stats.retry_total_seconds,
+            center_split_total_seconds=perf_stats.center_split_total_seconds,
+            debug_report_build_seconds=perf_stats.debug_report_build_seconds,
+            candidate_attempt_count_total=perf_stats.candidate_attempt_count_total,
+            candidate_attempt_count_by_pass=_count_items(
+                perf_stats.candidate_attempt_count_by_pass
+            ),
+            candidate_attempts_on_existing_active_rail=(
+                perf_stats.candidate_attempts_on_existing_active_rail
+            ),
+            candidate_attempts_requiring_new_rail_validation=(
+                perf_stats.candidate_attempts_requiring_new_rail_validation
+            ),
+            candidate_attempts_rejected_before_rail_validation=(
+                perf_stats.candidate_attempts_rejected_before_rail_validation
+            ),
+            candidate_attempts_rejected_by_slot_used=(
+                perf_stats.candidate_attempts_rejected_by_slot_used
+            ),
+            candidate_attempts_rejected_by_rail_validation=(
+                perf_stats.candidate_attempts_rejected_by_rail_validation
+            ),
+            candidate_attempts_rejected_by_footprint_collision=(
+                perf_stats.candidate_attempts_rejected_by_footprint_collision
+            ),
+            candidate_attempts_accepted=perf_stats.candidate_attempts_accepted,
+            rail_validation_call_count=rail_validation_stats.candidate_validation_count,
+            rail_validation_call_count_by_pass=_count_items(
+                rail_validation_stats.call_count_by_pass
+            ),
+            rail_validation_elapsed_seconds=rail_validation_stats.elapsed_seconds,
+            rail_pairs_checked_by_pass=_count_items(
+                rail_validation_stats.rail_pairs_checked_by_pass
+            ),
+            rail_validation_accepted_count=rail_validation_stats.accepted_count,
+            rail_validation_rejected_by_activation_overlap=(
+                rail_validation_stats.rejected_by_activation_overlap
+            ),
+            footprint_collision_check_count=(
+                perf_stats.footprint_collision_check_count
+            ),
+            average_footprint_collision_seconds=(
+                perf_stats.footprint_collision_total_seconds
+                / perf_stats.footprint_collision_check_count
+                if perf_stats.footprint_collision_check_count
+                else 0
+            ),
+            assignment_footprint_collision_elapsed_seconds=(
+                perf_stats.assignment_footprint_collision_elapsed_seconds
+            ),
+            rail_footprint_collision_elapsed_seconds=(
+                perf_stats.rail_footprint_collision_elapsed_seconds
+            ),
+            upgrade_footprint_collision_elapsed_seconds=(
+                perf_stats.upgrade_footprint_collision_elapsed_seconds
+            ),
+            rail_center_upgrade_attempted=(
+                perf_stats.rail_center_upgrade_attempted
+            ),
+            rail_center_upgrade_accepted=perf_stats.rail_center_upgrade_accepted,
+            rail_center_upgrade_rejected=perf_stats.rail_center_upgrade_rejected,
+            rail_center_upgrade_rejected_by_missing_track_block=(
+                perf_stats.rail_center_upgrade_rejected_by_missing_track_block
+            ),
+            rail_center_upgrade_rejected_by_center_footprint_collision=(
+                perf_stats.rail_center_upgrade_rejected_by_center_footprint_collision
+            ),
+            rail_center_upgrade_rejected_by_reserved_air_collision=(
+                perf_stats.rail_center_upgrade_rejected_by_reserved_air_collision
+            ),
             failed_examples_after_pass1=retry_stats.failed_examples_after_pass1,
             failed_examples_after_pass2=retry_stats.failed_examples_after_pass2,
             failed_examples_after_pass3=retry_stats.failed_examples_after_pass3,
@@ -451,6 +730,7 @@ class NoteBasedStereoLayout:
             collision_records_stored=len(collisions),
             collision_records_skipped_due_to_cap=skipped_collisions,
             stage_timings=tuple(timings),
+            total_note_based_layout_seconds=time.perf_counter() - total_start,
         )
         self._log("stage: writing report / mcfunction")
         cells = tuple(self._preview_cells(report))
@@ -542,10 +822,19 @@ class NoteBasedStereoLayout:
 
     def _ideal_emitters(self, song: Song) -> list[NoteEmitter]:
         emitters: list[NoteEmitter] = []
+        pan_normalization_scale = (
+            _pan_normalization_scale_for_song(song)
+            if self.config.enable_pan_normalization
+            else 1.0
+        )
 
         for track in song.tracks:
             for note_index, note in enumerate(track.notes):
-                offset = self._note_offset(note.final_volume, note.final_panning)
+                target_panning = _normalize_panning(
+                    note.final_panning,
+                    pan_normalization_scale,
+                )
+                offset = self._note_offset(note.final_volume, target_panning)
                 position = self._position_from_offsets(
                     note.tick,
                     offset.offset_y,
@@ -609,6 +898,11 @@ class NoteBasedStereoLayout:
         candidate_values: dict[tuple[int, int], int],
         candidate_cache: dict[str, tuple[EmitterCandidate, ...]],
         candidate_generation_stats: _CandidateGenerationStats,
+        perf_stats: _PerformanceStats,
+        geometry_skeleton_cache: dict[
+            _CandidateGeometrySkeletonKey,
+            tuple[_CandidateGeometrySkeleton, ...],
+        ],
         total_start: float,
     ) -> tuple[
         list[SlotAssignment],
@@ -638,6 +932,8 @@ class NoteBasedStereoLayout:
             state=state,
             rail_stats=rail_stats,
             center_split_stats=center_split_stats,
+            perf_stats=perf_stats,
+            geometry_skeleton_cache=geometry_skeleton_cache,
             total_start=total_start,
             pass_name="pass1",
             allow_center_split=True,
@@ -647,11 +943,14 @@ class NoteBasedStereoLayout:
             failed_after_pass1
         )
 
+        retry_start = time.perf_counter()
         pass2_cache = self._retry_candidate_cache(
             failed_after_pass1,
             pass_name="pass2",
             allow_adjacent=False,
             candidate_generation_stats=candidate_generation_stats,
+            geometry_skeleton_cache=geometry_skeleton_cache,
+            perf_stats=perf_stats,
         )
         _merge_candidate_values(candidate_values, pass2_cache)
         retry_stats.retry_attempted += len(failed_after_pass1)
@@ -663,6 +962,8 @@ class NoteBasedStereoLayout:
             state=state,
             rail_stats=rail_stats,
             center_split_stats=center_split_stats,
+            perf_stats=perf_stats,
+            geometry_skeleton_cache=geometry_skeleton_cache,
             total_start=total_start,
             pass_name="pass2",
             allow_center_split=False,
@@ -683,6 +984,8 @@ class NoteBasedStereoLayout:
                 pass_name="pass3",
                 allow_adjacent=True,
                 candidate_generation_stats=candidate_generation_stats,
+                geometry_skeleton_cache=geometry_skeleton_cache,
+                perf_stats=perf_stats,
             )
             _merge_candidate_values(candidate_values, pass3_cache)
             retry_stats.retry_attempted += len(pass3_emitters)
@@ -698,6 +1001,8 @@ class NoteBasedStereoLayout:
                 state=state,
                 rail_stats=rail_stats,
                 center_split_stats=center_split_stats,
+                perf_stats=perf_stats,
+                geometry_skeleton_cache=geometry_skeleton_cache,
                 total_start=total_start,
                 pass_name="pass3",
                 allow_center_split=False,
@@ -722,6 +1027,7 @@ class NoteBasedStereoLayout:
                 for emitter in failed_after_pass2
                 if emitter.pan_zone == "CENTER"
             ) + tuple(pass3_failed_non_center)
+        perf_stats.retry_total_seconds += time.perf_counter() - retry_start
 
         retry_stats.failed_after_pass3 = len(failed_after_pass3)
         retry_stats.failed_examples_after_pass3 = _failed_emitter_examples(
@@ -747,6 +1053,8 @@ class NoteBasedStereoLayout:
                     rails_by_transverse=state.rails_by_transverse,
                     rail_stats=rail_stats,
                     candidate_generation_stats=candidate_generation_stats,
+                    perf_stats=perf_stats,
+                    geometry_skeleton_cache=geometry_skeleton_cache,
                 )
                 if split_assignments:
                     state.assignments.extend(split_assignments)
@@ -769,6 +1077,8 @@ class NoteBasedStereoLayout:
                     rails_by_transverse=state.rails_by_transverse,
                     rail_stats=rail_stats,
                     split_stats=center_split_stats,
+                    perf_stats=perf_stats,
+                    geometry_skeleton_cache=geometry_skeleton_cache,
                 )
                 if split_assignments:
                     state.assignments.extend(split_assignments)
@@ -797,6 +1107,11 @@ class NoteBasedStereoLayout:
         rails_by_transverse: dict[int, set[str]],
         rail_stats: _RailValidationStats,
         candidate_generation_stats: _CandidateGenerationStats,
+        perf_stats: _PerformanceStats,
+        geometry_skeleton_cache: dict[
+            _CandidateGeometrySkeletonKey,
+            tuple[_CandidateGeometrySkeleton, ...],
+        ],
     ) -> list[SlotAssignment] | None:
         split_emitters = self._same_side_split_emitters(emitter)
         if split_emitters is None:
@@ -809,6 +1124,8 @@ class NoteBasedStereoLayout:
                 allow_adjacent=False,
                 generation_stats=candidate_generation_stats,
                 pass_name="same_side_split",
+                geometry_skeleton_cache=geometry_skeleton_cache,
+                perf_stats=perf_stats,
             )
         )
         second_candidates = tuple(
@@ -818,6 +1135,8 @@ class NoteBasedStereoLayout:
                 allow_adjacent=False,
                 generation_stats=candidate_generation_stats,
                 pass_name="same_side_split",
+                geometry_skeleton_cache=geometry_skeleton_cache,
+                perf_stats=perf_stats,
             )
         )
 
@@ -841,6 +1160,8 @@ class NoteBasedStereoLayout:
             rail_footprints_copy,
             rails_by_transverse_copy,
             rail_stats,
+            perf_stats,
+            "same_side_split",
         )
         second_assignment = None
         if first_assignment is not None:
@@ -857,6 +1178,8 @@ class NoteBasedStereoLayout:
                 rail_footprints_copy,
                 rails_by_transverse_copy,
                 rail_stats,
+                perf_stats,
+                "same_side_split",
             )
 
         if first_assignment is None or second_assignment is None:
@@ -936,6 +1259,11 @@ class NoteBasedStereoLayout:
         state: _AssignmentState,
         rail_stats: _RailValidationStats,
         center_split_stats: _NoteLevelCenterSplitStats,
+        perf_stats: _PerformanceStats,
+        geometry_skeleton_cache: dict[
+            _CandidateGeometrySkeletonKey,
+            tuple[_CandidateGeometrySkeleton, ...],
+        ],
         total_start: float,
         pass_name: str,
         allow_center_split: bool,
@@ -973,6 +1301,8 @@ class NoteBasedStereoLayout:
                     state.rail_footprints,
                     state.rails_by_transverse,
                     rail_stats,
+                    perf_stats,
+                    pass_name,
                 )
 
                 if selected is None and allow_center_split and emitter.pan_zone == "CENTER":
@@ -990,6 +1320,8 @@ class NoteBasedStereoLayout:
                         rails_by_transverse=state.rails_by_transverse,
                         rail_stats=rail_stats,
                         split_stats=center_split_stats,
+                        perf_stats=perf_stats,
+                        geometry_skeleton_cache=geometry_skeleton_cache,
                     )
                     if split_assignments:
                         state.assignments.extend(split_assignments)
@@ -1021,6 +1353,11 @@ class NoteBasedStereoLayout:
         pass_name: str,
         allow_adjacent: bool,
         candidate_generation_stats: _CandidateGenerationStats,
+        geometry_skeleton_cache: dict[
+            _CandidateGeometrySkeletonKey,
+            tuple[_CandidateGeometrySkeleton, ...],
+        ],
+        perf_stats: _PerformanceStats,
     ) -> dict[str, tuple[EmitterCandidate, ...]]:
         cache: dict[str, tuple[EmitterCandidate, ...]] = {}
         for emitter in emitters:
@@ -1053,6 +1390,8 @@ class NoteBasedStereoLayout:
                     allowed_zones=allowed_zones,
                     generation_stats=candidate_generation_stats,
                     pass_name=pass_name,
+                    geometry_skeleton_cache=geometry_skeleton_cache,
+                    perf_stats=perf_stats,
                 )
             )
         return cache
@@ -1071,8 +1410,13 @@ class NoteBasedStereoLayout:
         rail_footprints: dict[str, _Footprint],
         rails_by_transverse: dict[int, set[str]],
         rail_stats: _RailValidationStats,
+        perf_stats: _PerformanceStats,
+        pass_name: str,
     ) -> SlotAssignment | None:
         for candidate in candidates:
+            perf_stats.candidate_attempt_count_total += 1
+            assert perf_stats.candidate_attempt_count_by_pass is not None
+            perf_stats.candidate_attempt_count_by_pass[pass_name] += 1
             rail = registry.get_or_create(
                 candidate.rail_offset_y,
                 candidate.rail_offset_lateral,
@@ -1083,9 +1427,12 @@ class NoteBasedStereoLayout:
             )
             slot_key = (rail.rail_id, candidate.slot_index)
             if slot_key in used_slots:
+                perf_stats.candidate_attempts_rejected_by_slot_used += 1
+                perf_stats.candidate_attempts_rejected_before_rail_validation += 1
                 continue
 
             if rail.rail_id not in active_rails:
+                perf_stats.candidate_attempts_requiring_new_rail_validation += 1
                 rail_footprint = self._rail_local_footprint(rail)
                 if not self._validate_new_rail(
                     rail,
@@ -1094,11 +1441,31 @@ class NoteBasedStereoLayout:
                     rail_footprints,
                     rails_by_transverse,
                     rail_stats,
+                    perf_stats,
+                    pass_name,
                 ):
+                    perf_stats.candidate_attempts_rejected_by_rail_validation += 1
                     continue
+            else:
+                perf_stats.candidate_attempts_on_existing_active_rail += 1
 
             rail_has_center_note = active_rail_cells.get(rail.rail_id)
             if rail_has_center_note is False and candidate.slot_index == 0:
+                selected = self._try_upgrade_side_only_rail_center(
+                    emitter,
+                    candidate,
+                    rail,
+                    tick,
+                    occupancy,
+                    used_slots,
+                    active_rail_cells,
+                    rail_footprints,
+                    rails_by_transverse,
+                    perf_stats,
+                )
+                if selected is not None:
+                    return selected
+                perf_stats.candidate_attempts_rejected_before_rail_validation += 1
                 continue
 
             rail_cell_is_active = rail.rail_id in active_rail_cells
@@ -1116,9 +1483,17 @@ class NoteBasedStereoLayout:
                 rail.rail_id,
                 rail_footprints,
                 rails_by_transverse,
+                perf_stats,
             ):
+                perf_stats.candidate_attempts_rejected_by_footprint_collision += 1
                 continue
-            if _footprint_collides(occupancy, footprint):
+            if _timed_footprint_collides(
+                occupancy,
+                footprint,
+                perf_stats,
+                "assignment",
+            ):
+                perf_stats.candidate_attempts_rejected_by_footprint_collision += 1
                 continue
 
             slot = ActivationSlot(
@@ -1144,9 +1519,116 @@ class NoteBasedStereoLayout:
                 active_rail_cells[rail.rail_id] = candidate.slot_index == 0
             elif candidate.slot_index == 0:
                 active_rail_cells[rail.rail_id] = True
+            perf_stats.candidate_attempts_accepted += 1
             return selected
 
         return None
+
+    def _try_upgrade_side_only_rail_center(
+        self,
+        emitter: NoteEmitter,
+        candidate: EmitterCandidate,
+        rail: ActivationRail,
+        tick: int,
+        occupancy: _FootprintOccupancy,
+        used_slots: set[tuple[str, int]],
+        active_rail_cells: dict[str, bool],
+        rail_footprints: dict[str, _Footprint],
+        rails_by_transverse: dict[int, set[str]],
+        perf_stats: _PerformanceStats,
+    ) -> SlotAssignment | None:
+        upgrade_start = time.perf_counter()
+        perf_stats.rail_center_upgrade_attempted += 1
+
+        def reject(reason: str | None = None) -> None:
+            perf_stats.rail_center_upgrade_rejected += 1
+            if reason == "missing_track_block":
+                perf_stats.rail_center_upgrade_rejected_by_missing_track_block += 1
+            elif reason == "reserved_air_collision":
+                perf_stats.rail_center_upgrade_rejected_by_reserved_air_collision += 1
+            elif reason == "center_footprint_collision":
+                perf_stats.rail_center_upgrade_rejected_by_center_footprint_collision += 1
+            perf_stats.rail_center_upgrade_total_seconds += (
+                time.perf_counter() - upgrade_start
+            )
+
+        if candidate.slot_index != 0:
+            reject()
+            return None
+        if active_rail_cells.get(rail.rail_id) is not False:
+            reject()
+            return None
+        slot_key = (rail.rail_id, candidate.slot_index)
+        if slot_key in used_slots:
+            reject()
+            return None
+
+        local_footprint = self._assignment_local_footprint(
+            emitter,
+            candidate,
+            rail_cell_is_active=True,
+        )
+        if self._emitter_collides_with_projected_rails(
+            local_footprint,
+            rail.rail_id,
+            rail_footprints,
+            rails_by_transverse,
+            perf_stats,
+        ):
+            reject("center_footprint_collision")
+            return None
+
+        footprint = self._assignment_footprint(
+            emitter,
+            candidate,
+            rail_cell_is_active=True,
+        )
+        rail_center = self._position_from_offsets(
+            tick,
+            rail.offset_y,
+            rail.offset_lateral,
+        )
+        projected = _copy_footprint_occupancy(occupancy)
+        if not _remove_one_occupied_block(projected, rail_center, "track_block"):
+            reject("missing_track_block")
+            return None
+        if not _remove_one_occupied_block(projected, below(rail_center), "track_block"):
+            reject("missing_track_block")
+            return None
+        if _timed_footprint_collides(
+            projected,
+            footprint,
+            perf_stats,
+            "upgrade",
+        ):
+            if any(position in projected.occupied for position, _ in footprint.reserved_air):
+                reject("reserved_air_collision")
+            else:
+                reject("center_footprint_collision")
+            return None
+
+        _occupy_footprint(projected, footprint)
+        _replace_footprint_occupancy(occupancy, projected)
+        active_rail_cells[rail.rail_id] = True
+        used_slots.add(slot_key)
+        perf_stats.rail_center_upgrade_accepted += 1
+        perf_stats.candidate_attempts_accepted += 1
+        perf_stats.rail_center_upgrade_total_seconds += (
+            time.perf_counter() - upgrade_start
+        )
+
+        slot = ActivationSlot(
+            rail_id=rail.rail_id,
+            tick=tick,
+            slot_index=candidate.slot_index,
+            position=candidate.position,
+        )
+        return SlotAssignment(
+            emitter=emitter,
+            rail=rail,
+            slot=slot,
+            candidate=candidate,
+        )
 
     def _try_note_level_center_split(
         self,
@@ -1162,8 +1644,15 @@ class NoteBasedStereoLayout:
         rails_by_transverse: dict[int, set[str]],
         rail_stats: _RailValidationStats,
         split_stats: _NoteLevelCenterSplitStats,
+        perf_stats: _PerformanceStats,
+        geometry_skeleton_cache: dict[
+            _CandidateGeometrySkeletonKey,
+            tuple[_CandidateGeometrySkeleton, ...],
+        ],
     ) -> list[SlotAssignment] | None:
+        split_start = time.perf_counter()
         if not self.config.enable_note_level_center_split:
+            perf_stats.center_split_total_seconds += time.perf_counter() - split_start
             return None
         if emitter.pan_zone != "CENTER":
             return None
@@ -1172,8 +1661,22 @@ class NoteBasedStereoLayout:
 
         split_stats.attempted += 1
         left, right = self._center_split_emitters(emitter)
-        left_candidates = tuple(self._emitter_candidates(left))
-        right_candidates = tuple(self._emitter_candidates(right))
+        left_candidates = tuple(
+            self._emitter_candidates(
+                left,
+                pass_name="center_split",
+                geometry_skeleton_cache=geometry_skeleton_cache,
+                perf_stats=perf_stats,
+            )
+        )
+        right_candidates = tuple(
+            self._emitter_candidates(
+                right,
+                pass_name="center_split",
+                geometry_skeleton_cache=geometry_skeleton_cache,
+                perf_stats=perf_stats,
+            )
+        )
         split_stats.generated_candidates += len(left_candidates) + len(right_candidates)
 
         occupancy_copy = _copy_footprint_occupancy(occupancy)
@@ -1196,6 +1699,8 @@ class NoteBasedStereoLayout:
             rail_footprints_copy,
             rails_by_transverse_copy,
             rail_stats,
+            perf_stats,
+            "center_split",
         )
         right_assignment = None
         if left_assignment is not None:
@@ -1212,6 +1717,8 @@ class NoteBasedStereoLayout:
                 rail_footprints_copy,
                 rails_by_transverse_copy,
                 rail_stats,
+                perf_stats,
+                "center_split",
             )
 
         accepted = left_assignment is not None and right_assignment is not None
@@ -1236,6 +1743,7 @@ class NoteBasedStereoLayout:
 
         if not accepted:
             split_stats.failed += 1
+            perf_stats.center_split_total_seconds += time.perf_counter() - split_start
             return None
 
         _replace_footprint_occupancy(occupancy, occupancy_copy)
@@ -1246,6 +1754,7 @@ class NoteBasedStereoLayout:
         _replace_transverse_index(rails_by_transverse, rails_by_transverse_copy)
         split_stats.accepted += 1
         split_stats.emitters_added += 2
+        perf_stats.center_split_total_seconds += time.perf_counter() - split_start
         return [left_assignment, right_assignment]
 
     def _center_split_emitters(
@@ -1357,7 +1866,10 @@ class NoteBasedStereoLayout:
         rail_footprints: dict[str, _Footprint],
         rails_by_transverse: dict[int, set[str]],
         stats: _RailValidationStats,
+        perf_stats: _PerformanceStats,
+        pass_name: str,
     ) -> bool:
+        validation_start = time.perf_counter()
         rail_center = self._position_from_offsets(
             0,
             rail.offset_y,
@@ -1370,6 +1882,8 @@ class NoteBasedStereoLayout:
             for rail_id in rails_by_transverse.get(transverse, ())
         }
         stats.candidate_validation_count += 1
+        assert stats.call_count_by_pass is not None
+        stats.call_count_by_pass[pass_name] += 1
         stats.total_rails_checked_per_candidate += len(relevant_rail_ids)
         stats.max_rails_checked_per_candidate = max(
             stats.max_rails_checked_per_candidate,
@@ -1393,9 +1907,12 @@ class NoteBasedStereoLayout:
             ranges_overlap = _ranges_overlap(rail_range, existing_range)
             y_gap = abs(rail.offset_y - existing.offset_y)
             stats.rail_pairs_checked += 1
+            assert stats.rail_pairs_checked_by_pass is not None
+            stats.rail_pairs_checked_by_pass[pass_name] += 1
 
             if ranges_overlap and y_gap < self.config.min_rail_center_y_gap:
                 stats.rejected_by_same_plane_y_gap += 1
+                stats.rejected_by_activation_overlap += 1
                 self._append_rail_validation_issue(
                     stats,
                     rail,
@@ -1409,12 +1926,20 @@ class NoteBasedStereoLayout:
                     "activation transverse range y gap too small",
                     None,
                 )
+                elapsed = time.perf_counter() - validation_start
+                stats.elapsed_seconds += elapsed
+                perf_stats.rail_validation_total_seconds += elapsed
                 return False
 
+            collision_start = time.perf_counter()
             collision_position = _first_footprint_collision(
                 rail_footprint,
                 rail_footprints[existing.rail_id],
             )
+            collision_elapsed = time.perf_counter() - collision_start
+            perf_stats.footprint_collision_total_seconds += collision_elapsed
+            perf_stats.rail_footprint_collision_elapsed_seconds += collision_elapsed
+            perf_stats.footprint_collision_check_count += 1
             if collision_position is not None:
                 stats.rejected_by_full_footprint_collision += 1
                 self._append_rail_validation_issue(
@@ -1430,8 +1955,15 @@ class NoteBasedStereoLayout:
                     "rail footprint collision",
                     collision_position,
                 )
+                elapsed = time.perf_counter() - validation_start
+                stats.elapsed_seconds += elapsed
+                perf_stats.rail_validation_total_seconds += elapsed
                 return False
 
+        stats.accepted_count += 1
+        elapsed = time.perf_counter() - validation_start
+        stats.elapsed_seconds += elapsed
+        perf_stats.rail_validation_total_seconds += elapsed
         return True
 
     def _append_rail_validation_issue(
@@ -1484,6 +2016,7 @@ class NoteBasedStereoLayout:
         rail_id: str,
         rail_footprints: dict[str, _Footprint],
         rails_by_transverse: dict[int, set[str]],
+        perf_stats: _PerformanceStats,
     ) -> bool:
         relevant_rail_ids = {
             existing_rail_id
@@ -1498,8 +2031,17 @@ class NoteBasedStereoLayout:
             if existing_rail_id == rail_id:
                 continue
             rail_footprint = rail_footprints[existing_rail_id]
+            collision_start = time.perf_counter()
             if _first_footprint_collision(footprint, rail_footprint) is not None:
+                collision_elapsed = time.perf_counter() - collision_start
+                perf_stats.footprint_collision_total_seconds += collision_elapsed
+                perf_stats.rail_footprint_collision_elapsed_seconds += collision_elapsed
+                perf_stats.footprint_collision_check_count += 1
                 return True
+            collision_elapsed = time.perf_counter() - collision_start
+            perf_stats.footprint_collision_total_seconds += collision_elapsed
+            perf_stats.rail_footprint_collision_elapsed_seconds += collision_elapsed
+            perf_stats.footprint_collision_check_count += 1
         return False
 
     def _assignment_footprint(
@@ -1628,6 +2170,11 @@ class NoteBasedStereoLayout:
         allowed_zones: tuple[str, ...] | None = None,
         generation_stats: _CandidateGenerationStats | None = None,
         pass_name: str = "pass1",
+        geometry_skeleton_cache: dict[
+            _CandidateGeometrySkeletonKey,
+            tuple[_CandidateGeometrySkeleton, ...],
+        ] | None = None,
+        perf_stats: _PerformanceStats | None = None,
     ) -> list[EmitterCandidate]:
         if self.config.enable_pan_zone_layout:
             return self._pan_zone_emitter_candidates(
@@ -1641,6 +2188,8 @@ class NoteBasedStereoLayout:
                 allowed_zones=allowed_zones,
                 generation_stats=generation_stats,
                 pass_name=pass_name,
+                geometry_skeleton_cache=geometry_skeleton_cache,
+                perf_stats=perf_stats,
             )
         return self._legacy_emitter_candidates(emitter)
 
@@ -1737,20 +2286,18 @@ class NoteBasedStereoLayout:
         allowed_zones: tuple[str, ...] | None = None,
         generation_stats: _CandidateGenerationStats | None = None,
         pass_name: str = "pass1",
+        geometry_skeleton_cache: dict[
+            _CandidateGeometrySkeletonKey,
+            tuple[_CandidateGeometrySkeleton, ...],
+        ] | None = None,
+        perf_stats: _PerformanceStats | None = None,
     ) -> list[EmitterCandidate]:
         candidates: list[EmitterCandidate] = []
-        seen: set[tuple[int, int, int]] = set()
         max_offset_delta = max(
             0,
             search_radius_limit
             if search_radius_limit is not None
             else self.config.pan_zone_search_radius_limit,
-        )
-        radius_tolerance_value = max(
-            0.0,
-            radius_tolerance
-            if radius_tolerance is not None
-            else self.config.radius_search_tolerance,
         )
         allow_adjacent_value = (
             allow_adjacent
@@ -1798,58 +2345,57 @@ class NoteBasedStereoLayout:
             else self.config.max_candidates_per_emitter,
         )
         generation_limit = candidate_limit_value * 4
-        for candidate_angle in angle_values:
-            for candidate_radius in radius_values:
-                base_y, offset_lateral = _offset_from_radius_angle_values(
-                    candidate_radius,
-                    candidate_angle,
-                )
-                for offset_y, depth_mirrored in self._depth_offset_candidates(base_y):
-                    if not self.config.allow_negative_depth_offsets and offset_y < 0:
-                        continue
-                    self._add_pan_zone_candidate_for_offsets(
-                        candidates,
-                        seen,
-                        emitter,
-                        offset_y=offset_y,
-                        offset_lateral=offset_lateral,
-                        depth_mirrored=depth_mirrored,
-                        allowed_zones=allowed_zone_tuple,
-                        radius_tolerance=radius_tolerance_value,
-                        candidate_angle=candidate_angle,
-                        candidate_radius=candidate_radius,
-                    )
-                    if len(candidates) >= generation_limit:
-                        break
-                if len(candidates) >= generation_limit:
-                    break
-            if len(candidates) >= generation_limit:
-                break
-
-        sorted_candidates = sorted(
-            candidates,
-            key=lambda candidate: (
-                abs(candidate.lateral_movement),
-                candidate.cost,
-                candidate.radius_error,
-                candidate.pan_error_inside_zone,
-                candidate.level,
-                abs(candidate.slot_index),
-                candidate.slot_index,
-            ),
+        skeleton_key = self._geometry_skeleton_key(
+            emitter,
+            pass_name=pass_name,
+            candidate_limit_value=candidate_limit_value,
+            generation_limit=generation_limit,
+            allowed_zones=allowed_zone_tuple,
+            angle_values=angle_values,
+            radius_values=radius_values,
+            y_radius=y_radius,
+            lateral_count=lateral_count,
         )
+        skeletons = self._geometry_skeletons_for_key(
+            skeleton_key,
+            geometry_skeleton_cache,
+            perf_stats,
+        )
+        for skeleton in skeletons:
+            candidates.append(
+                self._candidate_from_geometry_skeleton(emitter, skeleton)
+            )
+
+        sorted_candidates = _sort_pan_zone_candidates(candidates)
         if generation_stats is not None:
             assert generation_stats.candidate_counts_by_pass is not None
+            assert generation_stats.candidate_count_before_truncation_by_pass is not None
+            assert generation_stats.candidate_count_after_truncation_by_pass is not None
+            assert generation_stats.candidate_truncation_count_by_pass is not None
+            assert generation_stats.mirror_candidate_truncation_count_by_pass is not None
+            before_truncation = len(sorted_candidates)
+            after_truncation = min(before_truncation, candidate_limit_value)
             generation_stats.candidate_counts_by_pass[pass_name].append(
-                min(len(sorted_candidates), candidate_limit_value)
+                after_truncation
             )
-            if len(sorted_candidates) > candidate_limit_value:
+            generation_stats.candidate_count_before_truncation_by_pass[pass_name] += (
+                before_truncation
+            )
+            generation_stats.candidate_count_after_truncation_by_pass[pass_name] += (
+                after_truncation
+            )
+            if before_truncation > candidate_limit_value:
                 generation_stats.candidate_truncation_count += 1
-                generation_stats.mirror_candidate_truncated_count += sum(
+                generation_stats.candidate_truncation_count_by_pass[pass_name] += 1
+                truncated_mirrors = sum(
                     1
                     for candidate in sorted_candidates[candidate_limit_value:]
                     if candidate.depth_mirrored
                 )
+                generation_stats.mirror_candidate_truncated_count += truncated_mirrors
+                generation_stats.mirror_candidate_truncation_count_by_pass[
+                    pass_name
+                ] += truncated_mirrors
 
         return sorted_candidates[:candidate_limit_value]
 
@@ -1868,6 +2414,212 @@ class NoteBasedStereoLayout:
 
         mirrored = -preferred
         return ((preferred, False), (mirrored, True))
+
+    def _geometry_skeleton_key(
+        self,
+        emitter: NoteEmitter,
+        *,
+        pass_name: str,
+        candidate_limit_value: int,
+        generation_limit: int,
+        allowed_zones: tuple[str, ...],
+        angle_values: tuple[float, ...],
+        radius_values: tuple[int, ...],
+        y_radius: int,
+        lateral_count: int,
+    ) -> _CandidateGeometrySkeletonKey:
+        return _CandidateGeometrySkeletonKey(
+            pass_name=pass_name,
+            candidate_limit_value=candidate_limit_value,
+            generation_limit=generation_limit,
+            target_angle_degrees=_geometry_key_float(
+                emitter.target_angle_degrees
+            ),
+            target_radius=_geometry_key_float(emitter.target_radius),
+            ideal_radius=_geometry_key_float(emitter.ideal_radius),
+            allowed_zones=tuple(allowed_zones),
+            angle_values=tuple(
+                _geometry_key_float(value) for value in angle_values
+            ),
+            radius_values=tuple(radius_values),
+            y_radius=y_radius,
+            lateral_count=lateral_count,
+            max_stereo_angle_degrees=_geometry_key_float(
+                self.config.max_stereo_angle_degrees
+            ),
+            preferred_depth_sign=(
+                1 if self.config.preferred_depth_sign >= 0 else -1
+            ),
+            allow_negative_depth_offsets=self.config.allow_negative_depth_offsets,
+            enable_depth_mirror_candidates=(
+                self.config.enable_depth_mirror_candidates
+            ),
+            slot_indexes=(-1, 0, 1),
+        )
+
+    def _geometry_skeletons_for_key(
+        self,
+        key: _CandidateGeometrySkeletonKey,
+        cache: dict[
+            _CandidateGeometrySkeletonKey,
+            tuple[_CandidateGeometrySkeleton, ...],
+        ] | None,
+        perf_stats: _PerformanceStats | None,
+    ) -> tuple[_CandidateGeometrySkeleton, ...]:
+        if cache is not None and key in cache:
+            skeletons = cache[key]
+            if perf_stats is not None:
+                perf_stats.geometry_skeleton_cache_hits += 1
+                perf_stats.geometry_skeleton_candidates_reused += len(skeletons)
+                assert perf_stats.geometry_skeleton_key_use_counts is not None
+                perf_stats.geometry_skeleton_key_use_counts[
+                    _geometry_skeleton_key_label(key)
+                ] += 1
+            return skeletons
+
+        skeletons = self._build_geometry_skeletons(key)
+        if cache is not None:
+            cache[key] = skeletons
+        if perf_stats is not None:
+            perf_stats.geometry_skeleton_cache_misses += 1
+            perf_stats.geometry_skeleton_candidates_generated += len(skeletons)
+            assert perf_stats.geometry_skeleton_key_use_counts is not None
+            perf_stats.geometry_skeleton_key_use_counts[
+                _geometry_skeleton_key_label(key)
+            ] += 1
+        return skeletons
+
+    def _build_geometry_skeletons(
+        self,
+        key: _CandidateGeometrySkeletonKey,
+    ) -> tuple[_CandidateGeometrySkeleton, ...]:
+        skeletons: list[_CandidateGeometrySkeleton] = []
+        seen: set[tuple[int, int, int]] = set()
+
+        for candidate_angle in key.angle_values:
+            for candidate_radius in key.radius_values:
+                base_y, offset_lateral = _offset_from_radius_angle_values(
+                    candidate_radius,
+                    candidate_angle,
+                )
+                for offset_y, depth_mirrored in self._depth_offset_candidates(base_y):
+                    if not key.allow_negative_depth_offsets and offset_y < 0:
+                        continue
+                    actual_radius = math.hypot(offset_y, offset_lateral)
+                    candidate_zone = _pan_zone_for_angle(candidate_angle)
+                    if candidate_zone not in key.allowed_zones:
+                        continue
+                    pan_error = _angle_error_inside_zone(
+                        candidate_angle,
+                        candidate_zone,
+                        key.max_stereo_angle_degrees,
+                    )
+                    radius_error = abs(actual_radius - key.ideal_radius)
+                    for slot_index in key.slot_indexes:
+                        seen_key = (offset_y, offset_lateral, slot_index)
+                        if seen_key in seen:
+                            continue
+                        seen.add(seen_key)
+                        skeletons.append(
+                            _CandidateGeometrySkeleton(
+                                offset_y=offset_y,
+                                offset_lateral=offset_lateral,
+                                slot_index=slot_index,
+                                depth_mirrored=depth_mirrored,
+                                candidate_angle_degrees=candidate_angle,
+                                candidate_radius=candidate_radius,
+                                candidate_pan_zone=candidate_zone,
+                                radius_error=radius_error,
+                                pan_error_inside_zone=pan_error,
+                                chosen_radius=actual_radius,
+                            )
+                        )
+                    if len(skeletons) >= key.generation_limit:
+                        break
+                if len(skeletons) >= key.generation_limit:
+                    break
+            if len(skeletons) >= key.generation_limit:
+                break
+
+        return tuple(skeletons)
+
+    def _candidate_from_geometry_skeleton(
+        self,
+        emitter: NoteEmitter,
+        skeleton: _CandidateGeometrySkeleton,
+    ) -> EmitterCandidate:
+        candidate_panning = _panning_from_angle(
+            skeleton.candidate_angle_degrees,
+            self.config.max_stereo_angle_degrees,
+        )
+        y_movement = skeleton.offset_y - emitter.ideal_offset_y
+        lateral_movement = skeleton.offset_lateral - emitter.ideal_offset_lateral
+        movement_distance = math.hypot(
+            skeleton.chosen_radius - emitter.target_radius,
+            skeleton.candidate_angle_degrees - emitter.target_angle_degrees,
+        )
+        y_height_penalty = (
+            abs(skeleton.chosen_radius - emitter.target_radius)
+            / max(1.0, self.config.max_hearing_distance)
+        )
+        level = 0 if movement_distance == 0 else 1
+        if skeleton.depth_mirrored:
+            level = max(level, 1)
+
+        movement_penalty = _dynamic_movement_penalty(
+            emitter.target_angle_degrees,
+            y_movement_amount=abs(y_movement),
+            z_movement_amount=abs(lateral_movement),
+            original_y_penalty=PAN_ZONE_ORIGINAL_Y_MOVE_PENALTY,
+            original_z_penalty=(
+                PAN_ZONE_ORIGINAL_Y_MOVE_PENALTY
+                + self.config.lateral_step_penalty
+            ),
+        )
+        cost = (
+            skeleton.radius_error * 3.0
+            + skeleton.pan_error_inside_zone * 0.5
+            + movement_penalty
+            + abs(skeleton.slot_index) * 0.2
+            + y_height_penalty * 0.2
+        )
+        cost += self._candidate_pan_hint_score(
+            emitter,
+            skeleton.candidate_pan_zone,
+        )
+        if skeleton.depth_mirrored:
+            cost += self.config.depth_mirror_penalty
+        adjacent_fallback = skeleton.candidate_pan_zone != emitter.pan_zone
+        if adjacent_fallback:
+            cost += 10
+
+        return EmitterCandidate(
+            emitter_id=emitter.emitter_id,
+            position=self._position_from_offsets(
+                emitter.tick,
+                skeleton.offset_y,
+                skeleton.offset_lateral,
+            ),
+            offset_y=skeleton.offset_y,
+            offset_lateral=skeleton.offset_lateral,
+            rail_offset_y=skeleton.offset_y,
+            rail_offset_lateral=(
+                skeleton.offset_lateral - skeleton.slot_index
+            ),
+            slot_index=skeleton.slot_index,
+            level=level,
+            cost=cost,
+            y_movement=y_movement,
+            lateral_movement=lateral_movement,
+            pan_zone=skeleton.candidate_pan_zone,
+            candidate_panning=candidate_panning,
+            radius_error=skeleton.radius_error,
+            pan_error_inside_zone=skeleton.pan_error_inside_zone,
+            adjacent_zone_fallback=adjacent_fallback,
+            depth_mirrored=skeleton.depth_mirrored,
+            chosen_angle_degrees=skeleton.candidate_angle_degrees,
+            chosen_radius=skeleton.chosen_radius,
+        )
 
     def _add_pan_zone_candidate_for_offsets(
         self,
@@ -1968,11 +2720,6 @@ class NoteBasedStereoLayout:
                 offset_y,
                 offset_lateral,
             )
-            movement = (
-                movement_distance
-                if movement_distance is not None
-                else abs(y_movement) + abs(lateral_movement)
-            )
             candidate_radius_error = (
                 radius_error
                 if radius_error is not None
@@ -1988,7 +2735,10 @@ class NoteBasedStereoLayout:
                 pan_error_inside_zone
                 if pan_error_inside_zone is not None
                 else _pan_error_inside_zone(
-                    emitter.final_panning,
+                    _panning_from_angle(
+                        emitter.target_angle_degrees,
+                        self.config.max_stereo_angle_degrees,
+                    ),
                     candidate_panning_value,
                     emitter.pan_zone,
                 )
@@ -2004,25 +2754,41 @@ class NoteBasedStereoLayout:
                 else math.hypot(offset_y, offset_lateral)
             )
             if self.config.enable_pan_zone_layout:
-                lateral_penalty = (
-                    abs(lateral_movement) * self.config.lateral_step_penalty
+                movement_penalty = _dynamic_movement_penalty(
+                    emitter.target_angle_degrees,
+                    y_movement_amount=abs(y_movement),
+                    z_movement_amount=abs(lateral_movement),
+                    original_y_penalty=PAN_ZONE_ORIGINAL_Y_MOVE_PENALTY,
+                    original_z_penalty=(
+                        PAN_ZONE_ORIGINAL_Y_MOVE_PENALTY
+                        + self.config.lateral_step_penalty
+                    ),
                 )
                 cost = (
                     candidate_radius_error * 3.0
                     + candidate_pan_error * 0.5
-                    + movement * 0.3
-                    + lateral_penalty
+                    + movement_penalty
                     + abs(slot_index) * 0.2
                     + y_height_penalty * 0.2
+                )
+                cost += self._candidate_pan_hint_score(
+                    emitter,
+                    candidate_pan_zone,
                 )
                 if depth_mirrored:
                     cost += self.config.depth_mirror_penalty
                 if adjacent_zone_fallback:
                     cost += 10
             else:
+                movement_penalty = _dynamic_movement_penalty(
+                    emitter.target_angle_degrees,
+                    y_movement_amount=abs(y_movement),
+                    z_movement_amount=abs(lateral_movement),
+                    original_y_penalty=LEGACY_ORIGINAL_Y_MOVE_PENALTY,
+                    original_z_penalty=LEGACY_ORIGINAL_Z_MOVE_PENALTY,
+                )
                 cost = (
-                    abs(y_movement)
-                    + abs(lateral_movement) * 2
+                    movement_penalty
                     + level * 0.01
                     + abs(slot_index) * 0.05
                 )
@@ -2275,6 +3041,232 @@ def _merge_candidate_values(
             candidate_values[key] = candidate_values.get(key, 0) + 1
 
 
+def _sort_pan_zone_candidates(
+    candidates: list[EmitterCandidate],
+) -> list[EmitterCandidate]:
+    return sorted(
+        candidates,
+        key=lambda candidate: (
+            candidate.cost,
+            candidate.radius_error,
+            candidate.pan_error_inside_zone,
+            candidate.level,
+            abs(candidate.slot_index),
+            candidate.slot_index,
+        ),
+    )
+
+
+def _count_items(values: dict[str, int] | None) -> tuple[tuple[str, int], ...]:
+    if not values:
+        return ()
+    return tuple(
+        (key, int(value))
+        for key, value in sorted(values.items())
+        if value
+    )
+
+
+def _geometry_key_float(value: float) -> float:
+    return round(float(value), 6)
+
+
+def _geometry_skeleton_key_label(key: _CandidateGeometrySkeletonKey) -> str:
+    zones = ",".join(key.allowed_zones)
+    return (
+        f"{key.pass_name}|angle={key.target_angle_degrees:.3f}|"
+        f"radius={key.target_radius:.3f}|zones={zones}|"
+        f"angles={len(key.angle_values)}|radii={len(key.radius_values)}|"
+        f"slots={len(key.slot_indexes)}|mirror={int(key.enable_depth_mirror_candidates)}"
+    )
+
+
+def _geometry_skeleton_cache_hit_rate(stats: _PerformanceStats) -> float:
+    total = (
+        stats.geometry_skeleton_cache_hits
+        + stats.geometry_skeleton_cache_misses
+    )
+    if total == 0:
+        return 0.0
+    return stats.geometry_skeleton_cache_hits / total
+
+
+def _top_geometry_skeleton_key_counts(
+    stats: _PerformanceStats,
+) -> tuple[tuple[str, int], ...]:
+    if not stats.geometry_skeleton_key_use_counts:
+        return ()
+    return tuple(
+        (key, int(value))
+        for key, value in sorted(
+            stats.geometry_skeleton_key_use_counts.items(),
+            key=lambda item: (-item[1], item[0]),
+        )[:10]
+        if value
+    )
+
+
+def _pan_normalization_scale_for_song(song: Song) -> float:
+    return _pan_normalization_scale(
+        note.final_panning
+        for track in song.tracks
+        for note in track.notes
+    )
+
+
+def _pan_normalization_scale(panning_values) -> float:
+    values = tuple(float(value) for value in panning_values)
+    if not values:
+        return 1.0
+
+    min_pan = min(values)
+    max_pan = max(values)
+    left_extent = max(0.0, 100.0 - min_pan)
+    right_extent = max(0.0, max_pan - 100.0)
+    max_extent = max(left_extent, right_extent)
+    if PAN_NORMALIZE_MIN_EXTENT <= max_extent < 100.0:
+        return min(100.0 / max_extent, PAN_NORMALIZE_MAX_SCALE)
+    return 1.0
+
+
+def _normalize_panning(raw_pan: float, scale: float) -> float:
+    return max(0.0, min(200.0, 100.0 + (raw_pan - 100.0) * scale))
+
+
+def _dynamic_movement_penalties(
+    target_angle_degrees: float,
+    *,
+    original_y_penalty: float,
+    original_z_penalty: float,
+) -> tuple[float, float]:
+    t = _clamp_unit(abs(target_angle_degrees) / 90.0)
+    dynamic_y_penalty = original_z_penalty + (
+        original_y_penalty - original_z_penalty
+    ) * t
+    dynamic_z_penalty = original_y_penalty + (
+        original_z_penalty - original_y_penalty
+    ) * t
+    return dynamic_y_penalty, dynamic_z_penalty
+
+
+def _dynamic_movement_penalty(
+    target_angle_degrees: float,
+    *,
+    y_movement_amount: float,
+    z_movement_amount: float,
+    original_y_penalty: float,
+    original_z_penalty: float,
+) -> float:
+    dynamic_y_penalty, dynamic_z_penalty = _dynamic_movement_penalties(
+        target_angle_degrees,
+        original_y_penalty=original_y_penalty,
+        original_z_penalty=original_z_penalty,
+    )
+    return (
+        dynamic_y_penalty * y_movement_amount
+        + dynamic_z_penalty * z_movement_amount
+    )
+
+
+def _segment_pan_hint_score(
+    segment: LayoutSpatialSegmentHint,
+    emitter: NoteEmitter,
+    candidate_pan_zone: str,
+    *,
+    max_stereo_angle_degrees: float,
+) -> float:
+    pan_mode_factor = PAN_MODE_FACTORS.get(segment.pan_mode, 0.0)
+    if pan_mode_factor <= 0.0 or segment.layout_hint_weight <= 0.0:
+        return 0.0
+
+    target_interval = _segment_pan_target_interval(
+        segment.pan_mode,
+        emitter,
+        max_stereo_angle_degrees=max_stereo_angle_degrees,
+    )
+    if target_interval is None:
+        return 0.0
+
+    effective_weight = segment.layout_hint_weight
+    if segment.volume_contour_mode == "insufficient_data":
+        effective_weight = min(effective_weight, 0.15)
+
+    candidate_interval = _pan_zone_angle_range(
+        candidate_pan_zone,
+        max_stereo_angle_degrees,
+    )
+    angular_distance = _interval_distance(candidate_interval, target_interval)
+    angular_pan_penalty = _clamp_unit(angular_distance / 90.0)
+    return (
+        effective_weight
+        * pan_mode_factor
+        * PAN_HINT_WEIGHT
+        * angular_pan_penalty
+    )
+
+
+def _segment_pan_target_interval(
+    pan_mode: str,
+    emitter: NoteEmitter,
+    *,
+    max_stereo_angle_degrees: float,
+) -> tuple[float, float] | None:
+    if pan_mode in SEGMENT_PAN_TARGET_INTERVALS:
+        return SEGMENT_PAN_TARGET_INTERVALS[pan_mode]
+    if pan_mode == "bimodal_left_right":
+        if emitter.target_angle_degrees < 0:
+            return _side_pan_target_interval("left", max_stereo_angle_degrees)
+        if emitter.target_angle_degrees > 0:
+            return _side_pan_target_interval("right", max_stereo_angle_degrees)
+        return None
+    if pan_mode == "center_plus_side":
+        note_zone = _pan_zone_for_angle(emitter.target_angle_degrees)
+        if note_zone == "CENTER":
+            return SEGMENT_PAN_TARGET_INTERVALS["center_stable"]
+        if emitter.target_angle_degrees < 0:
+            return SEGMENT_PAN_TARGET_INTERVALS["left_stable"]
+        if emitter.target_angle_degrees > 0:
+            return SEGMENT_PAN_TARGET_INTERVALS["right_stable"]
+        return None
+    if pan_mode == "wide_or_split":
+        if emitter.target_angle_degrees < 0:
+            return _side_pan_target_interval("left", max_stereo_angle_degrees)
+        if emitter.target_angle_degrees > 0:
+            return _side_pan_target_interval("right", max_stereo_angle_degrees)
+        return SEGMENT_PAN_TARGET_INTERVALS["center_stable"]
+    return None
+
+
+def _side_pan_target_interval(
+    side: str,
+    max_stereo_angle_degrees: float,
+) -> tuple[float, float]:
+    if side == "left":
+        edge_start = _pan_zone_angle_range("L_EDGE", max_stereo_angle_degrees)[0]
+        inner_end = _pan_zone_angle_range("L_INNER", max_stereo_angle_degrees)[1]
+        return (edge_start, inner_end)
+    inner_start = _pan_zone_angle_range("R_INNER", max_stereo_angle_degrees)[0]
+    edge_end = _pan_zone_angle_range("R_EDGE", max_stereo_angle_degrees)[1]
+    return (inner_start, edge_end)
+
+
+def _interval_distance(
+    a: tuple[float, float],
+    b: tuple[float, float],
+) -> float:
+    a_min, a_max = a
+    b_min, b_max = b
+    if a_max < b_min:
+        return b_min - a_max
+    if b_max < a_min:
+        return a_min - b_max
+    return 0.0
+
+
+def _clamp_unit(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
+
 def _failed_emitter_examples(
     failed_emitters: tuple[NoteEmitter, ...] | list[NoteEmitter],
     limit: int = 20,
@@ -2402,6 +3394,38 @@ def _replace_dict(target: dict, source: dict) -> None:
 def _replace_set(target: set, source: set) -> None:
     target.clear()
     target.update(source)
+
+
+def _remove_one_occupied_block(
+    occupancy: _FootprintOccupancy,
+    position: BlockPosition,
+    block_type: str,
+) -> bool:
+    block_types = occupancy.occupied.get(position)
+    if not block_types or block_type not in block_types:
+        return False
+    block_types.remove(block_type)
+    if not block_types:
+        del occupancy.occupied[position]
+    return True
+
+
+def _timed_footprint_collides(
+    occupancy: _FootprintOccupancy,
+    footprint: _Footprint,
+    perf_stats: _PerformanceStats,
+    category: str,
+) -> bool:
+    start = time.perf_counter()
+    collides = _footprint_collides(occupancy, footprint)
+    elapsed = time.perf_counter() - start
+    perf_stats.footprint_collision_total_seconds += elapsed
+    perf_stats.footprint_collision_check_count += 1
+    if category == "upgrade":
+        perf_stats.upgrade_footprint_collision_elapsed_seconds += elapsed
+    else:
+        perf_stats.assignment_footprint_collision_elapsed_seconds += elapsed
+    return collides
 
 
 def _note_based_preview_footprint_entries(
