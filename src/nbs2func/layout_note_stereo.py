@@ -266,6 +266,91 @@ class _AssignmentRetryStats:
 
 
 @dataclass
+class _AssignmentTimingStats:
+    pass1_assignment_seconds: float = 0
+    pass2_retry_candidate_generation_seconds: float = 0
+    pass2_candidate_value_merge_seconds: float = 0
+    pass2_assignment_seconds: float = 0
+    pass3_retry_candidate_generation_seconds: float = 0
+    pass3_candidate_value_merge_seconds: float = 0
+    pass3_assignment_seconds: float = 0
+    same_side_split_seconds: float = 0
+    note_level_center_split_seconds: float = 0
+    final_fallback_split_handling_seconds: float = 0
+    pass2_retry_emitter_count: int = 0
+    pass2_retry_total_candidates_generated: int = 0
+    pass2_retry_max_candidates_for_one_emitter: int = 0
+    pass3_retry_emitter_count: int = 0
+    pass3_retry_total_candidates_generated: int = 0
+    pass3_retry_max_candidates_for_one_emitter: int = 0
+    pass3_enabled: bool = False
+    same_side_split_enabled: bool = False
+
+    @property
+    def pass2_retry_average_candidates_per_emitter(self) -> float:
+        if not self.pass2_retry_emitter_count:
+            return 0
+        return (
+            self.pass2_retry_total_candidates_generated
+            / self.pass2_retry_emitter_count
+        )
+
+    @property
+    def pass3_retry_average_candidates_per_emitter(self) -> float:
+        if not self.pass3_retry_emitter_count:
+            return 0
+        return (
+            self.pass3_retry_total_candidates_generated
+            / self.pass3_retry_emitter_count
+        )
+
+    def stage_timings(self) -> tuple[StageTiming, ...]:
+        timings = [
+            StageTiming("pass1 assignment time", self.pass1_assignment_seconds),
+            StageTiming(
+                "pass2 retry candidate generation time",
+                self.pass2_retry_candidate_generation_seconds,
+            ),
+            StageTiming(
+                "pass2 candidate value merge time",
+                self.pass2_candidate_value_merge_seconds,
+            ),
+            StageTiming("pass2 assignment time", self.pass2_assignment_seconds),
+        ]
+        if self.pass3_enabled:
+            timings.extend(
+                [
+                    StageTiming(
+                        "pass3 retry candidate generation time",
+                        self.pass3_retry_candidate_generation_seconds,
+                    ),
+                    StageTiming(
+                        "pass3 candidate value merge time",
+                        self.pass3_candidate_value_merge_seconds,
+                    ),
+                    StageTiming("pass3 assignment time", self.pass3_assignment_seconds),
+                ]
+            )
+        if self.same_side_split_enabled:
+            timings.append(
+                StageTiming("same-side split time", self.same_side_split_seconds)
+            )
+        timings.extend(
+            [
+                StageTiming(
+                    "note-level center split time",
+                    self.note_level_center_split_seconds,
+                ),
+                StageTiming(
+                    "final fallback / split handling time",
+                    self.final_fallback_split_handling_seconds,
+                ),
+            ]
+        )
+        return tuple(timings)
+
+
+@dataclass
 class _AssignmentState:
     assignments: list[SlotAssignment]
     occupancy: _FootprintOccupancy
@@ -407,6 +492,7 @@ class NoteBasedStereoLayout:
             rail_validation_stats,
             center_split_stats,
             retry_stats,
+            assignment_timing_stats,
         ) = self._assign_emitters(
             emitters,
             registry,
@@ -418,6 +504,10 @@ class NoteBasedStereoLayout:
             total_start,
         )
         perf_stats.assignment_total_seconds = time.perf_counter() - stage_start
+        assignment_timing_stats.note_level_center_split_seconds = (
+            perf_stats.center_split_total_seconds
+        )
+        timings.extend(assignment_timing_stats.stage_timings())
         timings.append(StageTiming("assignment time", perf_stats.assignment_total_seconds))
 
         stage_start = time.perf_counter()
@@ -597,6 +687,58 @@ class NoteBasedStereoLayout:
             adjacent_zone_fallback_failed_count=retry_stats.adjacent_failed,
             adjacent_zone_fallback_by_source_zone=(
                 _adjacent_zone_fallback_summary(retry_stats)
+            ),
+            pass1_assignment_seconds=(
+                assignment_timing_stats.pass1_assignment_seconds
+            ),
+            pass2_retry_candidate_generation_seconds=(
+                assignment_timing_stats.pass2_retry_candidate_generation_seconds
+            ),
+            pass2_candidate_value_merge_seconds=(
+                assignment_timing_stats.pass2_candidate_value_merge_seconds
+            ),
+            pass2_assignment_seconds=(
+                assignment_timing_stats.pass2_assignment_seconds
+            ),
+            pass3_retry_candidate_generation_seconds=(
+                assignment_timing_stats.pass3_retry_candidate_generation_seconds
+            ),
+            pass3_candidate_value_merge_seconds=(
+                assignment_timing_stats.pass3_candidate_value_merge_seconds
+            ),
+            pass3_assignment_seconds=(
+                assignment_timing_stats.pass3_assignment_seconds
+            ),
+            same_side_split_seconds=assignment_timing_stats.same_side_split_seconds,
+            note_level_center_split_seconds=(
+                assignment_timing_stats.note_level_center_split_seconds
+            ),
+            final_fallback_split_handling_seconds=(
+                assignment_timing_stats.final_fallback_split_handling_seconds
+            ),
+            pass2_retry_emitter_count=(
+                assignment_timing_stats.pass2_retry_emitter_count
+            ),
+            pass2_retry_total_candidates_generated=(
+                assignment_timing_stats.pass2_retry_total_candidates_generated
+            ),
+            pass2_retry_average_candidates_per_emitter=(
+                assignment_timing_stats.pass2_retry_average_candidates_per_emitter
+            ),
+            pass2_retry_max_candidates_for_one_emitter=(
+                assignment_timing_stats.pass2_retry_max_candidates_for_one_emitter
+            ),
+            pass3_retry_emitter_count=(
+                assignment_timing_stats.pass3_retry_emitter_count
+            ),
+            pass3_retry_total_candidates_generated=(
+                assignment_timing_stats.pass3_retry_total_candidates_generated
+            ),
+            pass3_retry_average_candidates_per_emitter=(
+                assignment_timing_stats.pass3_retry_average_candidates_per_emitter
+            ),
+            pass3_retry_max_candidates_for_one_emitter=(
+                assignment_timing_stats.pass3_retry_max_candidates_for_one_emitter
             ),
             candidate_truncation_count=(
                 candidate_generation_stats.candidate_truncation_count
@@ -923,6 +1065,7 @@ class NoteBasedStereoLayout:
         _RailValidationStats,
         _NoteLevelCenterSplitStats,
         _AssignmentRetryStats,
+        _AssignmentTimingStats,
     ]:
         state = _AssignmentState(
             assignments=[],
@@ -936,7 +1079,13 @@ class NoteBasedStereoLayout:
         rail_stats = _RailValidationStats()
         center_split_stats = _NoteLevelCenterSplitStats()
         retry_stats = _AssignmentRetryStats()
+        timing_stats = _AssignmentTimingStats(
+            pass3_enabled=self.config.allow_adjacent_pan_zone_fallback_for_failed,
+            same_side_split_enabled=self.config.enable_same_side_zone_split_fallback,
+        )
 
+        self._log("stage: pass1 assignment")
+        pass_start = time.perf_counter()
         failed_after_pass1 = self._assign_emitter_pass(
             emitters=emitters,
             candidate_cache=candidate_cache,
@@ -951,12 +1100,19 @@ class NoteBasedStereoLayout:
             pass_name="pass1",
             allow_center_split=True,
         )
+        timing_stats.pass1_assignment_seconds = time.perf_counter() - pass_start
         retry_stats.failed_after_pass1 = len(failed_after_pass1)
         retry_stats.failed_examples_after_pass1 = _failed_emitter_examples(
             failed_after_pass1
         )
+        self._log(f"pass1 failed emitters: {len(failed_after_pass1)}")
 
         retry_start = time.perf_counter()
+        self._log(
+            "stage: generating pass2 retry candidates: "
+            f"{len(failed_after_pass1)} emitters"
+        )
+        pass_start = time.perf_counter()
         pass2_cache = self._retry_candidate_cache(
             failed_after_pass1,
             pass_name="pass2",
@@ -964,9 +1120,26 @@ class NoteBasedStereoLayout:
             candidate_generation_stats=candidate_generation_stats,
             geometry_skeleton_cache=geometry_skeleton_cache,
             perf_stats=perf_stats,
+            total_start=total_start,
+            progress_label="pass2 retry candidates",
         )
+        timing_stats.pass2_retry_candidate_generation_seconds = (
+            time.perf_counter() - pass_start
+        )
+        (
+            timing_stats.pass2_retry_emitter_count,
+            timing_stats.pass2_retry_total_candidates_generated,
+            timing_stats.pass2_retry_max_candidates_for_one_emitter,
+        ) = _candidate_cache_summary(pass2_cache)
+        self._log("stage: merging pass2 candidate values")
+        pass_start = time.perf_counter()
         _merge_candidate_values(candidate_values, pass2_cache)
+        timing_stats.pass2_candidate_value_merge_seconds = (
+            time.perf_counter() - pass_start
+        )
         retry_stats.retry_attempted += len(failed_after_pass1)
+        self._log("stage: pass2 assignment")
+        pass_start = time.perf_counter()
         failed_after_pass2 = self._assign_emitter_pass(
             emitters=tuple(failed_after_pass1),
             candidate_cache=pass2_cache,
@@ -981,17 +1154,24 @@ class NoteBasedStereoLayout:
             pass_name="pass2",
             allow_center_split=False,
         )
+        timing_stats.pass2_assignment_seconds = time.perf_counter() - pass_start
         retry_stats.failed_after_pass2 = len(failed_after_pass2)
         retry_stats.failed_examples_after_pass2 = _failed_emitter_examples(
             failed_after_pass2
         )
         retry_stats.retry_accepted += len(failed_after_pass1) - len(failed_after_pass2)
+        self._log(f"pass2 failed emitters: {len(failed_after_pass2)}")
 
         failed_after_pass3 = failed_after_pass2
         if self.config.allow_adjacent_pan_zone_fallback_for_failed:
             pass3_emitters = tuple(
                 emitter for emitter in failed_after_pass2 if emitter.pan_zone != "CENTER"
             )
+            self._log(
+                "stage: generating pass3 retry candidates: "
+                f"{len(pass3_emitters)} emitters"
+            )
+            pass_start = time.perf_counter()
             pass3_cache = self._retry_candidate_cache(
                 pass3_emitters,
                 pass_name="pass3",
@@ -999,13 +1179,30 @@ class NoteBasedStereoLayout:
                 candidate_generation_stats=candidate_generation_stats,
                 geometry_skeleton_cache=geometry_skeleton_cache,
                 perf_stats=perf_stats,
+                total_start=total_start,
+                progress_label="pass3 retry candidates",
             )
+            timing_stats.pass3_retry_candidate_generation_seconds = (
+                time.perf_counter() - pass_start
+            )
+            (
+                timing_stats.pass3_retry_emitter_count,
+                timing_stats.pass3_retry_total_candidates_generated,
+                timing_stats.pass3_retry_max_candidates_for_one_emitter,
+            ) = _candidate_cache_summary(pass3_cache)
+            self._log("stage: merging pass3 candidate values")
+            pass_start = time.perf_counter()
             _merge_candidate_values(candidate_values, pass3_cache)
+            timing_stats.pass3_candidate_value_merge_seconds = (
+                time.perf_counter() - pass_start
+            )
             retry_stats.retry_attempted += len(pass3_emitters)
             retry_stats.adjacent_attempted += len(pass3_emitters)
             for emitter in pass3_emitters:
                 if retry_stats.adjacent_by_source_zone is not None:
                     retry_stats.adjacent_by_source_zone[emitter.pan_zone][0] += 1
+            self._log("stage: pass3 assignment")
+            pass_start = time.perf_counter()
             pass3_failed_non_center = self._assign_emitter_pass(
                 emitters=pass3_emitters,
                 candidate_cache=pass3_cache,
@@ -1020,6 +1217,7 @@ class NoteBasedStereoLayout:
                 pass_name="pass3",
                 allow_center_split=False,
             )
+            timing_stats.pass3_assignment_seconds = time.perf_counter() - pass_start
             accepted_ids = {
                 emitter.emitter_id
                 for emitter in pass3_emitters
@@ -1040,6 +1238,7 @@ class NoteBasedStereoLayout:
                 for emitter in failed_after_pass2
                 if emitter.pan_zone == "CENTER"
             ) + tuple(pass3_failed_non_center)
+            self._log(f"pass3 failed emitters: {len(failed_after_pass3)}")
         perf_stats.retry_total_seconds += time.perf_counter() - retry_start
 
         retry_stats.failed_after_pass3 = len(failed_after_pass3)
@@ -1048,11 +1247,14 @@ class NoteBasedStereoLayout:
         )
         retry_stats.retry_failed = len(failed_after_pass3)
 
+        self._log("stage: final fallback / split handling")
+        fallback_start = time.perf_counter()
         final_failed: list[NoteEmitter] = []
-        for emitter in failed_after_pass3:
+        for index, emitter in enumerate(failed_after_pass3, start=1):
             if emitter.pan_zone != "CENTER" and self.config.enable_same_side_zone_split_fallback:
                 used_slots = state.used_slots_by_tick[emitter.tick]
                 active_rail_cells = state.active_rail_cells_by_tick[emitter.tick]
+                split_start = time.perf_counter()
                 split_assignments = self._try_same_side_zone_split(
                     emitter,
                     tick=emitter.tick,
@@ -1068,6 +1270,9 @@ class NoteBasedStereoLayout:
                     candidate_generation_stats=candidate_generation_stats,
                     perf_stats=perf_stats,
                     geometry_skeleton_cache=geometry_skeleton_cache,
+                )
+                timing_stats.same_side_split_seconds += (
+                    time.perf_counter() - split_start
                 )
                 if split_assignments:
                     state.assignments.extend(split_assignments)
@@ -1097,6 +1302,15 @@ class NoteBasedStereoLayout:
                     state.assignments.extend(split_assignments)
                     continue
             final_failed.append(emitter)
+            if index % 1000 == 0 or index == len(failed_after_pass3):
+                self._log(
+                    "final fallback emitters: "
+                    f"{index}/{len(failed_after_pass3)}"
+                )
+            self._check_time_limit(total_start, "final fallback / split handling")
+        timing_stats.final_fallback_split_handling_seconds = (
+            time.perf_counter() - fallback_start
+        )
 
         return (
             state.assignments,
@@ -1104,6 +1318,7 @@ class NoteBasedStereoLayout:
             rail_stats,
             center_split_stats,
             retry_stats,
+            timing_stats,
         )
 
     def _try_same_side_zone_split(
@@ -1346,9 +1561,9 @@ class NoteBasedStereoLayout:
                     state.assignments.append(selected)
 
                 assigned_or_failed += 1
-                if assigned_or_failed % 1000 == 0:
+                if assigned_or_failed % 1000 == 0 or assigned_or_failed == len(emitters):
                     self._log(
-                        f"{pass_name} assigning emitters: "
+                        f"{pass_name} assignment emitters: "
                         f"{assigned_or_failed}/{len(emitters)}"
                     )
                 self._check_time_limit(total_start, f"{pass_name} assignment")
@@ -1371,9 +1586,11 @@ class NoteBasedStereoLayout:
             tuple[_CandidateGeometrySkeleton, ...],
         ],
         perf_stats: _PerformanceStats,
+        total_start: float | None = None,
+        progress_label: str = "retry candidates",
     ) -> dict[str, tuple[EmitterCandidate, ...]]:
         cache: dict[str, tuple[EmitterCandidate, ...]] = {}
-        for emitter in emitters:
+        for index, emitter in enumerate(emitters, start=1):
             allowed_zones = (
                 _failed_retry_pan_zones(emitter.pan_zone)
                 if allow_adjacent
@@ -1407,6 +1624,10 @@ class NoteBasedStereoLayout:
                     perf_stats=perf_stats,
                 )
             )
+            if index % 500 == 0 or index == len(emitters):
+                self._log(f"{progress_label}: {index}/{len(emitters)}")
+            if total_start is not None:
+                self._check_time_limit(total_start, f"{progress_label} generation")
         return cache
 
     def _try_assign_emitter(
@@ -3081,6 +3302,15 @@ def _merge_candidate_values(
         for candidate in candidates:
             key = (candidate.rail_offset_y, candidate.rail_offset_lateral)
             candidate_values[key] = candidate_values.get(key, 0) + 1
+
+
+def _candidate_cache_summary(
+    candidate_cache: dict[str, tuple[EmitterCandidate, ...]],
+) -> tuple[int, int, int]:
+    counts = [len(candidates) for candidates in candidate_cache.values()]
+    if not counts:
+        return (0, 0, 0)
+    return (len(counts), sum(counts), max(counts))
 
 
 def _sort_pan_zone_candidates(

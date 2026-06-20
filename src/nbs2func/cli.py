@@ -1229,6 +1229,41 @@ def _print_note_based_preview(report) -> None:
     print(f"  ideal emitter build time: {report.ideal_emitter_build_seconds:.3f}s")
     print(f"  candidate generation time: {report.candidate_generation_seconds:.3f}s")
     print(f"  assignment total time: {report.assignment_total_seconds:.3f}s")
+    print("  assignment breakdown:")
+    print(f"    pass1 assignment: {report.pass1_assignment_seconds:.3f}s")
+    print(
+        "    pass2 retry candidate generation / merge / assignment: "
+        f"{report.pass2_retry_candidate_generation_seconds:.3f}s / "
+        f"{report.pass2_candidate_value_merge_seconds:.3f}s / "
+        f"{report.pass2_assignment_seconds:.3f}s"
+    )
+    print(
+        "    pass3 retry candidate generation / merge / assignment: "
+        f"{report.pass3_retry_candidate_generation_seconds:.3f}s / "
+        f"{report.pass3_candidate_value_merge_seconds:.3f}s / "
+        f"{report.pass3_assignment_seconds:.3f}s"
+    )
+    print(
+        "    same-side split / note-level center split / final fallback: "
+        f"{report.same_side_split_seconds:.3f}s / "
+        f"{report.note_level_center_split_seconds:.3f}s / "
+        f"{report.final_fallback_split_handling_seconds:.3f}s"
+    )
+    print("  retry candidate generation:")
+    print(
+        "    pass2 emitters / total / avg / max: "
+        f"{report.pass2_retry_emitter_count} / "
+        f"{report.pass2_retry_total_candidates_generated} / "
+        f"{report.pass2_retry_average_candidates_per_emitter:.2f} / "
+        f"{report.pass2_retry_max_candidates_for_one_emitter}"
+    )
+    print(
+        "    pass3 emitters / total / avg / max: "
+        f"{report.pass3_retry_emitter_count} / "
+        f"{report.pass3_retry_total_candidates_generated} / "
+        f"{report.pass3_retry_average_candidates_per_emitter:.2f} / "
+        f"{report.pass3_retry_max_candidates_for_one_emitter}"
+    )
     print(f"  retry total time: {report.retry_total_seconds:.3f}s")
     print(f"  center split time: {report.center_split_total_seconds:.3f}s")
     print(f"  debug report build time: {report.debug_report_build_seconds:.3f}s")

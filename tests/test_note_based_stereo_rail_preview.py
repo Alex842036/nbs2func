@@ -1,4 +1,6 @@
+import io
 import unittest
+from contextlib import redirect_stdout
 from dataclasses import replace
 from unittest import mock
 
@@ -1327,6 +1329,72 @@ class NoteBasedStereoRailPreviewTest(unittest.TestCase):
         self.assertEqual(preview.failed_assignment_count, 0)
         self.assertGreater(preview.retry_accepted_count, 0)
         self.assertEqual(preview.center_split_attempted_count, 0)
+        timing_names = {timing.stage for timing in preview.stage_timings}
+        self.assertIn("pass1 assignment time", timing_names)
+        self.assertIn("pass2 retry candidate generation time", timing_names)
+        self.assertIn("pass2 candidate value merge time", timing_names)
+        self.assertIn("pass2 assignment time", timing_names)
+        self.assertEqual(
+            preview.pass2_retry_emitter_count,
+            preview.failed_assignment_count_after_pass1,
+        )
+        self.assertGreater(preview.pass2_retry_total_candidates_generated, 0)
+        self.assertGreater(preview.pass2_retry_average_candidates_per_emitter, 0)
+        self.assertGreater(preview.pass2_retry_max_candidates_for_one_emitter, 0)
+
+    def test_disabled_adjacent_retry_does_not_report_pass3_stage_timing(self) -> None:
+        preview = NoteBasedStereoLayout(
+            origin=BlockPosition(0, 128, 0),
+            track_direction="east",
+            config=StereoLayoutConfig(
+                max_candidate_y_layers=0,
+                max_candidates_per_emitter=1,
+                max_note_level_center_splits=10,
+                allow_adjacent_pan_zone_fallback_for_failed=False,
+            ),
+        ).layout_song(_left_edge_same_tick_song()).note_based_preview
+        assert preview is not None
+
+        timing_names = {timing.stage for timing in preview.stage_timings}
+        self.assertNotIn("pass3 retry candidate generation time", timing_names)
+        self.assertNotIn("pass3 candidate value merge time", timing_names)
+        self.assertNotIn("pass3 assignment time", timing_names)
+        self.assertEqual(preview.pass3_retry_emitter_count, 0)
+        self.assertEqual(preview.pass2_retry_emitter_count, preview.retry_attempted_count)
+
+    def test_progress_logging_is_quiet_when_disabled(self) -> None:
+        stdout = io.StringIO()
+
+        with redirect_stdout(stdout):
+            NoteBasedStereoLayout(
+                origin=BlockPosition(0, 128, 0),
+                track_direction="east",
+                config=StereoLayoutConfig(enable_progress_logging=False),
+            ).layout_song(_single_note_song())
+
+        self.assertEqual(stdout.getvalue(), "")
+
+    def test_progress_logging_reports_pass2_retry_candidate_generation(self) -> None:
+        stdout = io.StringIO()
+
+        with redirect_stdout(stdout):
+            NoteBasedStereoLayout(
+                origin=BlockPosition(0, 128, 0),
+                track_direction="east",
+                config=StereoLayoutConfig(
+                    max_candidate_y_layers=0,
+                    max_candidates_per_emitter=1,
+                    max_note_level_center_splits=10,
+                    enable_progress_logging=True,
+                ),
+            ).layout_song(_left_edge_same_tick_song())
+
+        output = stdout.getvalue()
+        self.assertIn("stage: pass1 assignment", output)
+        self.assertIn("stage: generating pass2 retry candidates:", output)
+        self.assertIn("pass2 retry candidates:", output)
+        self.assertIn("stage: merging pass2 candidate values", output)
+        self.assertIn("stage: pass2 assignment", output)
 
     def test_build_layout_strategy_uses_note_based_preview(self) -> None:
         strategy = build_layout_strategy(
