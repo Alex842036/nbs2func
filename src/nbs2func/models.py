@@ -35,3 +35,4 @@ class Song:
     author: str
     length: int
     tracks: tuple[Track, ...]
+    nbs_tempo_tps: float = 10.0

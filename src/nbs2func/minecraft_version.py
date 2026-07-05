@@ -26,6 +26,7 @@ class MinecraftVersionProfile:
     supports_starter_module: bool = True
     supports_playback_assist: bool = True
     supports_minecart_playback_assist: bool = True
+    tempo_control_backend: str = "carpet"
     supported_note_block_instruments: frozenset[str] = frozenset()
     supported_base_blocks: frozenset[str] = frozenset()
     notes: tuple[str, ...] = ()
@@ -40,6 +41,11 @@ class MinecraftVersionProfile:
             raise ValueError(
                 f"Invalid Minecraft build height range for {self.version_id}: "
                 f"{self.min_build_y}..{self.max_build_y}"
+            )
+        if self.tempo_control_backend not in {"carpet", "vanilla"}:
+            raise ValueError(
+                "Invalid Minecraft tempo_control_backend for "
+                f"{self.version_id}: {self.tempo_control_backend}"
             )
 
     @property
@@ -183,6 +189,7 @@ SUPPORTED_VERSION_PROFILES: dict[str, MinecraftVersionProfile] = {
         namespace="nbs",
         function_dir_name="function",
         function_tag_dir_name="function",
+        tempo_control_backend="vanilla",
         supported_note_block_instruments=JAVA_1_21_NOTE_BLOCK_INSTRUMENTS,
         supported_base_blocks=JAVA_1_21_NOTE_BLOCK_BASE_BLOCKS,
     ),

@@ -10,6 +10,7 @@ from .minecraft_version import (
     MinecraftVersionError,
     MinecraftVersionProfile,
 )
+from .tempo_control import TempoControlReport
 
 DEFAULT_START_MUSIC_COUNT = 10
 VEHICLE_STEP_DISTANCE = 1
@@ -37,6 +38,9 @@ class PlaybackAssistModuleConfig:
     minecraft_version_profile: MinecraftVersionProfile = (
         DEFAULT_MINECRAFT_VERSION_PROFILE
     )
+    tempo_control_mode: str = "report"
+    tempo_control_report: TempoControlReport | None = None
+    reset_tick_rate_after_playback: bool = True
 
 
 @dataclass(frozen=True)
@@ -146,6 +150,7 @@ def playback_assist_lines(config: PlaybackAssistModuleConfig) -> list[str]:
                 auto=True,
             ),
         ),
+        *_end_reset_command_block_lines(config),
         "",
         "# Prepare command chain: reset state and summon the minecart, but do not start movement.",
     ]
@@ -165,12 +170,9 @@ def playback_assist_lines(config: PlaybackAssistModuleConfig) -> list[str]:
         [
             "",
             "# Start command block: press after entering the minecart.",
-            _setblock(
-                debug.start_command_block_position,
-                _command_block(start_command, facing=COMMAND_MODULE_FACING),
-            ),
         ]
     )
+    lines.extend(_start_command_block_lines(config, debug, start_command))
 
     if config.generate_playback_buttons:
         lines.extend(
@@ -361,21 +363,89 @@ def _prepare_chain_commands(
     config: PlaybackAssistModuleConfig,
     debug: PlaybackAssistDebugInfo,
 ) -> list[str]:
+    commands = []
+    if _should_emit_tempo_command(config) and config.reset_tick_rate_after_playback:
+        commands.append(config.tempo_control_report.reset_command)
+
+    commands.extend(
+        [
+            (
+                "execute as "
+                f"@e[type=minecraft:armor_stand,tag={config.starter_tag}] "
+                "at @s run setblock ~ ~ ~ air"
+            ),
+            f"kill @e[type=minecraft:minecart,tag={config.playback_vehicle_tag}]",
+            _summon_vehicle(config),
+            f"scoreboard players set {config.player_name} {config.count_objective} 0",
+            (
+                f"scoreboard players set start_music {config.count_objective} "
+                f"{debug.start_music_count}"
+            ),
+            f"scoreboard players set end {config.count_objective} {debug.end_count}",
+        ]
+    )
+    return commands
+
+
+def _end_reset_command_block_lines(config: PlaybackAssistModuleConfig) -> list[str]:
+    if not (
+        _should_emit_tempo_command(config)
+        and config.reset_tick_rate_after_playback
+    ):
+        return []
+    reset_command = config.tempo_control_report.reset_command
     return [
-        (
-            "execute as "
-            f"@e[type=minecraft:armor_stand,tag={config.starter_tag}] "
-            "at @s run setblock ~ ~ ~ air"
-        ),
-        f"kill @e[type=minecraft:minecart,tag={config.playback_vehicle_tag}]",
-        _summon_vehicle(config),
-        f"scoreboard players set {config.player_name} {config.count_objective} 0",
-        (
-            f"scoreboard players set start_music {config.count_objective} "
-            f"{debug.start_music_count}"
-        ),
-        f"scoreboard players set end {config.count_objective} {debug.end_count}",
+        _setblock(
+            _local_position(config, 2, 5),
+            _chain_command_block(
+                "execute if score "
+                f"{config.player_name} {config.count_objective} = "
+                f"end {config.count_objective} run {reset_command}",
+                facing="up",
+                auto=True,
+            ),
+        )
     ]
+
+
+def _start_command_block_lines(
+    config: PlaybackAssistModuleConfig,
+    debug: PlaybackAssistDebugInfo,
+    start_command: str,
+) -> list[str]:
+    if not _should_emit_tempo_command(config):
+        return [
+            _setblock(
+                debug.start_command_block_position,
+                _command_block(start_command, facing=COMMAND_MODULE_FACING),
+            )
+        ]
+
+    chain_position = BlockPosition(
+        debug.start_command_block_position.x + 1,
+        debug.start_command_block_position.y,
+        debug.start_command_block_position.z,
+    )
+    return [
+        _setblock(
+            debug.start_command_block_position,
+            _command_block(
+                config.tempo_control_report.command,
+                facing=COMMAND_MODULE_FACING,
+            ),
+        ),
+        _setblock(
+            chain_position,
+            _chain_command_block(start_command, facing=COMMAND_MODULE_FACING),
+        ),
+    ]
+
+
+def _should_emit_tempo_command(config: PlaybackAssistModuleConfig) -> bool:
+    return (
+        config.tempo_control_mode == "command"
+        and config.tempo_control_report is not None
+    )
 
 
 def _summon_vehicle(config: PlaybackAssistModuleConfig) -> str:

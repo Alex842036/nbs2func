@@ -38,6 +38,11 @@ from .playback_assist_module import (
     playback_assist_debug_info,
     total_track_length_from_layout,
 )
+from .tempo_control import (
+    TempoControlError,
+    build_tempo_control_report,
+    tempo_report_lines,
+)
 
 DEFAULT_NBS_PATH = Path("examples/demo.nbs")
 DEFAULT_OUTPUT_PATH = Path("output")
@@ -671,6 +676,38 @@ def build_parser() -> argparse.ArgumentParser:
             "minor-version series."
         ),
     )
+    parser.add_argument(
+        "--tempo-control-mode",
+        choices=("none", "report", "command"),
+        default="report",
+        help=(
+            "Tempo control mode. Defaults to report, which prints a recommendation "
+            "without changing world tick rate."
+        ),
+    )
+    parser.add_argument(
+        "--tempo-control-backend",
+        choices=("auto", "carpet", "vanilla"),
+        default="auto",
+        help="Tick rate command backend. Defaults to auto.",
+    )
+    parser.add_argument(
+        "--tempo-rate-decimals",
+        type=int,
+        default=2,
+        help="Decimal places for tick rate commands. Defaults to 2.",
+    )
+    parser.add_argument(
+        "--game-ticks-per-song-tick",
+        type=int,
+        default=4,
+        help="Redstone timing model in game ticks per NBS tick. Defaults to 4.",
+    )
+    parser.add_argument(
+        "--no-reset-tick-rate-after-playback",
+        action="store_true",
+        help="Do not generate a tick rate 20 reset command in tempo command mode.",
+    )
     return parser
 
 
@@ -696,6 +733,7 @@ def resolve_config_from_args(
         "enable_note_level_center_split",
         "generate_playback_buttons",
         "split_functions",
+        "reset_tick_rate_after_playback",
     }
     for field_name in sorted(direct_cli_fields):
         if field_name in explicit_destinations:
@@ -743,6 +781,10 @@ def resolve_config_from_args(
         updates["generate_playback_buttons"] = not args.no_playback_buttons
     if "no_split_functions" in explicit_destinations:
         updates["split_functions"] = not args.no_split_functions
+    if "no_reset_tick_rate_after_playback" in explicit_destinations:
+        updates["reset_tick_rate_after_playback"] = (
+            not args.no_reset_tick_rate_after_playback
+        )
 
     return config_from_updates(config, updates)
 
@@ -931,6 +973,13 @@ def _args_namespace_from_config(config: Nbs2FuncConfig) -> argparse.Namespace:
         function_namespace=config.function_namespace,
         build_function_dir=config.build_function_dir,
         minecraft_version=config.minecraft_version,
+        tempo_control_mode=config.tempo_control_mode,
+        tempo_control_backend=config.tempo_control_backend,
+        tempo_rate_decimals=config.tempo_rate_decimals,
+        game_ticks_per_song_tick=config.game_ticks_per_song_tick,
+        no_reset_tick_rate_after_playback=(
+            not config.reset_tick_rate_after_playback
+        ),
     )
 
 
@@ -984,6 +1033,28 @@ def main() -> int:
     if args.analyze_layout_spatial:
         return _run_analyze_layout_spatial(args, song)
 
+    tempo_report = None
+    if args.tempo_control_mode != "none":
+        try:
+            tempo_report = build_tempo_control_report(
+                song,
+                minecraft_version_profile=version_profile,
+                backend=args.tempo_control_backend,
+                rate_decimals=args.tempo_rate_decimals,
+                game_ticks_per_song_tick=args.game_ticks_per_song_tick,
+            )
+        except TempoControlError as exc:
+            print(f"Error: {exc}")
+            return 1
+
+    if args.tempo_control_mode == "command" and not args.enable_playback_assist:
+        print(
+            "Error: --tempo-control-mode command requires "
+            "--enable-playback-assist so the tick rate command has a playback "
+            "start command block."
+        )
+        return 1
+
     try:
         validate_song_instruments_for_version(song, version_profile)
     except MinecraftVersionError as exc:
@@ -998,6 +1069,14 @@ def main() -> int:
     print(f"  tracks: {len(song.tracks)}")
     print(f"  notes: {note_count}")
     print()
+    if tempo_report is not None:
+        for line in tempo_report_lines(tempo_report):
+            print(line)
+        if args.tempo_control_mode == "report":
+            print("  Mode: report only; no tick rate command will be generated.")
+        elif args.tempo_control_mode == "command":
+            print("  Mode: command; playback assist will set the tick rate on start.")
+        print()
     print("Track note summary")
 
     for track in song.tracks:
@@ -1327,6 +1406,11 @@ def main() -> int:
             args.start_button_z,
         ),
         minecraft_version_profile=version_profile,
+        tempo_control_mode=args.tempo_control_mode,
+        tempo_control_report=tempo_report,
+        reset_tick_rate_after_playback=(
+            not args.no_reset_tick_rate_after_playback
+        ),
     )
     if args.enable_playback_assist:
         try:
@@ -1432,6 +1516,11 @@ def main() -> int:
             prepare_button_position=playback_config.prepare_button_position,
             start_button_position=playback_config.start_button_position,
             requested_origin_y=args.origin_y,
+            tempo_control_mode=args.tempo_control_mode,
+            tempo_control_report=tempo_report,
+            reset_tick_rate_after_playback=(
+                not args.no_reset_tick_rate_after_playback
+            ),
         ),
     )
 

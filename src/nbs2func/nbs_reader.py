@@ -75,7 +75,7 @@ def read_nbs(path: str | Path) -> Song:
     with file_path.open("rb") as stream:
         reader = _Reader(stream)
         version, song_length, layer_count = _read_version_and_size(reader)
-        name, author = _read_header_metadata(reader, version)
+        name, author, nbs_tempo_tps = _read_header_metadata(reader, version)
         notes_by_layer = _read_notes_by_layer(reader, version)
         layer_metadata = _read_layer_metadata(reader, version, layer_count)
 
@@ -84,6 +84,7 @@ def read_nbs(path: str | Path) -> Song:
         author=author,
         length=song_length,
         tracks=_build_tracks(notes_by_layer, layer_metadata, layer_count),
+        nbs_tempo_tps=nbs_tempo_tps,
     )
 
 
@@ -102,13 +103,13 @@ def _read_version_and_size(reader: _Reader) -> tuple[int, int, int]:
     return version, song_length, layer_count
 
 
-def _read_header_metadata(reader: _Reader, version: int) -> tuple[str, str]:
+def _read_header_metadata(reader: _Reader, version: int) -> tuple[str, str, float]:
     name = reader.string()
     author = reader.string()
     reader.string()  # Original author.
     reader.string()  # Description.
 
-    reader.unsigned_short()  # Tempo, stored as ticks per second * 100.
+    nbs_tempo_tps = reader.unsigned_short() / 100
     reader.byte()  # Auto-save enabled.
     reader.byte()  # Auto-save duration.
     reader.byte()  # Time signature.
@@ -124,7 +125,7 @@ def _read_header_metadata(reader: _Reader, version: int) -> tuple[str, str]:
         reader.byte()  # Max loop count.
         reader.unsigned_short()  # Loop start tick.
 
-    return name, author
+    return name, author, nbs_tempo_tps
 
 
 def _read_notes_by_layer(reader: _Reader, version: int) -> dict[int, list[_RawNote]]:

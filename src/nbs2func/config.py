@@ -130,6 +130,12 @@ class Nbs2FuncConfig:
     function_namespace: str = "nbs"
     build_function_dir: str = "build"
 
+    tempo_control_mode: str = "report"
+    tempo_control_backend: str = "auto"
+    tempo_rate_decimals: int = 2
+    game_ticks_per_song_tick: int = 4
+    reset_tick_rate_after_playback: bool = True
+
 
 def default_config() -> Nbs2FuncConfig:
     """Return a fresh config instance with CLI-equivalent defaults."""
@@ -192,6 +198,7 @@ def config_from_dict(data: dict[str, Any]) -> Nbs2FuncConfig:
                 f"Invalid type for config field {field.name!r}: "
                 f"expected {expected}, got {type(value).__name__}."
             )
+        _validate_choice(field.name, value)
         values[field.name] = value
 
     return replace(defaults, **values)
@@ -220,6 +227,19 @@ def _validate_center_split_overrides(value: Any) -> dict[int, str] | None:
             )
         overrides[track_id] = action
     return overrides
+
+
+def _validate_choice(field_name: str, value: Any) -> None:
+    choices_by_field = {
+        "tempo_control_mode": {"none", "report", "command"},
+        "tempo_control_backend": {"auto", "carpet", "vanilla"},
+    }
+    choices = choices_by_field.get(field_name)
+    if choices is not None and value not in choices:
+        raise ValueError(
+            f"Invalid value for config field {field_name!r}: {value!r}. "
+            f"Expected one of: {', '.join(sorted(choices))}."
+        )
 
 
 def _matches_type(value: Any, annotation: Any) -> bool:

@@ -35,6 +35,7 @@ from .playback_assist_module import (
     playback_assist_lines,
     total_track_length_from_layout,
 )
+from .tempo_control import TempoControlReport
 from .starter_module import StarterModuleConfig, starter_module_lines
 
 
@@ -79,6 +80,9 @@ class CommandWriterConfig:
     prepare_button_position: BlockPosition | None = None
     start_button_position: BlockPosition | None = None
     requested_origin_y: int | None = None
+    tempo_control_mode: str = "report"
+    tempo_control_report: TempoControlReport | None = None
+    reset_tick_rate_after_playback: bool = True
 
 
 @dataclass(frozen=True)
@@ -267,6 +271,11 @@ class BasicMcfunctionWriter:
                     start_button_position=self.config.start_button_position,
                     minecraft_version_profile=(
                         self.config.minecraft_version_profile
+                    ),
+                    tempo_control_mode=self.config.tempo_control_mode,
+                    tempo_control_report=self.config.tempo_control_report,
+                    reset_tick_rate_after_playback=(
+                        self.config.reset_tick_rate_after_playback
                     ),
                 )
             )
