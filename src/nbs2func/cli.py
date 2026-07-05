@@ -7,8 +7,17 @@ import json
 from pathlib import Path
 import pstats
 import re
+import sys
 
 from .command_writer import CommandWriterConfig, write_mcfunction
+from .config import (
+    Nbs2FuncConfig,
+    config_from_dict,
+    config_to_dict,
+    default_config,
+    load_config,
+    save_config,
+)
 from .instrument_mapping import validate_song_instruments_for_version
 from .layout import build_layout_strategy, layout_song
 from .layout_geometry import BlockPosition, LayoutError
@@ -37,6 +46,21 @@ DEFAULT_OUTPUT_PATH = Path("output")
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Convert Note Block Studio .nbs files into Minecraft functions."
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Load generation config JSON before applying explicit CLI overrides.",
+    )
+    parser.add_argument(
+        "--save-config",
+        default=None,
+        help="Save the final effective generation config JSON.",
+    )
+    parser.add_argument(
+        "--dump-default-config",
+        action="store_true",
+        help="Print the default generation config JSON and exit.",
     )
     parser.add_argument(
         "file",
@@ -650,8 +674,290 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def resolve_config_from_args(
+    args: argparse.Namespace,
+    explicit_destinations: set[str],
+) -> Nbs2FuncConfig:
+    config = load_config(args.config) if args.config is not None else default_config()
+    updates: dict[str, object] = {}
+
+    direct_fields = set(config_to_dict(config))
+    direct_cli_fields = direct_fields - {
+        "input_path",
+        "center_split_overrides",
+        "enable_collision_resolver",
+        "enable_depth_mirror_fallback",
+        "enable_radius_relax_fallback",
+        "enable_pan_zone_layout",
+        "enable_depth_mirror_candidates",
+        "allow_negative_depth_offsets",
+        "allow_adjacent_pan_zone_fallback_for_failed",
+        "fail_fast_on_too_many_collisions",
+        "enable_note_level_center_split",
+        "generate_playback_buttons",
+        "split_functions",
+    }
+    for field_name in sorted(direct_cli_fields):
+        if field_name in explicit_destinations:
+            updates[field_name] = getattr(args, field_name)
+
+    if "file" in explicit_destinations:
+        updates["input_path"] = args.file
+    if "center_split_override" in explicit_destinations:
+        updates["center_split_overrides"] = _parse_center_split_overrides(
+            args.center_split_override
+        )
+    if "disable_collision_resolver" in explicit_destinations:
+        updates["enable_collision_resolver"] = not args.disable_collision_resolver
+    if "disable_depth_mirror_fallback" in explicit_destinations:
+        updates["enable_depth_mirror_fallback"] = (
+            not args.disable_depth_mirror_fallback
+        )
+    if "disable_radius_relax_fallback" in explicit_destinations:
+        updates["enable_radius_relax_fallback"] = (
+            not args.disable_radius_relax_fallback
+        )
+    if "disable_pan_zone_layout" in explicit_destinations:
+        updates["enable_pan_zone_layout"] = not args.disable_pan_zone_layout
+    if "disable_depth_mirror_candidates" in explicit_destinations:
+        updates["enable_depth_mirror_candidates"] = (
+            not args.disable_depth_mirror_candidates
+        )
+    if "disallow_negative_depth_offsets" in explicit_destinations:
+        updates["allow_negative_depth_offsets"] = (
+            not args.disallow_negative_depth_offsets
+        )
+    if "disable_adjacent_pan_zone_fallback_for_failed" in explicit_destinations:
+        updates["allow_adjacent_pan_zone_fallback_for_failed"] = (
+            not args.disable_adjacent_pan_zone_fallback_for_failed
+        )
+    if "no_fail_fast_on_too_many_collisions" in explicit_destinations:
+        updates["fail_fast_on_too_many_collisions"] = (
+            not args.no_fail_fast_on_too_many_collisions
+        )
+    if "disable_note_level_center_split" in explicit_destinations:
+        updates["enable_note_level_center_split"] = (
+            not args.disable_note_level_center_split
+        )
+    if "no_playback_buttons" in explicit_destinations:
+        updates["generate_playback_buttons"] = not args.no_playback_buttons
+    if "no_split_functions" in explicit_destinations:
+        updates["split_functions"] = not args.no_split_functions
+
+    return config_from_updates(config, updates)
+
+
+def config_from_updates(
+    config: Nbs2FuncConfig,
+    updates: dict[str, object],
+) -> Nbs2FuncConfig:
+    if not updates:
+        return config
+    data = config_to_dict(config)
+    for key, value in updates.items():
+        data[key] = value
+    return config_from_dict(data)
+
+
+def _explicit_cli_destinations(
+    parser: argparse.ArgumentParser,
+    argv: list[str],
+) -> set[str]:
+    option_actions = {
+        option: action
+        for action in parser._actions
+        for option in action.option_strings
+    }
+    explicit: set[str] = set()
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "--":
+            if index + 1 < len(argv):
+                explicit.add("file")
+            break
+        if token.startswith("-") and token != "-":
+            option, has_inline_value = _split_option_token(token)
+            action = option_actions.get(option)
+            if action is None:
+                index += 1
+                continue
+            explicit.add(action.dest)
+            if _action_consumes_value(action) and not has_inline_value:
+                index += 2
+            else:
+                index += 1
+            continue
+        explicit.add("file")
+        index += 1
+    return explicit
+
+
+def _split_option_token(token: str) -> tuple[str, bool]:
+    if token.startswith("--") and "=" in token:
+        option, _value = token.split("=", 1)
+        return option, True
+    return token, False
+
+
+def _action_consumes_value(action: argparse.Action) -> bool:
+    return not isinstance(
+        action,
+        (argparse._StoreTrueAction, argparse._StoreFalseAction),
+    )
+
+
+def _args_namespace_from_config(config: Nbs2FuncConfig) -> argparse.Namespace:
+    overrides = config.center_split_overrides or {}
+    return argparse.Namespace(
+        file=config.input_path,
+        output=config.output,
+        analyze_stereo=config.analyze_stereo,
+        analyze_layout_spatial=config.analyze_layout_spatial,
+        group_config=config.group_config,
+        analysis_output=config.analysis_output,
+        analysis_window_size=config.analysis_window_size,
+        analysis_hop_size=config.analysis_hop_size,
+        analysis_detail=config.analysis_detail,
+        origin_x=config.origin_x,
+        origin_y=config.origin_y,
+        origin_z=config.origin_z,
+        layout_mode=config.layout_mode,
+        track_id=config.track_id,
+        direction=config.direction,
+        max_hearing_distance=config.max_hearing_distance,
+        min_distance=config.min_distance,
+        max_stereo_angle_degrees=config.max_stereo_angle_degrees,
+        center_threshold=config.center_threshold,
+        center_split_policy=config.center_split_policy,
+        center_split_mode=config.center_split_mode,
+        center_split_override=[
+            f"{track_id}={action}"
+            for track_id, action in sorted(overrides.items())
+        ],
+        center_split_pan=config.center_split_pan,
+        max_auto_center_splits=config.max_auto_center_splits,
+        disable_collision_resolver=not config.enable_collision_resolver,
+        disable_depth_mirror_fallback=not config.enable_depth_mirror_fallback,
+        disable_radius_relax_fallback=not config.enable_radius_relax_fallback,
+        max_angle_deviation_degrees=config.max_angle_deviation_degrees,
+        angle_search_step_degrees=config.angle_search_step_degrees,
+        radius_relax_step=config.radius_relax_step,
+        max_radius_relax=config.max_radius_relax,
+        min_world_y=config.min_world_y,
+        max_world_y=config.max_world_y,
+        disable_pan_zone_layout=not config.enable_pan_zone_layout,
+        allow_adjacent_pan_zone_fallback=config.allow_adjacent_pan_zone_fallback,
+        pan_zone_search_radius_limit=config.pan_zone_search_radius_limit,
+        max_candidates_per_emitter=config.max_candidates_per_emitter,
+        max_candidate_y_layers=config.max_candidate_y_layers,
+        max_candidate_lateral_positions=config.max_candidate_lateral_positions,
+        radius_search_tolerance=config.radius_search_tolerance,
+        max_lateral_distance=config.max_lateral_distance,
+        pan_zone_reference_radius=config.pan_zone_reference_radius,
+        disable_depth_mirror_candidates=not config.enable_depth_mirror_candidates,
+        preferred_depth_sign=config.preferred_depth_sign,
+        disallow_negative_depth_offsets=not config.allow_negative_depth_offsets,
+        depth_mirror_penalty=config.depth_mirror_penalty,
+        lateral_step_penalty=config.lateral_step_penalty,
+        disable_adjacent_pan_zone_fallback_for_failed=(
+            not config.allow_adjacent_pan_zone_fallback_for_failed
+        ),
+        retry_max_candidates_per_emitter=config.retry_max_candidates_per_emitter,
+        enable_same_side_zone_split_fallback=(
+            config.enable_same_side_zone_split_fallback
+        ),
+        same_side_split_volume_factor=config.same_side_split_volume_factor,
+        min_rail_center_y_gap=config.min_rail_center_y_gap,
+        activation_slot_radius=config.activation_slot_radius,
+        max_collision_records=config.max_collision_records,
+        max_collision_examples_per_group=config.max_collision_examples_per_group,
+        preview_time_limit_seconds=config.preview_time_limit_seconds,
+        no_fail_fast_on_too_many_collisions=(
+            not config.fail_fast_on_too_many_collisions
+        ),
+        max_collision_records_before_abort=config.max_collision_records_before_abort,
+        profile=config.profile,
+        disable_note_level_center_split=not config.enable_note_level_center_split,
+        center_split_left_pan=config.center_split_left_pan,
+        center_split_right_pan=config.center_split_right_pan,
+        center_split_volume_factor=config.center_split_volume_factor,
+        max_note_level_center_splits=config.max_note_level_center_splits,
+        enable_starter_module=config.enable_starter_module,
+        command_block_x=config.command_block_x,
+        command_block_y=config.command_block_y,
+        command_block_z=config.command_block_z,
+        starter_tag=config.starter_tag,
+        starter_track_block=config.starter_track_block,
+        starter_cell_offset=config.starter_cell_offset,
+        enable_playback_assist=config.enable_playback_assist,
+        playback_player_name=config.playback_player_name,
+        playback_vehicle_tag=config.playback_vehicle_tag,
+        count_objective=config.count_objective,
+        vehicle_spawn_x=config.vehicle_spawn_x,
+        vehicle_spawn_y=config.vehicle_spawn_y,
+        vehicle_spawn_z=config.vehicle_spawn_z,
+        music_start_x=config.music_start_x,
+        music_start_y=config.music_start_y,
+        music_start_z=config.music_start_z,
+        command_module_origin_x=config.command_module_origin_x,
+        command_module_origin_y=config.command_module_origin_y,
+        command_module_origin_z=config.command_module_origin_z,
+        no_playback_buttons=not config.generate_playback_buttons,
+        playback_button_block=config.playback_button_block,
+        prepare_button_x=config.prepare_button_x,
+        prepare_button_y=config.prepare_button_y,
+        prepare_button_z=config.prepare_button_z,
+        start_button_x=config.start_button_x,
+        start_button_y=config.start_button_y,
+        start_button_z=config.start_button_z,
+        no_split_functions=not config.split_functions,
+        max_commands_per_build_part=config.max_commands_per_build_part,
+        schedule_delay_ticks_between_parts=(
+            config.schedule_delay_ticks_between_parts
+        ),
+        build_player_name=config.build_player_name,
+        player_load_radius_chunks=config.player_load_radius_chunks,
+        player_tp_chunk_load_wait_ticks=config.player_tp_chunk_load_wait_ticks,
+        player_tp_after_build_wait_ticks=config.player_tp_after_build_wait_ticks,
+        player_tp_window_length_blocks=config.player_tp_window_length_blocks,
+        player_tp_window_lateral_width_blocks=(
+            config.player_tp_window_lateral_width_blocks
+        ),
+        build_tp_y=config.build_tp_y,
+        build_finish_tp_x=config.build_finish_tp_x,
+        build_finish_tp_y=config.build_finish_tp_y,
+        build_finish_tp_z=config.build_finish_tp_z,
+        function_namespace=config.function_namespace,
+        build_function_dir=config.build_function_dir,
+        minecraft_version=config.minecraft_version,
+    )
+
+
 def main() -> int:
-    args = build_parser().parse_args()
+    parser = build_parser()
+    raw_args = parser.parse_args()
+    if raw_args.dump_default_config:
+        print(json.dumps(config_to_dict(default_config()), indent=2))
+        return 0
+
+    try:
+        config = resolve_config_from_args(
+            raw_args,
+            _explicit_cli_destinations(parser, sys.argv[1:]),
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        return 1
+
+    if raw_args.save_config is not None:
+        try:
+            save_config(config, raw_args.save_config)
+        except OSError as exc:
+            print(f"Error: could not save config: {exc}")
+            return 1
+
+    args = _args_namespace_from_config(config)
     path = Path(args.file)
     try:
         version_profile = get_minecraft_version_profile(args.minecraft_version)
