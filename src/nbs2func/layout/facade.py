@@ -6,12 +6,12 @@ import warnings
 from collections import defaultdict
 from dataclasses import dataclass, replace
 
-from .layout_basic import (
+from .basic import (
     BasicLinearLayout,
     _find_single_track_conflicts,
     _notes_by_tick_for_notes,
 )
-from .layout_collision import (
+from .collision import (
     _Footprint,
     _FootprintOccupancy,
     _can_share_position,
@@ -28,7 +28,7 @@ from .layout_collision import (
     _replace_footprint_occupancy,
     _summarize_block_collisions,
 )
-from .layout_geometry import (
+from .geometry import (
     DIRECTION_VECTORS,
     LEGACY_DIRECTIONS,
     OPPOSITE_DIRECTIONS,
@@ -44,7 +44,7 @@ from .layout_geometry import (
     opposite_direction,
     repeater_position_from_note_position,
 )
-from .layout_models import (
+from .models import (
     ActivationRail,
     ActivationSlot,
     BlockCollision,
@@ -71,7 +71,7 @@ from .layout_models import (
     TrackLayoutInfo,
     _StereoOffset,
 )
-from .layout_pan import (
+from .pan import (
     PAN_ZONES,
     _angle_error_inside_zone,
     _angle_values_for_pan_zones,
@@ -92,7 +92,7 @@ from .layout_pan import (
     _lateral_error_inside_zone,
     _lateral_values_for_pan_zones,
 )
-from .layout_note_stereo import (
+from .note_stereo import (
     NoteBasedStereoLayout,
     NoteBasedStereoRailLayout,
     _AssignmentRetryStats,
@@ -101,8 +101,8 @@ from .layout_note_stereo import (
     _NoteLevelCenterSplitStats,
     _RailValidationStats,
 )
-from .layout_track_stereo import TrackBasedStereoLayout
-from .models import NoteEvent, Song, Track
+from .track_stereo import TrackBasedStereoLayout
+from ..core.models import NoteEvent, Song, Track
 
 
 SingleTrackLayout = BasicLinearLayout

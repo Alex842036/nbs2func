@@ -3,11 +3,11 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 
-from .layout_collision import (
+from .collision import (
     _detect_block_collisions,
     _gravity_support_position,
 )
-from .layout_geometry import (
+from .geometry import (
     DIRECTION_VECTORS,
     BlockPosition,
     LayoutError,
@@ -17,13 +17,13 @@ from .layout_geometry import (
     normalize_direction,
     opposite_direction,
 )
-from .layout_models import (
+from .models import (
     LayoutCell,
     LayoutConflict,
     LayoutResult,
     PlacedNote,
 )
-from .models import NoteEvent, Song, Track
+from ..core.models import NoteEvent, Song, Track
 
 
 @dataclass(frozen=True)

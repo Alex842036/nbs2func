@@ -3,14 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .layout_geometry import DIRECTION_VECTORS, BlockPosition, normalize_direction
-from .layout_models import LayoutResult
-from .minecraft_version import (
+from ..layout.geometry import DIRECTION_VECTORS, BlockPosition, normalize_direction
+from ..layout.models import LayoutResult
+from ..core.minecraft_version import (
     DEFAULT_MINECRAFT_VERSION_PROFILE,
     MinecraftVersionError,
     MinecraftVersionProfile,
 )
-from .tempo_control import TempoControlReport
+from ..core.tempo_control import TempoControlReport
 
 DEFAULT_START_MUSIC_COUNT = 10
 VEHICLE_STEP_DISTANCE = 1

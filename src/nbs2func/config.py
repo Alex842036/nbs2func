@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any, get_args, get_origin
 
-from .minecraft_version import DEFAULT_MINECRAFT_VERSION
+from .core.minecraft_version import DEFAULT_MINECRAFT_VERSION
 
 
 @dataclass(frozen=True)

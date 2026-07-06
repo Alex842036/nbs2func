@@ -301,17 +301,25 @@ The old `--analyze-stereo` option has been removed.
 main.py
 src/nbs2func/
   cli.py
-  nbs_reader.py
-  models.py
-  minecraft_version.py
-  instrument_mapping.py
-  layout.py
-  layout_basic.py
-  layout_track_stereo.py
-  layout_note_stereo.py
-  command_writer.py
-  starter_module.py
-  playback_assist_module.py
+  config.py
+  core/
+    nbs_reader.py
+    models.py
+    minecraft_version.py
+    instrument_mapping.py
+    tempo_control.py
+  layout/
+    facade.py
+    basic.py
+    track_stereo.py
+    note_stereo.py
+  output/
+    command_writer.py
+  modules/
+    starter.py
+    playback_assist.py
+  analysis/
+    spatial_analyzer.py
 docs/
 examples/
 tests/
@@ -319,15 +327,15 @@ tests/
 
 Key modules:
 
-- `nbs_reader.py`: reads `.nbs` files.
-- `models.py`: shared song, track, and note models.
-- `minecraft_version.py`: target version profiles and datapack metadata settings.
-- `instrument_mapping.py`: NBS/Minecraft instrument mapping and version validation.
-- `layout_*`: layout strategies and note-based stereo rail preview logic.
-- `command_writer.py`: datapack and `.mcfunction` output.
-- `starter_module.py`: optional starter activation module.
-- `playback_assist_module.py`: optional minecart playback assist module.
-- `layout_spatial_analyzer.py`: read-only spatial analysis.
+- `core/nbs_reader.py`: reads `.nbs` files.
+- `core/models.py`: shared song, track, and note models.
+- `core/minecraft_version.py`: target version profiles and datapack metadata settings.
+- `core/instrument_mapping.py`: NBS/Minecraft instrument mapping and version validation.
+- `layout/`: layout strategies and note-based stereo rail preview logic.
+- `output/command_writer.py`: datapack and `.mcfunction` output.
+- `modules/starter.py`: optional starter activation module.
+- `modules/playback_assist.py`: optional minecart playback assist module.
+- `analysis/spatial_analyzer.py`: read-only spatial analysis.
 
 ## Development notes
 

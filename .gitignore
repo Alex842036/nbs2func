@@ -5,15 +5,14 @@ tests/
 .env
 .vscode/
 .idea/
-output/
-analysis/
+/output/
+/analysis/
 dist/
 build/
 *.log
 *.tmp
 generated_datapacks/
 test_outputs/
-analysis/
 codex_tasks/
 AGENTS.md
 

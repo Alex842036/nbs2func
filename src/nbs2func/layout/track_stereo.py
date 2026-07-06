@@ -4,8 +4,8 @@ import math
 import warnings
 from dataclasses import dataclass
 
-from .layout_basic import _find_single_track_conflicts, _notes_by_tick_for_notes
-from .layout_collision import (
+from .basic import _find_single_track_conflicts, _notes_by_tick_for_notes
+from .collision import (
     _Footprint,
     _FootprintOccupancy,
     _detect_block_collisions,
@@ -14,7 +14,7 @@ from .layout_collision import (
     _summarize_block_collisions,
     _gravity_support_position,
 )
-from .layout_geometry import (
+from .geometry import (
     DIRECTION_VECTORS,
     BlockPosition,
     LayoutError,
@@ -27,7 +27,7 @@ from .layout_geometry import (
     normalize_direction,
     opposite_direction,
 )
-from .layout_models import (
+from .models import (
     CenterSplitEvent,
     CollisionSummary,
     LayoutCell,
@@ -37,8 +37,8 @@ from .layout_models import (
     TrackLayoutInfo,
     _StereoOffset,
 )
-from .layout_pan import _clamp_max_stereo_angle
-from .models import NoteEvent, Song, Track
+from .pan import _clamp_max_stereo_angle
+from ..core.models import NoteEvent, Song, Track
 
 
 @dataclass(frozen=True)

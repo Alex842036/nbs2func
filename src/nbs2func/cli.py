@@ -9,7 +9,7 @@ import pstats
 import re
 import sys
 
-from .command_writer import CommandWriterConfig, write_mcfunction
+from .output.command_writer import CommandWriterConfig, write_mcfunction
 from .config import (
     Nbs2FuncConfig,
     config_from_dict,
@@ -18,27 +18,27 @@ from .config import (
     load_config,
     save_config,
 )
-from .instrument_mapping import validate_song_instruments_for_version
+from .core.instrument_mapping import validate_song_instruments_for_version
 from .layout import build_layout_strategy, layout_song
-from .layout_geometry import BlockPosition, LayoutError
-from .layout_models import StereoLayoutConfig
-from .layout_spatial_analyzer import (
+from .layout.geometry import BlockPosition, LayoutError
+from .layout.models import StereoLayoutConfig
+from .analysis.spatial_analyzer import (
     analysis_report_to_jsonable,
     analyze_layout_spatial,
 )
-from .minecraft_version import (
+from .core.minecraft_version import (
     DEFAULT_MINECRAFT_VERSION,
     MinecraftVersionError,
     get_minecraft_version_profile,
     write_pack_mcmeta,
 )
-from .nbs_reader import read_nbs
-from .playback_assist_module import (
+from .core.nbs_reader import read_nbs
+from .modules.playback_assist import (
     PlaybackAssistModuleConfig,
     playback_assist_debug_info,
     total_track_length_from_layout,
 )
-from .tempo_control import (
+from .core.tempo_control import (
     TempoControlError,
     build_tempo_control_report,
     tempo_report_lines,

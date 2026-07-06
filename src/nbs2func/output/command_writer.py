@@ -4,21 +4,21 @@ from dataclasses import dataclass
 from pathlib import Path
 import warnings
 
-from .instrument_mapping import get_instrument_block, has_instrument_mapping
-from .instrument_mapping import get_required_support_block
-from .layout_models import (
+from ..core.instrument_mapping import get_instrument_block, has_instrument_mapping
+from ..core.instrument_mapping import get_required_support_block
+from ..layout.models import (
     LayoutCell,
     LayoutResult,
     NoteBasedStereoRailLayoutPreview,
     SlotAssignment,
 )
-from .minecraft_version import (
+from ..core.minecraft_version import (
     DEFAULT_MINECRAFT_VERSION_PROFILE,
     MinecraftVersionError,
     MinecraftVersionProfile,
     write_pack_mcmeta,
 )
-from .layout_geometry import (
+from ..layout.geometry import (
     DIRECTION_VECTORS,
     BlockPosition,
     _right_hand_lateral_vector,
@@ -30,13 +30,13 @@ from .layout_geometry import (
     opposite_direction,
     repeater_position_from_note_position,
 )
-from .playback_assist_module import (
+from ..modules.playback_assist import (
     PlaybackAssistModuleConfig,
     playback_assist_lines,
     total_track_length_from_layout,
 )
-from .tempo_control import TempoControlReport
-from .starter_module import StarterModuleConfig, starter_module_lines
+from ..core.tempo_control import TempoControlReport
+from ..modules.starter import StarterModuleConfig, starter_module_lines
 
 
 @dataclass(frozen=True)

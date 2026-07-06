@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .layout_geometry import (
+from ..layout.geometry import (
     DIRECTION_VECTORS,
     BlockPosition,
     below,
     opposite_direction,
 )
-from .layout_models import LayoutCell, LayoutResult
-from .minecraft_version import (
+from ..layout.models import LayoutCell, LayoutResult
+from ..core.minecraft_version import (
     DEFAULT_MINECRAFT_VERSION_PROFILE,
     MinecraftVersionError,
     MinecraftVersionProfile,

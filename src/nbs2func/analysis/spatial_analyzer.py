@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass, is_dataclass
 from math import sqrt
 from typing import Any, Iterable, Mapping
 
-from .models import NoteEvent, Song
+from ..core.models import NoteEvent, Song
 
 
 PAN_BIN_NAMES = ("far_left", "left", "center", "right", "far_right")

@@ -6,8 +6,8 @@ from collections.abc import Iterable
 from collections import defaultdict
 from dataclasses import dataclass, replace
 
-from .layout_basic import _find_single_track_conflicts
-from .layout_collision import (
+from .basic import _find_single_track_conflicts
+from .collision import (
     _Footprint,
     _FootprintOccupancy,
     _copy_footprint_occupancy,
@@ -19,7 +19,7 @@ from .layout_collision import (
     _replace_footprint_occupancy,
     _summarize_block_collisions,
 )
-from .layout_geometry import (
+from .geometry import (
     DIRECTION_VECTORS,
     BlockPosition,
     LayoutError,
@@ -33,7 +33,7 @@ from .layout_geometry import (
     opposite_direction,
     repeater_position_from_note_position,
 )
-from .layout_models import (
+from .models import (
     ActivationRail,
     ActivationSlot,
     BlockCollision,
@@ -53,11 +53,11 @@ from .layout_models import (
     TrackLayoutInfo,
     _StereoOffset,
 )
-from .layout_spatial_analyzer import (
+from ..analysis.spatial_analyzer import (
     LayoutSpatialHintIndex,
     LayoutSpatialSegmentHint,
 )
-from .layout_pan import (
+from .pan import (
     PAN_ZONES,
     _angle_error_inside_zone,
     _angle_values_for_pan_zones,
@@ -71,7 +71,7 @@ from .layout_pan import (
     _pan_zone_for_panning,
     _panning_from_angle,
 )
-from .models import NoteEvent, Song
+from ..core.models import NoteEvent, Song
 
 PAN_HINT_WEIGHT = 1.0
 PAN_NORMALIZE_MIN_EXTENT = 20.0

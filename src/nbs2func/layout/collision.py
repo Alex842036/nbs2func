@@ -4,16 +4,16 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
 
-from .instrument_mapping import get_instrument_block, is_gravity_block
-from .layout_geometry import BlockPosition, above, below
-from .layout_models import (
+from ..core.instrument_mapping import get_instrument_block, is_gravity_block
+from .geometry import BlockPosition, above, below
+from .models import (
     BlockCollision,
     CollisionExample,
     CollisionSummary,
     LayoutCell,
     TrackLayoutInfo,
 )
-from .models import NoteEvent
+from ..core.models import NoteEvent
 
 
 @dataclass(frozen=True)

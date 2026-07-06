@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from .layout_geometry import BlockPosition
-from .models import Song
+from .geometry import BlockPosition
+from ..core.models import Song
 
 
 @dataclass(frozen=True)
