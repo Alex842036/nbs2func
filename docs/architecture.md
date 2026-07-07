@@ -19,3 +19,6 @@ nbs2func is organized as a small pipeline:
 
 The important boundary is that layout code decides coordinates, while command
 output code decides final block data and serializes it to the selected format.
+Build plan scopes split structure blocks, module command blocks, and runtime-only
+commands so `.schem`, datapack, and combined output can share the same placement
+data without parsing generated `.mcfunction` text.

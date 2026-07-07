@@ -285,6 +285,8 @@ def test_output_format_schem_writes_only_schematic(
             str(output_path),
             "--output-format",
             "schem",
+            "--enable-starter-module",
+            "--enable-playback-assist",
             "--layout-mode",
             "basic_linear",
         ],
@@ -299,6 +301,7 @@ def test_output_format_schem_writes_only_schematic(
     assert not (output_path / "song" / "pack.mcmeta").exists()
     assert "Generated schematic:" in stdout
     assert "Generated datapack:" not in stdout
+    assert "does not include starter or playback assist modules" in stdout
 
 
 def test_output_format_both_writes_datapack_and_schematic(
@@ -334,6 +337,55 @@ def test_output_format_both_writes_datapack_and_schematic(
         datapack_root / "data" / "nbs" / "functions" / "build" / "start.mcfunction"
     ).is_file()
     assert (output_path / "song.schem").is_file()
+
+
+def test_output_format_both_mcfunction_contains_only_runtime_logic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    nbs_path = _write_placeholder_nbs(tmp_path)
+    output_path = tmp_path / "out"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            str(nbs_path),
+            "--output",
+            str(output_path),
+            "--output-format",
+            "both",
+            "--layout-mode",
+            "basic_linear",
+            "--enable-starter-module",
+            "--enable-playback-assist",
+            "--no-split-functions",
+        ],
+    )
+    _patch_small_generation(monkeypatch)
+
+    result = cli.main()
+
+    stdout = capsys.readouterr().out
+    mcfunction = (
+        output_path
+        / "song"
+        / "data"
+        / "nbs"
+        / "functions"
+        / "build"
+        / "start.mcfunction"
+    )
+    text = mcfunction.read_text(encoding="utf-8")
+    assert result == 0
+    assert (output_path / "song.schem").is_file()
+    assert "setblock" not in text
+    assert "command_block" not in text
+    assert "scoreboard objectives add" in text
+    assert "summon minecraft:armor_stand" in text
+    assert "contains all blocks including command blocks" in stdout
+    assert "contains runtime logic" in stdout
 
 
 @pytest.mark.parametrize(

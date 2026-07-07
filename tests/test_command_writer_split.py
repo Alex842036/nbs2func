@@ -188,7 +188,10 @@ class CommandWriterSplitTest(unittest.TestCase):
             CommandWriterConfig(split_functions=False)
         ).write_text(layout)
 
-        self.assertIn("setblock 0 132 0 minecraft:note_block[note=12]", text)
+        self.assertIn(
+            "setblock 0 132 0 minecraft:note_block[note=12,instrument=harp]",
+            text,
+        )
         self.assertIn("setblock 0 131 0 minecraft:dirt", text)
         self.assertIn("setblock 1 132 0 minecraft:repeater[facing=west,delay=2]", text)
         self.assertIn("setblock 1 131 0 minecraft:stone", text)
@@ -221,7 +224,10 @@ class CommandWriterSplitTest(unittest.TestCase):
         self.assertIn("setblock 1 131 0 minecraft:stone", text)
         self.assertIn("setblock 0 132 0 minecraft:stone", text)
         self.assertIn("setblock 0 131 0 minecraft:stone", text)
-        self.assertIn("setblock 0 132 1 minecraft:note_block[note=12]", text)
+        self.assertIn(
+            "setblock 0 132 1 minecraft:note_block[note=12,instrument=harp]",
+            text,
+        )
 
     def test_note_based_gravity_instrument_writes_support_before_instrument(self) -> None:
         layout = LayoutResult(

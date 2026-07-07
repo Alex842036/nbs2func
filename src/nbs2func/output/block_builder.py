@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from ..core.instrument_mapping import get_instrument_block, get_required_support_block
+from ..core.instrument_mapping import (
+    get_instrument_block,
+    get_note_block_instrument,
+    get_required_support_block,
+)
 from ..layout.geometry import (
     DIRECTION_VECTORS,
     BlockPosition,
@@ -40,9 +45,35 @@ if TYPE_CHECKING:
     from .command_writer import CommandWriterConfig
 
 
+@dataclass(frozen=True)
+class BuildPlanOptions:
+    include_structure: bool = True
+    include_module_blocks: bool = True
+    include_runtime_logic: bool = True
+
+
+FULL_BUILD_PLAN = BuildPlanOptions()
+STRUCTURE_ONLY_BUILD_PLAN = BuildPlanOptions(
+    include_structure=True,
+    include_module_blocks=False,
+    include_runtime_logic=False,
+)
+STRUCTURE_WITH_MODULE_BLOCKS_BUILD_PLAN = BuildPlanOptions(
+    include_structure=True,
+    include_module_blocks=True,
+    include_runtime_logic=False,
+)
+RUNTIME_LOGIC_BUILD_PLAN = BuildPlanOptions(
+    include_structure=False,
+    include_module_blocks=False,
+    include_runtime_logic=True,
+)
+
+
 def build_generated_plan(
     layout: LayoutResult,
     config: CommandWriterConfig,
+    options: BuildPlanOptions | None = None,
 ) -> GeneratedBuildPlan:
     """Build structured block placements and non-block commands for a layout."""
 
@@ -119,12 +150,81 @@ def build_generated_plan(
         for item in section.items
         if isinstance(item, GeneratedCommand)
     )
-    return GeneratedBuildPlan(
+    plan = GeneratedBuildPlan(
         blocks=blocks,
         commands=commands,
         warnings=tuple(warnings),
         sections=tuple(sections),
     )
+    if options is None or options == FULL_BUILD_PLAN:
+        return plan
+    return filter_generated_plan(plan, options)
+
+
+def filter_generated_plan(
+    plan: GeneratedBuildPlan,
+    options: BuildPlanOptions,
+) -> GeneratedBuildPlan:
+    sections: list[GeneratedBuildSection] = []
+    for section in plan.sections:
+        items = tuple(
+            item
+            for item in section.items
+            if _include_item_for_options(item, options)
+        )
+        if not items:
+            continue
+        sections.append(
+            GeneratedBuildSection(
+                comments=section.comments,
+                items=items,
+                trailing_blank=section.trailing_blank,
+            )
+        )
+
+    blocks = tuple(
+        item
+        for section in sections
+        for item in section.items
+        if isinstance(item, PlacedBlock)
+    )
+    commands = tuple(
+        item
+        for section in sections
+        for item in section.items
+        if isinstance(item, GeneratedCommand)
+    )
+    return GeneratedBuildPlan(
+        blocks=blocks,
+        commands=commands,
+        warnings=tuple(
+            warning
+            for warning in plan.warnings
+            if options.include_runtime_logic
+        ),
+        sections=tuple(sections),
+    )
+
+
+def _include_item_for_options(
+    item: GeneratedBuildItem,
+    options: BuildPlanOptions,
+) -> bool:
+    if isinstance(item, PlacedBlock):
+        return (
+            options.include_module_blocks
+            if _is_module_source(item.source)
+            else options.include_structure
+        )
+    if isinstance(item, GeneratedCommand):
+        return options.include_runtime_logic
+    if isinstance(item, GeneratedComment):
+        return options.include_structure
+    return False
+
+
+def _is_module_source(source: str) -> bool:
+    return source.startswith("starter.") or source.startswith("playback_assist.")
 
 
 def _cell_sections(
@@ -171,6 +271,7 @@ def _section_for_cell(
 
     note_value = _minecraft_note_value(cell.note.key)
     instrument_block = get_instrument_block(cell.note.instrument)
+    note_block_instrument = _note_block_instrument(cell.note.instrument)
     support_block = get_required_support_block(
         instrument_block,
         config.track_block,
@@ -200,7 +301,7 @@ def _section_for_cell(
             ),
             _placed_block(
                 cell.note_block_position,
-                f"note_block[note={note_value}]",
+                _note_block_data(note_value, note_block_instrument),
                 "layout.cell.note_block",
             ),
         ]
@@ -330,6 +431,7 @@ def _note_based_emitter_items(
     emitter = assignment.emitter
     note_value = _minecraft_note_value(emitter.key)
     instrument_block = get_instrument_block(emitter.instrument)
+    note_block_instrument = _note_block_instrument(emitter.instrument)
     instrument_position = below(assignment.slot.position)
     support_block = get_required_support_block(
         instrument_block,
@@ -361,7 +463,7 @@ def _note_based_emitter_items(
             ),
             _placed_block(
                 assignment.slot.position,
-                f"note_block[note={note_value}]",
+                _note_block_data(note_value, note_block_instrument),
                 "layout.note_based.note_block",
             ),
         ]
@@ -387,6 +489,14 @@ def _block_id(block: str) -> str:
 
 def _minecraft_note_value(key: int) -> int:
     return min(24, max(0, key - 33))
+
+
+def _note_block_instrument(instrument: int | str) -> str:
+    return get_note_block_instrument(instrument) or "harp"
+
+
+def _note_block_data(note_value: int, instrument: str) -> str:
+    return f"note_block[note={note_value},instrument={instrument}]"
 
 
 def _note_based_position(

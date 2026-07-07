@@ -152,7 +152,7 @@ For `.schem` output, the default file is written next to the datapack output par
 output/song.schem
 ```
 
-Schematic coordinates are relative to the generation origin by default. Starter and playback assist command blocks are written as blocks, including command block NBT when present. Starter armor stand marker entities are not included in `.schem` output.
+Schematic coordinates are relative to the generation origin by default. In `--output-format schem`, the schematic contains the main redstone music structure only; starter and playback assist modules are skipped because they require runtime `.mcfunction` logic. In `--output-format both`, the schematic contains all blocks, including starter/playback command blocks with NBT, while the generated `.mcfunction` output contains only runtime commands such as scoreboard setup and entity summons. Starter armor stand marker entities are not written into `.schem` files.
 
 ## Using the datapack in Minecraft
 

@@ -2,7 +2,13 @@ import unittest
 
 from nbs2func.core.models import NoteEvent, Song, Track
 from nbs2func.layout import BasicLinearLayout, BlockPosition
-from nbs2func.output.block_builder import build_generated_plan
+from nbs2func.output.block_builder import (
+    RUNTIME_LOGIC_BUILD_PLAN,
+    STRUCTURE_ONLY_BUILD_PLAN,
+    STRUCTURE_WITH_MODULE_BLOCKS_BUILD_PLAN,
+    build_generated_plan,
+    filter_generated_plan,
+)
 from nbs2func.output.command_writer import (
     BasicMcfunctionWriter,
     CommandWriterConfig,
@@ -61,7 +67,7 @@ class BlockBuilderTest(unittest.TestCase):
         by_source = {block.source: block for block in plan.blocks}
         self.assertEqual(
             by_source["layout.cell.note_block"].block,
-            "minecraft:note_block[note=12]",
+            "minecraft:note_block[note=12,instrument=snare]",
         )
         self.assertEqual(
             by_source["layout.cell.instrument_block"].block,
@@ -75,6 +81,27 @@ class BlockBuilderTest(unittest.TestCase):
         self.assertEqual(
             by_source["layout.cell.repeater"].block,
             "minecraft:repeater[facing=west,delay=2]",
+        )
+
+    def test_note_block_instrument_state_matches_base_block(self) -> None:
+        layout = BasicLinearLayout(
+            origin=BlockPosition(0, 128, 0),
+            selected_track_id=0,
+        ).layout_song(_song_with_instrument(7))
+
+        plan = build_generated_plan(
+            layout,
+            CommandWriterConfig(split_functions=False),
+        )
+
+        by_source = {block.source: block for block in plan.blocks}
+        self.assertEqual(
+            by_source["layout.cell.note_block"].block,
+            "minecraft:note_block[note=12,instrument=bell]",
+        )
+        self.assertEqual(
+            by_source["layout.cell.instrument_block"].block,
+            "minecraft:gold_block",
         )
 
     def test_starter_plan_keeps_blocks_and_entity_command_separate(self) -> None:
@@ -143,6 +170,85 @@ class BlockBuilderTest(unittest.TestCase):
             )
         )
 
+    def test_structure_only_plan_excludes_starter_and_playback_blocks(self) -> None:
+        layout = BasicLinearLayout(
+            origin=BlockPosition(0, 128, 0),
+            selected_track_id=0,
+        ).layout_song(_song_with_instrument(0))
+        full_plan = build_generated_plan(
+            layout,
+            CommandWriterConfig(
+                split_functions=False,
+                enable_starter_module=True,
+                enable_playback_assist=True,
+            ),
+        )
+
+        plan = filter_generated_plan(full_plan, STRUCTURE_ONLY_BUILD_PLAN)
+
+        self.assertTrue(plan.blocks)
+        self.assertFalse(
+            any(block.source.startswith("starter.") for block in plan.blocks)
+        )
+        self.assertFalse(
+            any(block.source.startswith("playback_assist.") for block in plan.blocks)
+        )
+        self.assertEqual(plan.commands, ())
+
+    def test_both_mode_schematic_plan_includes_module_command_blocks(self) -> None:
+        layout = BasicLinearLayout(
+            origin=BlockPosition(0, 128, 0),
+            selected_track_id=0,
+        ).layout_song(_song_with_instrument(0))
+        full_plan = build_generated_plan(
+            layout,
+            CommandWriterConfig(
+                split_functions=False,
+                enable_starter_module=True,
+                enable_playback_assist=True,
+            ),
+        )
+
+        plan = filter_generated_plan(full_plan, STRUCTURE_WITH_MODULE_BLOCKS_BUILD_PLAN)
+
+        self.assertTrue(any(block.source.startswith("layout.") for block in plan.blocks))
+        self.assertTrue(
+            any(
+                block.source.startswith("playback_assist.")
+                and "command_block" in block.source
+                and "{Command:" in block.block
+                for block in plan.blocks
+            )
+        )
+        self.assertEqual(plan.commands, ())
+
+    def test_runtime_logic_plan_excludes_all_blocks(self) -> None:
+        layout = BasicLinearLayout(
+            origin=BlockPosition(0, 128, 0),
+            selected_track_id=0,
+        ).layout_song(_song_with_instrument(0))
+        full_plan = build_generated_plan(
+            layout,
+            CommandWriterConfig(
+                split_functions=False,
+                enable_starter_module=True,
+                enable_playback_assist=True,
+            ),
+        )
+
+        plan = filter_generated_plan(full_plan, RUNTIME_LOGIC_BUILD_PLAN)
+
+        self.assertEqual(plan.blocks, ())
+        self.assertTrue(
+            any(command.source == "starter.armor_stand" for command in plan.commands)
+        )
+        self.assertTrue(
+            any(
+                command.source == "playback_assist.scoreboard_objective"
+                for command in plan.commands
+            )
+        )
+
     def test_command_writer_uses_structured_playback_plan(self) -> None:
         layout = BasicLinearLayout(
             origin=BlockPosition(0, 128, 0),
@@ -160,6 +266,34 @@ class BlockBuilderTest(unittest.TestCase):
         self.assertIn("minecraft:command_block{Command:", text)
         self.assertIn("minecraft:chain_command_block", text)
         self.assertIn("minecraft:stone_button[face=floor,facing=east]", text)
+
+    def test_command_writer_runtime_plan_omits_setblock_layer(self) -> None:
+        layout = BasicLinearLayout(
+            origin=BlockPosition(0, 128, 0),
+            selected_track_id=0,
+        ).layout_song(_song_with_instrument(0))
+        full_plan = build_generated_plan(
+            layout,
+            CommandWriterConfig(
+                split_functions=False,
+                enable_starter_module=True,
+                enable_playback_assist=True,
+            ),
+        )
+        runtime_plan = filter_generated_plan(full_plan, RUNTIME_LOGIC_BUILD_PLAN)
+
+        text = BasicMcfunctionWriter(
+            CommandWriterConfig(
+                split_functions=False,
+                enable_starter_module=True,
+                enable_playback_assist=True,
+            )
+        ).write_text(layout, plan=runtime_plan)
+
+        self.assertNotIn("setblock", text)
+        self.assertNotIn("command_block", text)
+        self.assertIn("scoreboard objectives add", text)
+        self.assertIn("summon minecraft:armor_stand", text)
 
 
 def _song_with_instrument(instrument: int) -> Song:

@@ -9,7 +9,13 @@ import pstats
 import re
 import sys
 
-from .output.block_builder import build_generated_plan
+from .output.block_builder import (
+    RUNTIME_LOGIC_BUILD_PLAN,
+    STRUCTURE_ONLY_BUILD_PLAN,
+    STRUCTURE_WITH_MODULE_BLOCKS_BUILD_PLAN,
+    build_generated_plan,
+    filter_generated_plan,
+)
 from .output.command_writer import CommandWriterConfig, write_mcfunction
 from .output.schematic_writer import (
     resolve_schematic_origin,
@@ -1541,7 +1547,14 @@ def main() -> int:
             not args.no_reset_tick_rate_after_playback
         ),
     )
-    build_plan = build_generated_plan(layout, writer_config)
+    full_build_plan = build_generated_plan(layout, writer_config)
+    datapack_plan = full_build_plan
+    schematic_plan = (
+        filter_generated_plan(full_build_plan, STRUCTURE_WITH_MODULE_BLOCKS_BUILD_PLAN)
+        if args.output_format == "both"
+        else filter_generated_plan(full_build_plan, STRUCTURE_ONLY_BUILD_PLAN)
+    )
+    runtime_plan = filter_generated_plan(full_build_plan, RUNTIME_LOGIC_BUILD_PLAN)
 
     write_result = None
     if args.output_format in {"datapack", "both"}:
@@ -1559,7 +1572,7 @@ def main() -> int:
             layout,
             writer_output_path,
             writer_config,
-            plan=build_plan,
+            plan=(runtime_plan if args.output_format == "both" else datapack_plan),
         )
 
     schematic_path = None
@@ -1568,7 +1581,7 @@ def main() -> int:
         generation_origin = BlockPosition(args.origin_x, args.origin_y, args.origin_z)
         try:
             schematic_origin = resolve_schematic_origin(
-                build_plan,
+                schematic_plan,
                 args.schematic_origin_mode,
                 generation_origin,
             )
@@ -1581,7 +1594,7 @@ def main() -> int:
             else output_root / f"{sanitize_datapack_name(path.stem)}.schem"
         )
         schematic_path = write_schematic(
-            build_plan,
+            schematic_plan,
             schematic_output,
             version_profile=version_profile,
             schematic_origin=schematic_origin,
@@ -1607,7 +1620,27 @@ def main() -> int:
     if schematic_path is not None and schematic_origin is not None:
         print(f"Generated schematic: {schematic_path}")
         print(f"  schematic origin: {_format_position(schematic_origin)}")
-        for warning in schematic_warnings(build_plan):
+        if args.output_format == "schem" and (
+            args.enable_starter_module or args.enable_playback_assist
+        ):
+            print(
+                "  WARNING: Schematic output does not include starter or "
+                "playback assist modules."
+            )
+            print(
+                "  WARNING: These modules require mcfunction support to "
+                "execute runtime logic."
+            )
+        if args.output_format == "both":
+            print(
+                "  Note: The .schem file contains all blocks including "
+                "command blocks."
+            )
+            print(
+                "  Note: The .mcfunction output contains runtime logic such "
+                "as scoreboard, summon, and execute."
+            )
+        for warning in schematic_warnings(schematic_plan):
             print(f"  WARNING: {warning}")
 
     return 0
