@@ -13,7 +13,8 @@ from nbs2func.config import (
     load_config,
     save_config,
 )
-from nbs2func.layout.models import LayoutResult
+from nbs2func.layout.geometry import BlockPosition
+from nbs2func.layout.models import LayoutCell, LayoutResult
 from nbs2func.core.models import NoteEvent, Song, Track
 
 
@@ -46,6 +47,34 @@ def _write_placeholder_nbs(tmp_path: Path) -> Path:
     nbs_path = tmp_path / "song.nbs"
     nbs_path.write_bytes(b"placeholder")
     return nbs_path
+
+
+def _small_layout() -> LayoutResult:
+    return LayoutResult(
+        mode="test",
+        cells=(
+            LayoutCell(
+                tick=0,
+                track_id="0",
+                source_track_id=0,
+                repeater_position=BlockPosition(0, 128, 0),
+                repeater_facing="west",
+                track_block_position=BlockPosition(0, 127, 0),
+                note_block_position=BlockPosition(-1, 128, 0),
+                instrument_block_position=BlockPosition(-1, 127, 0),
+                note=None,
+            ),
+        ),
+        notes=(),
+        conflicts=(),
+    )
+
+
+def _patch_small_generation(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "read_nbs", lambda path: _song())
+    monkeypatch.setattr(cli, "build_layout_strategy", lambda **kwargs: object())
+    monkeypatch.setattr(cli, "layout_song", lambda song, strategy: _small_layout())
+    monkeypatch.setattr(cli, "total_track_length_from_layout", lambda *args: 0)
 
 
 def test_parser_keeps_existing_cli_arguments_available() -> None:
@@ -87,6 +116,10 @@ def test_default_config_returns_current_defaults_and_new_instances() -> None:
     assert first.center_split_overrides is not second.center_split_overrides
     assert first.input_path == "examples/demo.nbs"
     assert first.output == "output"
+    assert first.output_format == "datapack"
+    assert first.schematic_origin_mode == "generation_origin"
+    assert first.schematic_output is None
+    assert first.schematic_name is None
     assert first.minecraft_version == "1.16.5"
     assert first.layout_mode == "note_based_stereo"
     assert first.split_functions is True
@@ -140,6 +173,7 @@ def test_dump_default_config_outputs_valid_json(
     data = json.loads(capsys.readouterr().out)
     assert data["minecraft_version"] == "1.16.5"
     assert data["layout_mode"] == "note_based_stereo"
+    assert data["output_format"] == "datapack"
 
 
 def test_cli_config_file_is_loaded_and_explicit_args_override(
@@ -234,6 +268,74 @@ def test_default_generation_writes_datapack_key_files(
     ).is_file()
 
 
+def test_output_format_schem_writes_only_schematic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    nbs_path = _write_placeholder_nbs(tmp_path)
+    output_path = tmp_path / "out"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            str(nbs_path),
+            "--output",
+            str(output_path),
+            "--output-format",
+            "schem",
+            "--layout-mode",
+            "basic_linear",
+        ],
+    )
+    _patch_small_generation(monkeypatch)
+
+    result = cli.main()
+
+    stdout = capsys.readouterr().out
+    assert result == 0
+    assert (output_path / "song.schem").is_file()
+    assert not (output_path / "song" / "pack.mcmeta").exists()
+    assert "Generated schematic:" in stdout
+    assert "Generated datapack:" not in stdout
+
+
+def test_output_format_both_writes_datapack_and_schematic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    nbs_path = _write_placeholder_nbs(tmp_path)
+    output_path = tmp_path / "out"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            str(nbs_path),
+            "--output",
+            str(output_path),
+            "--output-format",
+            "both",
+            "--layout-mode",
+            "basic_linear",
+        ],
+    )
+    _patch_small_generation(monkeypatch)
+
+    result = cli.main()
+
+    capsys.readouterr()
+    datapack_root = output_path / "song"
+    assert result == 0
+    assert (datapack_root / "pack.mcmeta").is_file()
+    assert (
+        datapack_root / "data" / "nbs" / "functions" / "build" / "start.mcfunction"
+    ).is_file()
+    assert (output_path / "song.schem").is_file()
+
+
 @pytest.mark.parametrize(
     ("version_arg", "expected_profile"),
     (
@@ -276,7 +378,7 @@ def test_generation_uses_minecraft_version_alias_profile(
     )
     monkeypatch.setattr(cli, "total_track_length_from_layout", lambda *args: 0)
 
-    def fake_write_mcfunction(layout, path, config):
+    def fake_write_mcfunction(layout, path, config, **kwargs):
         captured["profile"] = config.minecraft_version_profile
         return CommandWriteResult(total_commands=0, split_function_parts=1)
 

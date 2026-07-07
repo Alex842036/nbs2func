@@ -8,7 +8,7 @@ The project is usable for preview builds, including large note-based stereo test
 
 ## What it generates
 
-`nbs2func` reads an `.nbs` file, computes note positions, and writes a generated datapack containing build functions. The build functions place:
+`nbs2func` reads an `.nbs` file, computes note positions, and writes a generated datapack containing build functions. It can also write `.schem` files from the same structured block placement data. The generated outputs place:
 
 - note blocks;
 - instrument blocks under note blocks;
@@ -17,7 +17,7 @@ The project is usable for preview builds, including large note-based stereo test
 - optional starter structures;
 - optional minecart playback assist command blocks.
 
-The default build output is a split datapack designed for large structures. Instead of relying on `forceload`, the generated build function teleports a configured build player through build windows so nearby chunks can load before each batch of `setblock` commands runs.
+The default build output is still a split datapack designed for large structures. Instead of relying on `forceload`, the generated build function teleports a configured build player through build windows so nearby chunks can load before each batch of `setblock` commands runs.
 
 ## Supported Minecraft versions
 
@@ -49,7 +49,7 @@ If an input song uses an instrument or base block unsupported by the selected Mi
 ## Requirements
 
 - Python 3.11 or newer is recommended.
-- No external runtime package is currently required.
+- `mcschematic` is a standard runtime dependency for `.schem` output.
 - `pytest` is required only for running tests.
 
 Install for local development:
@@ -99,6 +99,20 @@ $env:PYTHONPATH = "src"
 python main.py examples\demo.nbs --layout-mode basic_linear --track-id 0 --no-split-functions
 ```
 
+Generate a schematic instead of a datapack:
+
+```powershell
+$env:PYTHONPATH = "src"
+python main.py path\to\song.nbs --output-format schem
+```
+
+Generate both outputs:
+
+```powershell
+$env:PYTHONPATH = "src"
+python main.py path\to\song.nbs --output-format both
+```
+
 ## Output layout
 
 By default, the output parent directory is `output/`. For an input file named `song.nbs`, the generated datapack root is usually:
@@ -131,6 +145,14 @@ For split output, the generated datapack contains:
 pack.mcmeta
 data/nbs/functions/build/...   # or data/nbs/function/build/... for profiles that use singular paths
 ```
+
+For `.schem` output, the default file is written next to the datapack output parent:
+
+```text
+output/song.schem
+```
+
+Schematic coordinates are relative to the generation origin by default. Starter and playback assist command blocks are written as blocks, including command block NBT when present. Starter armor stand marker entities are not included in `.schem` output.
 
 ## Using the datapack in Minecraft
 
@@ -220,6 +242,10 @@ General:
 ```text
 --minecraft-version
 --output
+--output-format
+--schematic-origin-mode
+--schematic-output
+--schematic-name
 --layout-mode
 --direction
 --origin-x / --origin-y / --origin-z
@@ -314,7 +340,10 @@ src/nbs2func/
     track_stereo.py
     note_stereo.py
   output/
+    block_builder.py
     command_writer.py
+    models.py
+    schematic_writer.py
   modules/
     starter.py
     playback_assist.py
@@ -333,6 +362,8 @@ Key modules:
 - `core/instrument_mapping.py`: NBS/Minecraft instrument mapping and version validation.
 - `layout/`: layout strategies and note-based stereo rail preview logic.
 - `output/command_writer.py`: datapack and `.mcfunction` output.
+- `output/block_builder.py`: structured generated block placement data.
+- `output/schematic_writer.py`: `.schem` output.
 - `modules/starter.py`: optional starter activation module.
 - `modules/playback_assist.py`: optional minecart playback assist module.
 - `analysis/spatial_analyzer.py`: read-only spatial analysis.

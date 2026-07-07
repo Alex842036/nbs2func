@@ -127,6 +127,22 @@ class DatapackOutputTest(unittest.TestCase):
                     pack_format,
                 )
 
+    def test_supported_profiles_have_mcschematic_versions(self) -> None:
+        expected = {
+            "1.14.4": "JE_1_14_4",
+            "1.16.5": "JE_1_16_5",
+            "1.18.2": "JE_1_18_2",
+            "1.20.1": "JE_1_20_1",
+            "1.21.1": "JE_1_21_1",
+        }
+
+        for version_id, schematic_version in expected.items():
+            with self.subTest(version_id=version_id):
+                self.assertEqual(
+                    get_minecraft_version_profile(version_id).mcschematic_version,
+                    schematic_version,
+                )
+
     def test_supported_profiles_have_inclusive_build_height_ranges(self) -> None:
         expected = {
             "1.14.4": (0, 255),

@@ -9,7 +9,13 @@ import pstats
 import re
 import sys
 
+from .output.block_builder import build_generated_plan
 from .output.command_writer import CommandWriterConfig, write_mcfunction
+from .output.schematic_writer import (
+    resolve_schematic_origin,
+    schematic_warnings,
+    write_schematic,
+)
 from .config import (
     Nbs2FuncConfig,
     config_from_dict,
@@ -78,6 +84,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         default=str(DEFAULT_OUTPUT_PATH),
         help="Parent directory for the generated datapack. Defaults to output.",
+    )
+    parser.add_argument(
+        "--output-format",
+        choices=("datapack", "schem", "both"),
+        default="datapack",
+        help="Output format to generate. Defaults to datapack.",
+    )
+    parser.add_argument(
+        "--schematic-origin-mode",
+        choices=("generation_origin", "min_corner"),
+        default="generation_origin",
+        help="Origin for schematic relative coordinates. Defaults to generation_origin.",
+    )
+    parser.add_argument(
+        "--schematic-output",
+        default=None,
+        help="Optional .schem output path or folder. Defaults under --output.",
+    )
+    parser.add_argument(
+        "--schematic-name",
+        default=None,
+        help="Optional schematic file name without .schem extension.",
     )
     parser.add_argument(
         "--analyze-stereo",
@@ -854,6 +882,10 @@ def _args_namespace_from_config(config: Nbs2FuncConfig) -> argparse.Namespace:
     return argparse.Namespace(
         file=config.input_path,
         output=config.output,
+        output_format=config.output_format,
+        schematic_origin_mode=config.schematic_origin_mode,
+        schematic_output=config.schematic_output,
+        schematic_name=config.schematic_name,
         analyze_stereo=config.analyze_stereo,
         analyze_layout_spatial=config.analyze_layout_spatial,
         group_config=config.group_config,
@@ -1455,91 +1487,128 @@ def main() -> int:
     output_root = Path(args.output)
     datapack_root = output_root / sanitize_datapack_name(path.stem)
     writer_output_path = datapack_root
-    if args.no_split_functions:
-        write_pack_mcmeta(datapack_root, version_profile)
-        writer_output_path = (
-            datapack_root
-            / "data"
-            / args.function_namespace
-            / version_profile.function_dir_name
-            / args.build_function_dir
-            / "start.mcfunction"
-        )
-    write_result = write_mcfunction(
-        layout,
-        writer_output_path,
-        CommandWriterConfig(
-            enable_starter_module=(
-                args.enable_starter_module or args.enable_playback_assist
-            ),
-            command_block_position=BlockPosition(
-                args.command_block_x,
-                args.command_block_y,
-                args.command_block_z,
-            ),
-            starter_tag=args.starter_tag,
-            starter_track_block=args.starter_track_block,
-            starter_cell_offset=args.starter_cell_offset,
-            split_functions=not args.no_split_functions,
-            function_namespace=args.function_namespace,
-            build_function_dir=args.build_function_dir,
-            minecraft_version_profile=version_profile,
-            max_commands_per_build_part=args.max_commands_per_build_part,
-            schedule_delay_ticks_between_parts=(
-                args.schedule_delay_ticks_between_parts
-            ),
-            build_player_name=args.build_player_name,
-            player_load_radius_chunks=args.player_load_radius_chunks,
-            player_tp_chunk_load_wait_ticks=args.player_tp_chunk_load_wait_ticks,
-            player_tp_after_build_wait_ticks=args.player_tp_after_build_wait_ticks,
-            player_tp_window_length_blocks=args.player_tp_window_length_blocks,
-            player_tp_window_lateral_width_blocks=(
-                args.player_tp_window_lateral_width_blocks
-            ),
-            build_tp_y=args.build_tp_y,
-            build_finish_tp_position=_optional_position(
-                args.build_finish_tp_x,
-                args.build_finish_tp_y,
-                args.build_finish_tp_z,
-            ),
-            enable_playback_assist=args.enable_playback_assist,
-            playback_player_name=args.playback_player_name,
-            playback_vehicle_tag=args.playback_vehicle_tag,
-            count_objective=args.count_objective,
-            vehicle_spawn_position=playback_config.vehicle_spawn_position,
-            music_start_position=playback_config.music_start_position,
-            command_module_origin=playback_config.command_module_origin,
-            playback_track_direction=args.direction,
-            playback_total_track_length=playback_total_track_length,
-            generate_playback_buttons=not args.no_playback_buttons,
-            playback_button_block=args.playback_button_block,
-            prepare_button_position=playback_config.prepare_button_position,
-            start_button_position=playback_config.start_button_position,
-            requested_origin_y=args.origin_y,
-            tempo_control_mode=args.tempo_control_mode,
-            tempo_control_report=tempo_report,
-            reset_tick_rate_after_playback=(
-                not args.no_reset_tick_rate_after_playback
-            ),
+    writer_config = CommandWriterConfig(
+        enable_starter_module=(
+            args.enable_starter_module or args.enable_playback_assist
+        ),
+        command_block_position=BlockPosition(
+            args.command_block_x,
+            args.command_block_y,
+            args.command_block_z,
+        ),
+        starter_tag=args.starter_tag,
+        starter_track_block=args.starter_track_block,
+        starter_cell_offset=args.starter_cell_offset,
+        split_functions=not args.no_split_functions,
+        function_namespace=args.function_namespace,
+        build_function_dir=args.build_function_dir,
+        minecraft_version_profile=version_profile,
+        max_commands_per_build_part=args.max_commands_per_build_part,
+        schedule_delay_ticks_between_parts=(
+            args.schedule_delay_ticks_between_parts
+        ),
+        build_player_name=args.build_player_name,
+        player_load_radius_chunks=args.player_load_radius_chunks,
+        player_tp_chunk_load_wait_ticks=args.player_tp_chunk_load_wait_ticks,
+        player_tp_after_build_wait_ticks=args.player_tp_after_build_wait_ticks,
+        player_tp_window_length_blocks=args.player_tp_window_length_blocks,
+        player_tp_window_lateral_width_blocks=(
+            args.player_tp_window_lateral_width_blocks
+        ),
+        build_tp_y=args.build_tp_y,
+        build_finish_tp_position=_optional_position(
+            args.build_finish_tp_x,
+            args.build_finish_tp_y,
+            args.build_finish_tp_z,
+        ),
+        enable_playback_assist=args.enable_playback_assist,
+        playback_player_name=args.playback_player_name,
+        playback_vehicle_tag=args.playback_vehicle_tag,
+        count_objective=args.count_objective,
+        vehicle_spawn_position=playback_config.vehicle_spawn_position,
+        music_start_position=playback_config.music_start_position,
+        command_module_origin=playback_config.command_module_origin,
+        playback_track_direction=args.direction,
+        playback_total_track_length=playback_total_track_length,
+        generate_playback_buttons=not args.no_playback_buttons,
+        playback_button_block=args.playback_button_block,
+        prepare_button_position=playback_config.prepare_button_position,
+        start_button_position=playback_config.start_button_position,
+        requested_origin_y=args.origin_y,
+        tempo_control_mode=args.tempo_control_mode,
+        tempo_control_report=tempo_report,
+        reset_tick_rate_after_playback=(
+            not args.no_reset_tick_rate_after_playback
         ),
     )
+    build_plan = build_generated_plan(layout, writer_config)
 
-    if layout.note_based_preview is not None:
+    write_result = None
+    if args.output_format in {"datapack", "both"}:
+        if args.no_split_functions:
+            write_pack_mcmeta(datapack_root, version_profile)
+            writer_output_path = (
+                datapack_root
+                / "data"
+                / args.function_namespace
+                / version_profile.function_dir_name
+                / args.build_function_dir
+                / "start.mcfunction"
+            )
+        write_result = write_mcfunction(
+            layout,
+            writer_output_path,
+            writer_config,
+            plan=build_plan,
+        )
+
+    schematic_path = None
+    schematic_origin = None
+    if args.output_format in {"schem", "both"}:
+        generation_origin = BlockPosition(args.origin_x, args.origin_y, args.origin_z)
+        try:
+            schematic_origin = resolve_schematic_origin(
+                build_plan,
+                args.schematic_origin_mode,
+                generation_origin,
+            )
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            return 1
+        schematic_output = (
+            Path(args.schematic_output)
+            if args.schematic_output is not None
+            else output_root / f"{sanitize_datapack_name(path.stem)}.schem"
+        )
+        schematic_path = write_schematic(
+            build_plan,
+            schematic_output,
+            version_profile=version_profile,
+            schematic_origin=schematic_origin,
+            schematic_name=args.schematic_name,
+        )
+
+    if layout.note_based_preview is not None and write_result is not None:
         _print_note_based_build_debug(layout.note_based_preview, write_result)
 
-    if write_result.player_tp_build is not None:
+    if write_result is not None and write_result.player_tp_build is not None:
         _print_player_tp_build_debug(write_result.player_tp_build)
 
     print()
-    if args.no_split_functions:
+    if write_result is not None and args.no_split_functions:
         print(f"Generated datapack: {datapack_root}")
         print(f"Generated mcfunction: {writer_output_path}")
-    else:
+    elif write_result is not None:
         print(f"Generated datapack: {datapack_root}")
         print(
             "If split output was needed, run "
             f"/function {args.function_namespace}:{args.build_function_dir}/start"
         )
+    if schematic_path is not None and schematic_origin is not None:
+        print(f"Generated schematic: {schematic_path}")
+        print(f"  schematic origin: {_format_position(schematic_origin)}")
+        for warning in schematic_warnings(build_plan):
+            print(f"  WARNING: {warning}")
 
     return 0
 

@@ -18,6 +18,10 @@ class Nbs2FuncConfig:
     # output-preserving cleanup.
     input_path: str = "examples/demo.nbs"
     output: str = "output"
+    output_format: str = "datapack"
+    schematic_origin_mode: str = "generation_origin"
+    schematic_output: str | None = None
+    schematic_name: str | None = None
     minecraft_version: str = DEFAULT_MINECRAFT_VERSION
     layout_mode: str = "note_based_stereo"
     direction: str = "east"
@@ -233,6 +237,8 @@ def _validate_choice(field_name: str, value: Any) -> None:
     choices_by_field = {
         "tempo_control_mode": {"none", "report", "command"},
         "tempo_control_backend": {"auto", "carpet", "vanilla"},
+        "output_format": {"datapack", "schem", "both"},
+        "schematic_origin_mode": {"generation_origin", "min_corner"},
     }
     choices = choices_by_field.get(field_name)
     if choices is not None and value not in choices:

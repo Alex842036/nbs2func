@@ -27,6 +27,7 @@ class MinecraftVersionProfile:
     supports_playback_assist: bool = True
     supports_minecart_playback_assist: bool = True
     tempo_control_backend: str = "carpet"
+    mcschematic_version: str = "JE_1_16_5"
     supported_note_block_instruments: frozenset[str] = frozenset()
     supported_base_blocks: frozenset[str] = frozenset()
     notes: tuple[str, ...] = ()
@@ -155,6 +156,7 @@ SUPPORTED_VERSION_PROFILES: dict[str, MinecraftVersionProfile] = {
         namespace="nbs",
         function_dir_name="functions",
         function_tag_dir_name="functions",
+        mcschematic_version="JE_1_14_4",
         supported_note_block_instruments=JAVA_1_14_NOTE_BLOCK_INSTRUMENTS,
         supported_base_blocks=JAVA_1_14_NOTE_BLOCK_BASE_BLOCKS,
     ),
@@ -167,6 +169,7 @@ SUPPORTED_VERSION_PROFILES: dict[str, MinecraftVersionProfile] = {
         namespace="nbs",
         function_dir_name="functions",
         function_tag_dir_name="functions",
+        mcschematic_version="JE_1_18_2",
         supported_note_block_instruments=JAVA_1_14_NOTE_BLOCK_INSTRUMENTS,
         supported_base_blocks=JAVA_1_14_NOTE_BLOCK_BASE_BLOCKS,
     ),
@@ -178,6 +181,7 @@ SUPPORTED_VERSION_PROFILES: dict[str, MinecraftVersionProfile] = {
         namespace="nbs",
         function_dir_name="functions",
         function_tag_dir_name="functions",
+        mcschematic_version="JE_1_20_1",
         supported_note_block_instruments=JAVA_1_14_NOTE_BLOCK_INSTRUMENTS,
         supported_base_blocks=JAVA_1_14_NOTE_BLOCK_BASE_BLOCKS,
     ),
@@ -190,6 +194,7 @@ SUPPORTED_VERSION_PROFILES: dict[str, MinecraftVersionProfile] = {
         function_dir_name="function",
         function_tag_dir_name="function",
         tempo_control_backend="vanilla",
+        mcschematic_version="JE_1_21_1",
         supported_note_block_instruments=JAVA_1_21_NOTE_BLOCK_INSTRUMENTS,
         supported_base_blocks=JAVA_1_21_NOTE_BLOCK_BASE_BLOCKS,
     ),
