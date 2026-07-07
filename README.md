@@ -71,6 +71,13 @@ $env:PYTHONPATH = "src"
 python main.py
 ```
 
+Launch the preview wizard GUI:
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m nbs2func.gui.app
+```
+
 Generate from your own `.nbs` file:
 
 ```powershell
@@ -344,6 +351,11 @@ src/nbs2func/
     command_writer.py
     models.py
     schematic_writer.py
+  gui/
+    app.py
+    state.py
+    wizard.py
+    steps/
   modules/
     starter.py
     playback_assist.py
@@ -364,6 +376,7 @@ Key modules:
 - `output/command_writer.py`: datapack and `.mcfunction` output.
 - `output/block_builder.py`: structured generated block placement data.
 - `output/schematic_writer.py`: `.schem` output.
+- `gui/`: preview tkinter wizard GUI driven by the shared config system.
 - `modules/starter.py`: optional starter activation module.
 - `modules/playback_assist.py`: optional minecart playback assist module.
 - `analysis/spatial_analyzer.py`: read-only spatial analysis.
