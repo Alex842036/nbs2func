@@ -14,6 +14,18 @@ from ..core.minecraft_version import (
     MinecraftVersionError,
     MinecraftVersionProfile,
 )
+from ..output.models import (
+    GeneratedBuildPlan,
+    GeneratedBuildSection,
+    GeneratedCommand,
+    PlacedBlock,
+)
+
+
+STARTER_ENTITY_SCHEM_WARNING = (
+    "starter armor stand marker is an entity and is not included in schematic "
+    "block output"
+)
 
 
 @dataclass(frozen=True)
@@ -109,6 +121,132 @@ def starter_module_lines(
     return lines
 
 
+def build_starter_plan(
+    layout: LayoutResult,
+    config: StarterModuleConfig,
+    default_track_block: str,
+    repeater_block: str,
+) -> GeneratedBuildPlan:
+    """Return structured build data for the optional starter module."""
+
+    sections = build_starter_sections(
+        layout,
+        config,
+        default_track_block,
+        repeater_block,
+    )
+    blocks = tuple(
+        item
+        for section in sections
+        for item in section.items
+        if isinstance(item, PlacedBlock)
+    )
+    commands = tuple(
+        item
+        for section in sections
+        for item in section.items
+        if isinstance(item, GeneratedCommand)
+    )
+    warnings = (
+        (STARTER_ENTITY_SCHEM_WARNING,)
+        if any(command.source == "starter.armor_stand" for command in commands)
+        else ()
+    )
+    return GeneratedBuildPlan(
+        blocks=blocks,
+        commands=commands,
+        warnings=warnings,
+        sections=sections,
+    )
+
+
+def build_starter_sections(
+    layout: LayoutResult,
+    config: StarterModuleConfig,
+    default_track_block: str,
+    repeater_block: str,
+) -> tuple[GeneratedBuildSection, ...]:
+    """Return ordered structured sections for the optional starter module."""
+
+    if not config.enable_starter_module:
+        return ()
+    if not config.minecraft_version_profile.supports_starter_module:
+        raise MinecraftVersionError(
+            "Starter module is not supported for Minecraft Java "
+            f"{config.minecraft_version_profile.version_id} by the current "
+            "version profile. Disable starter module or choose a supported "
+            "target version."
+        )
+
+    starter_track_block = config.starter_track_block or default_track_block
+    cells = _starter_cells(layout, config)
+    if not cells:
+        return ()
+
+    sections: list[GeneratedBuildSection] = [
+        GeneratedBuildSection(
+            comments=(
+                "# Starter module",
+                "# Places one starter marker per track and a command block that powers all markers.",
+            ),
+            items=(),
+            trailing_blank=False,
+        )
+    ]
+    for cell in cells:
+        sections.append(
+            GeneratedBuildSection(
+                comments=(f"# starter track={cell.track_id}",),
+                items=(
+                    _placed_block(
+                        cell.track_block_position,
+                        starter_track_block,
+                        "starter.track_block",
+                    ),
+                    _placed_block(
+                        cell.repeater_position,
+                        f"{repeater_block}[facing={cell.repeater_facing},delay=2]",
+                        "starter.repeater",
+                    ),
+                    _placed_block(
+                        cell.starter_track_block_position,
+                        starter_track_block,
+                        "starter.marker_support_block",
+                    ),
+                    GeneratedCommand(
+                        _summon_starter_armor_stand(
+                            cell.starter_power_position,
+                            config.starter_tag,
+                        ),
+                        source="starter.armor_stand",
+                        schem_supported=False,
+                        reason=STARTER_ENTITY_SCHEM_WARNING,
+                    ),
+                ),
+            )
+        )
+
+    if config.emit_command_block:
+        starter_command = (
+            "execute as "
+            f"@e[type=minecraft:armor_stand,tag={config.starter_tag}] "
+            "at @s run setblock ~ ~ ~ minecraft:redstone_block"
+        )
+        sections.append(
+            GeneratedBuildSection(
+                comments=("# starter command block",),
+                items=(
+                    _placed_block(
+                        config.command_block_position,
+                        f"command_block{{Command:{_nbt_string(starter_command)}}}",
+                        "starter.command_block",
+                    ),
+                ),
+            )
+        )
+    return tuple(sections)
+
+
 def _starter_cells(
     layout: LayoutResult,
     config: StarterModuleConfig,
@@ -182,6 +320,16 @@ def _summon_starter_armor_stand(position: BlockPosition, tag: str) -> str:
 
 def _setblock(position: BlockPosition, block: str) -> str:
     return f"setblock {position.x} {position.y} {position.z} {_block_id(block)}"
+
+
+def _placed_block(position: BlockPosition, block: str, source: str) -> PlacedBlock:
+    return PlacedBlock(
+        x=position.x,
+        y=position.y,
+        z=position.z,
+        block=_block_id(block),
+        source=source,
+    )
 
 
 def _block_id(block: str) -> str:

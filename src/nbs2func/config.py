@@ -116,10 +116,10 @@ class Nbs2FuncConfig:
 
     split_functions: bool = True
     max_commands_per_build_part: int = 500
-    schedule_delay_ticks_between_parts: int = 10
+    schedule_delay_ticks_between_parts: int = 4
     build_player_name: str = "Alex842036"
     player_load_radius_chunks: int = 6
-    player_tp_chunk_load_wait_ticks: int = 100
+    player_tp_chunk_load_wait_ticks: int = 20
     player_tp_after_build_wait_ticks: int = 20
     player_tp_window_length_blocks: int = 192
     player_tp_window_lateral_width_blocks: int = 192
