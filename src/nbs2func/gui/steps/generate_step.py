@@ -10,7 +10,9 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
 
+from nbs2func.cli import sanitize_datapack_name
 from nbs2func.config import save_config
+from nbs2func.gui.helpers import datapack_output_folder, schematic_output_folder
 from nbs2func.gui.state import append_log, clear_log
 from nbs2func.gui.steps.base import WizardStep
 
@@ -27,22 +29,36 @@ class GenerateStep(WizardStep):
         self.thread: threading.Thread | None = None
 
         ttk.Label(self, textvariable=self.status_var).grid(row=0, column=0, sticky="w")
-        self.log = tk.Text(self, height=24, wrap="word")
-        self.log.grid(row=1, column=0, sticky="nsew", pady=(8, 8))
+        log_frame = ttk.Frame(self)
+        log_frame.grid(row=1, column=0, sticky="nsew", pady=(8, 8))
+        log_frame.columnconfigure(0, weight=1)
+        log_frame.rowconfigure(0, weight=1)
+        self.log = tk.Text(log_frame, height=24, wrap="word")
+        scrollbar = ttk.Scrollbar(log_frame, orient="vertical", command=self.log.yview)
+        self.log.configure(yscrollcommand=scrollbar.set)
+        self.log.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
         buttons = ttk.Frame(self)
         buttons.grid(row=2, column=0, sticky="ew")
-        self.open_button = ttk.Button(
+        self.open_datapack_button = ttk.Button(
             buttons,
-            text="Open output folder",
-            command=self.open_output_folder,
+            text="Open datapack/mcfunction folder",
+            command=self.open_datapack_folder,
             state="disabled",
         )
-        self.open_button.grid(row=0, column=0, sticky="w")
+        self.open_datapack_button.grid(row=0, column=0, sticky="w")
+        self.open_schematic_button = ttk.Button(
+            buttons,
+            text="Open schematic folder",
+            command=self.open_schematic_folder,
+            state="disabled",
+        )
+        self.open_schematic_button.grid(row=0, column=1, sticky="w", padx=(8, 0))
         ttk.Button(
             buttons,
             text="Generate another",
-            command=self.app.back_to_summary,
-        ).grid(row=0, column=1, sticky="w", padx=(8, 0))
+            command=self.generate_another,
+        ).grid(row=0, column=2, sticky="w", padx=(8, 0))
 
     def on_show(self) -> None:
         self._render_log()
@@ -51,9 +67,11 @@ class GenerateStep(WizardStep):
         if self.thread is not None and self.thread.is_alive():
             return
         clear_log(self.state)
-        self.open_button.configure(state="disabled")
+        self.open_datapack_button.configure(state="disabled")
+        self.open_schematic_button.configure(state="disabled")
         self.status_var.set("Generating...")
         self._render_log()
+        self.app.set_generation_running(True)
         self.thread = threading.Thread(target=self._worker, daemon=True)
         self.thread.start()
         self.after(100, self._poll_events)
@@ -113,12 +131,14 @@ class GenerateStep(WizardStep):
                     append_log(self.state, "Done.")
                     self._append_line("Done.")
                     self.status_var.set("Generation succeeded.")
-                    self.open_button.configure(state="normal")
+                    self._sync_open_buttons()
                 else:
                     self.status_var.set(f"Generation failed with exit code {payload}.")
+                self.app.set_generation_running(False)
             elif kind == "error":
                 self.status_var.set("Generation failed.")
                 self._append_line(f"Error: {payload}")
+                self.app.set_generation_running(False)
                 messagebox.showerror("Generate", str(payload))
         if self.thread is not None and self.thread.is_alive():
             self.after(100, self._poll_events)
@@ -129,6 +149,7 @@ class GenerateStep(WizardStep):
         self.log.delete("1.0", "end")
         if self.state.output_log:
             self.log.insert("end", "\n".join(self.state.output_log) + "\n")
+            self.log.see("end")
         self.log.configure(state="disabled")
 
     def _append_line(self, line: str) -> None:
@@ -137,14 +158,58 @@ class GenerateStep(WizardStep):
         self.log.see("end")
         self.log.configure(state="disabled")
 
-    def open_output_folder(self) -> None:
-        path = Path(self.state.config.output)
+    def _absolute_path(self, path: Path) -> Path:
         if not path.is_absolute():
             path = Path(__file__).resolve().parents[4] / path
+        return path
+
+    def _datapack_path(self) -> Path:
+        input_stem = Path(self.state.config.input_path).stem
+        return self._absolute_path(
+            datapack_output_folder(self.state.config)
+            / sanitize_datapack_name(input_stem)
+        )
+
+    def _schematic_path(self) -> Path:
+        return self._absolute_path(schematic_output_folder(self.state.config))
+
+    def _sync_open_buttons(self) -> None:
+        output_format = self.state.config.output_format
+        datapack_path = self._datapack_path()
+        schematic_path = self._schematic_path()
+        self.open_datapack_button.configure(
+            state=(
+                "normal"
+                if output_format in {"datapack", "both"} and datapack_path.exists()
+                else "disabled"
+            )
+        )
+        self.open_schematic_button.configure(
+            state=(
+                "normal"
+                if output_format in {"schem", "both"} and schematic_path.exists()
+                else "disabled"
+            )
+        )
+
+    def _open_folder(self, path: Path) -> None:
+        path = self._absolute_path(path)
+        if not path.exists():
+            messagebox.showerror("Open folder", f"Folder does not exist: {path}")
+            return
         try:
             os.startfile(path)  # type: ignore[attr-defined]
         except OSError as exc:
-            messagebox.showerror("Open output folder", str(exc))
+            messagebox.showerror("Open folder", str(exc))
+
+    def open_datapack_folder(self) -> None:
+        self._open_folder(self._datapack_path())
+
+    def open_schematic_folder(self) -> None:
+        self._open_folder(self._schematic_path())
+
+    def generate_another(self) -> None:
+        self.app.generate_another()
 
     def is_complete(self) -> bool:
         return True

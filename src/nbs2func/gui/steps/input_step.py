@@ -26,6 +26,9 @@ class InputStep(WizardStep):
         ttk.Button(row, text="Browse...", command=self.browse).grid(
             row=0, column=1, padx=(8, 0)
         )
+        ttk.Button(row, text="Load NBS", command=self.load_path).grid(
+            row=0, column=2, padx=(8, 0)
+        )
 
         ttk.Label(self, textvariable=self.summary_var, justify="left").grid(
             row=2, column=0, sticky="nw"

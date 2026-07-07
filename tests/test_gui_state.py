@@ -2,6 +2,13 @@ import json
 from pathlib import Path
 
 from nbs2func.config import config_to_dict, load_config, save_config
+from nbs2func.gui.helpers import (
+    GUI_MINECRAFT_VERSION_CHOICES,
+    direction_display_to_value,
+    direction_value_to_display,
+    infer_note_profile,
+    is_output_format_selectable,
+)
 from nbs2func.gui.state import (
     create_default_state,
     load_input_song,
@@ -40,8 +47,53 @@ def test_gui_state_writes_output_format_to_config() -> None:
     set_output_format(state, "schem")
 
     assert state.config.output_format == "schem"
-    assert state.config.enable_starter_module is False
-    assert state.config.enable_playback_assist is False
+    assert state.config.enable_starter_module is True
+    assert state.config.enable_playback_assist is True
+
+
+def test_gui_version_choices_only_include_exact_supported_versions() -> None:
+    assert GUI_MINECRAFT_VERSION_CHOICES == (
+        "1.14.4",
+        "1.16.5",
+        "1.18.2",
+        "1.20.1",
+        "1.21.1",
+    )
+    assert "1.16.x" not in GUI_MINECRAFT_VERSION_CHOICES
+    assert "1.20" not in GUI_MINECRAFT_VERSION_CHOICES
+
+
+def test_gui_direction_display_values_map_to_canonical_config_values() -> None:
+    assert direction_display_to_value("east (+x)") == "east"
+    assert direction_display_to_value("west (-x)") == "west"
+    assert direction_display_to_value("south (+z)") == "south"
+    assert direction_display_to_value("north (-z)") == "north"
+    assert direction_value_to_display("east") == "east (+x)"
+
+
+def test_gui_schem_only_is_not_selectable_when_runtime_modules_enabled() -> None:
+    state = create_default_state()
+    update_config(state, enable_starter_module=True)
+
+    assert is_output_format_selectable(state.config, "datapack") is True
+    assert is_output_format_selectable(state.config, "both") is True
+    assert is_output_format_selectable(state.config, "schem") is False
+
+
+def test_gui_schem_only_is_selectable_without_runtime_modules() -> None:
+    state = create_default_state()
+
+    assert is_output_format_selectable(state.config, "schem") is True
+
+
+def test_gui_note_profile_infers_preset_and_preserves_custom() -> None:
+    state = create_default_state()
+
+    assert infer_note_profile(state.config, "balanced") == "balanced"
+
+    update_config(state, max_candidates_per_emitter=99)
+    assert infer_note_profile(state.config, "balanced") == "custom"
+    assert infer_note_profile(state.config, "custom") == "custom"
 
 
 def test_gui_state_config_round_trip_still_uses_project_config(tmp_path: Path) -> None:

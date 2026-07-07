@@ -11,6 +11,7 @@ from nbs2func.config import (
     default_config,
 )
 from nbs2func.core.nbs_reader import read_nbs
+from nbs2func.gui.helpers import modules_require_runtime_logic
 
 
 @dataclass
@@ -20,6 +21,7 @@ class WizardState:
     warnings: list[str] = field(default_factory=list)
     output_log: list[str] = field(default_factory=list)
     config_path: str | None = None
+    note_based_profile: str = "balanced"
 
 
 def create_default_state() -> WizardState:
@@ -46,11 +48,7 @@ def set_layout_mode(state: WizardState, layout_mode: str) -> None:
 
 
 def set_output_format(state: WizardState, output_format: str) -> None:
-    updates: dict[str, object] = {"output_format": output_format}
-    if output_format == "schem":
-        updates["enable_starter_module"] = False
-        updates["enable_playback_assist"] = False
-    update_config(state, updates)
+    update_config(state, output_format=output_format)
 
 
 def load_input_song(state: WizardState, path: str | Path) -> dict[str, object]:
@@ -91,6 +89,12 @@ def validate_ready_to_generate(state: WizardState) -> list[str]:
         errors.append("Select a valid .nbs input file.")
     if state.config.output_format not in {"datapack", "schem", "both"}:
         errors.append("Select a valid output format.")
+    if state.config.output_format == "schem" and modules_require_runtime_logic(
+        state.config
+    ):
+        errors.append(
+            "Schem-only output is not compatible with starter or playback assist."
+        )
     if (
         state.config.tempo_control_mode == "command"
         and not state.config.enable_playback_assist
