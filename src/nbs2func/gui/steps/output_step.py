@@ -244,6 +244,7 @@ class OutputStep(WizardStep):
         self.state.datapack_name_user_modified = (
             self.state.datapack_name != default_datapack_name
         )
+        updates["datapack_name"] = self.state.datapack_name
         for field, variable in self.vars.items():
             value = variable.get().strip()
             if field == "output":

@@ -13,7 +13,7 @@ from nbs2func.generation import (
     generate_from_config,
 )
 from nbs2func.layout.geometry import BlockPosition
-from nbs2func.layout.models import LayoutResult
+from nbs2func.layout.models import LayoutProgressEvent, LayoutResult, StereoLayoutConfig
 from nbs2func.output.command_writer import CommandWriteResult
 from nbs2func.output.models import GeneratedBuildPlan
 
@@ -44,7 +44,14 @@ def _minimal_layout() -> LayoutResult:
 
 
 def test_generation_event_and_result_models() -> None:
-    event = GenerationEvent("phase", "Reading NBS", detail="song.nbs")
+    event = GenerationEvent(
+        "progress",
+        "Generating candidates",
+        detail="candidate_generation",
+        current=1000,
+        total=13517,
+        key="note_candidates",
+    )
     result = GenerationResult(
         output_format="both",
         datapack_path=Path("out/song"),
@@ -53,8 +60,11 @@ def test_generation_event_and_result_models() -> None:
         diagnostics=GenerationDiagnostics(song="song", layout="layout"),
     )
 
-    assert event.kind == "phase"
-    assert event.detail == "song.nbs"
+    assert event.kind == "progress"
+    assert event.detail == "candidate_generation"
+    assert event.current == 1000
+    assert event.total == 13517
+    assert event.key == "note_candidates"
     assert result.datapack_path == Path("out/song")
     assert result.schematic_path == Path("out/song.schem")
     assert result.warnings == ("careful",)
@@ -116,8 +126,25 @@ def test_generate_from_config_emits_phase_output_and_done_events(
     kinds = [event.kind for event in events]
     assert "phase" in kinds
     assert "output" in kinds
-    assert kinds[-1] == "done"
+    assert "done" not in kinds
     assert any(event.message.startswith("Generated datapack:") for event in events)
+
+
+def test_layout_progress_event_and_config_callback() -> None:
+    received: list[LayoutProgressEvent] = []
+    event = LayoutProgressEvent(
+        stage="candidate_generation",
+        message="Generating candidates",
+        current=1,
+        total=2,
+        key="note_candidates",
+    )
+    config = StereoLayoutConfig(progress_callback=received.append)
+
+    assert config.progress_callback is not None
+    config.progress_callback(event)
+
+    assert received == [event]
 
 
 def test_generate_from_config_can_return_diagnostics(
@@ -171,6 +198,133 @@ def test_generate_from_config_can_return_diagnostics(
     assert result.diagnostics.song.name == "Generation Song"
     assert result.diagnostics.layout.mode == "test"
     assert result.diagnostics.write_result is not None
+
+
+def test_generate_from_config_forwards_layout_progress(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    nbs_path = tmp_path / "song.nbs"
+    nbs_path.write_bytes(b"placeholder")
+    config = config_from_dict(
+        {
+            **default_config().__dict__,
+            "input_path": str(nbs_path),
+            "output": str(tmp_path / "out"),
+            "layout_mode": "note_based_stereo",
+            "tempo_control_mode": "none",
+        }
+    )
+    events: list[GenerationEvent] = []
+
+    monkeypatch.setattr("nbs2func.generation.read_nbs", lambda path: _song())
+
+    def fake_build_layout_strategy(**kwargs):
+        stereo_config = kwargs["stereo_config"]
+        assert stereo_config.progress_callback is not None
+        stereo_config.progress_callback(
+            LayoutProgressEvent(
+                stage="candidate_generation",
+                message="Generating candidates",
+                current=1000,
+                total=13517,
+                key="note_candidates",
+            )
+        )
+        return object()
+
+    monkeypatch.setattr(
+        "nbs2func.generation.build_layout_strategy",
+        fake_build_layout_strategy,
+    )
+    monkeypatch.setattr(
+        "nbs2func.generation.layout_song",
+        lambda song, strategy: _minimal_layout(),
+    )
+    monkeypatch.setattr(
+        "nbs2func.generation.total_track_length_from_layout",
+        lambda *args: 0,
+    )
+    monkeypatch.setattr(
+        "nbs2func.generation.build_generated_plan",
+        lambda layout, writer_config: GeneratedBuildPlan(blocks=()),
+    )
+    monkeypatch.setattr(
+        "nbs2func.generation.filter_generated_plan",
+        lambda plan, options: plan,
+    )
+    monkeypatch.setattr(
+        "nbs2func.generation.write_mcfunction",
+        lambda *args, **kwargs: CommandWriteResult(
+            total_commands=0,
+            split_function_parts=1,
+        ),
+    )
+
+    generate_from_config(config, progress_callback=events.append)
+
+    progress_events = [event for event in events if event.kind == "progress"]
+    assert progress_events == [
+        GenerationEvent(
+            kind="progress",
+            message="Generating candidates",
+            detail="candidate_generation",
+            current=1000,
+            total=13517,
+            key="note_candidates",
+        )
+    ]
+
+
+def test_generate_from_config_uses_datapack_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    nbs_path = tmp_path / "song.nbs"
+    nbs_path.write_bytes(b"placeholder")
+    config = config_from_dict(
+        {
+            **default_config().__dict__,
+            "input_path": str(nbs_path),
+            "output": str(tmp_path / "out"),
+            "datapack_name": "Custom Pack",
+            "layout_mode": "basic_linear",
+            "tempo_control_mode": "none",
+        }
+    )
+
+    monkeypatch.setattr("nbs2func.generation.read_nbs", lambda path: _song())
+    monkeypatch.setattr(
+        "nbs2func.generation.build_layout_strategy",
+        lambda **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        "nbs2func.generation.layout_song",
+        lambda song, strategy: _minimal_layout(),
+    )
+    monkeypatch.setattr(
+        "nbs2func.generation.total_track_length_from_layout",
+        lambda *args: 0,
+    )
+    monkeypatch.setattr(
+        "nbs2func.generation.build_generated_plan",
+        lambda layout, writer_config: GeneratedBuildPlan(blocks=()),
+    )
+    monkeypatch.setattr(
+        "nbs2func.generation.filter_generated_plan",
+        lambda plan, options: plan,
+    )
+    monkeypatch.setattr(
+        "nbs2func.generation.write_mcfunction",
+        lambda *args, **kwargs: CommandWriteResult(
+            total_commands=0,
+            split_function_parts=1,
+        ),
+    )
+
+    result = generate_from_config(config)
+
+    assert result.datapack_path == tmp_path / "out" / "custom_pack"
 
 
 def test_generate_from_config_emits_error_and_reraises(

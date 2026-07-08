@@ -24,7 +24,7 @@ from .core.tempo_control import (
 )
 from .layout import build_layout_strategy, layout_song
 from .layout.geometry import BlockPosition, LayoutError
-from .layout.models import StereoLayoutConfig
+from .layout.models import LayoutProgressEvent, StereoLayoutConfig
 from .modules.playback_assist import (
     PlaybackAssistModuleConfig,
     playback_assist_debug_info,
@@ -50,6 +50,9 @@ class GenerationEvent:
     kind: str
     message: str
     detail: str | None = None
+    current: int | None = None
+    total: int | None = None
+    key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -82,9 +85,21 @@ def emit(
     kind: str,
     message: str,
     detail: str | None = None,
+    current: int | None = None,
+    total: int | None = None,
+    key: str | None = None,
 ) -> None:
     if callback is not None:
-        callback(GenerationEvent(kind=kind, message=message, detail=detail))
+        callback(
+            GenerationEvent(
+                kind=kind,
+                message=message,
+                detail=detail,
+                current=current,
+                total=total,
+                key=key,
+            )
+        )
 
 
 def generate_from_config(
@@ -144,6 +159,17 @@ def generate_from_config(
         validate_song_instruments_for_version(song, version_profile)
 
         emit(progress_callback, "phase", "Building layout...")
+        def layout_progress(event: LayoutProgressEvent) -> None:
+            emit(
+                progress_callback,
+                "progress",
+                event.message,
+                detail=event.stage,
+                current=event.current,
+                total=event.total,
+                key=event.key,
+            )
+
         strategy = build_layout_strategy(
             mode=args.layout_mode,
             origin=BlockPosition(args.origin_x, args.origin_y, args.origin_z),
@@ -154,6 +180,9 @@ def generate_from_config(
                 enable_progress_logging=(
                     include_diagnostics and args.layout_mode == "note_based_stereo"
                 ),
+                progress_callback=layout_progress
+                if progress_callback is not None
+                else None,
             ),
         )
         profile_report = None
@@ -190,7 +219,8 @@ def generate_from_config(
             playback_debug = playback_assist_debug_info(playback_config)
 
         output_root = Path(args.output)
-        datapack_root = output_root / sanitize_datapack_name(path.stem)
+        datapack_name = args.datapack_name or path.stem
+        datapack_root = output_root / sanitize_datapack_name(datapack_name)
         writer_output_path = datapack_root
         writer_config = _writer_config(
             args,
@@ -294,7 +324,6 @@ def generate_from_config(
         for warning in warnings:
             emit(progress_callback, "warning", warning)
 
-        emit(progress_callback, "done", "Generation finished.")
         diagnostics = None
         if include_diagnostics:
             diagnostics = GenerationDiagnostics(
@@ -337,6 +366,7 @@ def _stereo_layout_config(
     args: argparse.Namespace,
     *,
     enable_progress_logging: bool = False,
+    progress_callback=None,
 ) -> StereoLayoutConfig:
     return StereoLayoutConfig(
         max_hearing_distance=args.max_hearing_distance,
@@ -385,6 +415,7 @@ def _stereo_layout_config(
         fail_fast_on_too_many_collisions=not args.no_fail_fast_on_too_many_collisions,
         max_collision_records_before_abort=args.max_collision_records_before_abort,
         enable_progress_logging=enable_progress_logging,
+        progress_callback=progress_callback,
         enable_note_level_center_split=not args.disable_note_level_center_split,
         center_split_left_pan=args.center_split_left_pan,
         center_split_right_pan=args.center_split_right_pan,
@@ -549,6 +580,7 @@ def _args_namespace_from_config(config: Nbs2FuncConfig) -> argparse.Namespace:
     return argparse.Namespace(
         file=config.input_path,
         output=config.output,
+        datapack_name=config.datapack_name,
         output_format=config.output_format,
         schematic_origin_mode=config.schematic_origin_mode,
         schematic_output=config.schematic_output,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Callable, Protocol
 
 from .geometry import BlockPosition
 from ..core.models import Song
@@ -492,6 +492,15 @@ SpatialLayoutStrategy = LayoutStrategy
 
 
 @dataclass(frozen=True)
+class LayoutProgressEvent:
+    stage: str
+    message: str
+    current: int | None = None
+    total: int | None = None
+    key: str | None = None
+
+
+@dataclass(frozen=True)
 class StereoLayoutConfig:
     """Parameters for stable track-level stereo placement."""
 
@@ -531,6 +540,7 @@ class StereoLayoutConfig:
     fail_fast_on_too_many_collisions: bool = True
     max_collision_records_before_abort: int = 50000
     enable_progress_logging: bool = False
+    progress_callback: Callable[[LayoutProgressEvent], None] | None = None
     enable_note_level_center_split: bool = True
     center_split_left_pan: float = 75
     center_split_right_pan: float = 125

@@ -141,6 +141,8 @@ def default_schematic_name(config: Nbs2FuncConfig) -> str:
 
 
 def default_datapack_folder_name(config: Nbs2FuncConfig) -> str:
+    if config.datapack_name:
+        return config.datapack_name
     return input_stem(config)
 
 

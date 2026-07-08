@@ -20,7 +20,11 @@ from nbs2func.gui.helpers import (
     resolved_starter_origin,
     validate_module_coordinates,
 )
-from nbs2func.gui.steps.generate_step import format_generation_event
+from nbs2func.gui.steps.generate_step import (
+    format_generation_event,
+    format_progress_event,
+    should_continue_polling,
+)
 from nbs2func.gui.state import (
     create_default_state,
     load_input_song,
@@ -379,6 +383,37 @@ def test_generate_step_formats_generation_events() -> None:
     )
 
 
+def test_generate_step_formats_progress_events() -> None:
+    assert (
+        format_progress_event(
+            GenerationEvent(
+                "progress",
+                "Generating candidates",
+                current=1000,
+                total=13517,
+                key="note_candidates",
+            )
+        )
+        == "Generating candidates: 1000 / 13517"
+    )
+    assert (
+        format_progress_event(
+            GenerationEvent(
+                "progress",
+                "Validating rails: candidates=12000 rails_checked=340000",
+                key="rail_validation",
+            )
+        )
+        == "Validating rails: candidates=12000 rails_checked=340000"
+    )
+
+
+def test_generate_step_polling_continues_until_thread_done_and_queue_empty() -> None:
+    assert should_continue_polling(thread_alive=False, queue_empty=False) is True
+    assert should_continue_polling(thread_alive=False, queue_empty=True) is False
+    assert should_continue_polling(thread_alive=True, queue_empty=True) is True
+
+
 def test_generate_step_no_longer_uses_subprocess_cli_stdout() -> None:
     source = Path("src/nbs2func/gui/steps/generate_step.py").read_text(
         encoding="utf-8"
@@ -388,3 +423,12 @@ def test_generate_step_no_longer_uses_subprocess_cli_stdout() -> None:
     assert "main.py" not in source
     assert "--config" not in source
     assert "include_diagnostics=False" in source
+    assert "event.kind == \"progress\"" in source
+
+
+def test_output_step_writes_datapack_name_to_config() -> None:
+    source = Path("src/nbs2func/gui/steps/output_step.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'updates["datapack_name"] = self.state.datapack_name' in source

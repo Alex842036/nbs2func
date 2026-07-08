@@ -32,14 +32,25 @@ def format_generation_event(event: GenerationEvent) -> str:
     return f"[{label}] {event.message}"
 
 
+def format_progress_event(event: GenerationEvent) -> str:
+    if event.current is not None and event.total is not None:
+        return f"{event.message}: {event.current} / {event.total}"
+    return event.message
+
+
+def should_continue_polling(thread_alive: bool, queue_empty: bool) -> bool:
+    return thread_alive or not queue_empty
+
+
 class GenerateStep(WizardStep):
     title = "Generate"
 
     def __init__(self, parent, app) -> None:
         super().__init__(parent, app)
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(2, weight=1)
+        self.rowconfigure(3, weight=1)
         self.status_var = tk.StringVar(value="Ready to generate.")
+        self.progress_detail_var = tk.StringVar(value="")
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.thread: threading.Thread | None = None
         self.result: GenerationResult | None = None
@@ -48,9 +59,15 @@ class GenerateStep(WizardStep):
         ttk.Label(self, textvariable=self.status_var).grid(row=0, column=0, sticky="w")
         self.progress = ttk.Progressbar(self, mode="indeterminate")
         self.progress.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        ttk.Label(self, textvariable=self.progress_detail_var).grid(
+            row=2,
+            column=0,
+            sticky="w",
+            pady=(4, 0),
+        )
 
         log_frame = ttk.Frame(self)
-        log_frame.grid(row=2, column=0, sticky="nsew", pady=(8, 8))
+        log_frame.grid(row=3, column=0, sticky="nsew", pady=(8, 8))
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
         self.log = tk.Text(log_frame, height=24, wrap="word")
@@ -60,7 +77,7 @@ class GenerateStep(WizardStep):
         scrollbar.grid(row=0, column=1, sticky="ns")
 
         buttons = ttk.Frame(self)
-        buttons.grid(row=3, column=0, sticky="ew")
+        buttons.grid(row=4, column=0, sticky="ew")
         self.open_datapack_button = ttk.Button(
             buttons,
             text="Open datapack/mcfunction folder",
@@ -94,9 +111,11 @@ class GenerateStep(WizardStep):
         clear_log(self.state)
         self.result = None
         self._saw_error_event = False
+        self.progress_detail_var.set("")
         self._set_open_buttons(False, False)
         self.status_var.set("Generating...")
         self._render_log()
+        self.progress.configure(mode="indeterminate")
         self.progress.start()
         self.app.set_generation_running(True)
         self.thread = threading.Thread(target=self._worker, daemon=True)
@@ -114,6 +133,7 @@ class GenerateStep(WizardStep):
                 include_diagnostics=False,
             )
             self.events.put(("result", result))
+            self.events.put(("event", GenerationEvent("done", "Generation finished.")))
         except Exception as exc:
             self.events.put(("exception", exc))
 
@@ -130,8 +150,15 @@ class GenerateStep(WizardStep):
             if kind == "event":
                 event = payload
                 assert isinstance(event, GenerationEvent)
+                if event.kind == "progress":
+                    self._update_progress_detail(event)
+                    continue
                 if event.kind == "error":
                     self._saw_error_event = True
+                    self.progress_detail_var.set("")
+                    self.progress.stop()
+                elif event.kind == "phase":
+                    self.progress_detail_var.set("")
                 line = format_generation_event(event)
                 append_log(self.state, line)
                 lines.append(line)
@@ -141,6 +168,7 @@ class GenerateStep(WizardStep):
                 self.result = result
                 self.status_var.set("Generation succeeded.")
                 self.progress.stop()
+                self.progress_detail_var.set("")
                 self.app.set_generation_running(False)
                 self._sync_open_buttons()
             elif kind == "exception":
@@ -154,6 +182,7 @@ class GenerateStep(WizardStep):
                     lines.append(line)
                 self.status_var.set("Generation failed.")
                 self.progress.stop()
+                self.progress_detail_var.set("")
                 self.app.set_generation_running(False)
                 self._sync_open_buttons()
                 messagebox.showerror("Generate", str(exc))
@@ -161,8 +190,23 @@ class GenerateStep(WizardStep):
         if lines:
             self._append_lines(lines)
 
-        if self.thread is not None and self.thread.is_alive():
+        thread_alive = self.thread is not None and self.thread.is_alive()
+        if should_continue_polling(thread_alive, self.events.empty()):
             self.after(100, self._poll_events)
+
+    def _update_progress_detail(self, event: GenerationEvent) -> None:
+        self.progress_detail_var.set(f"Current: {format_progress_event(event)}")
+        if event.current is not None and event.total is not None and event.total > 0:
+            self.progress.stop()
+            self.progress.configure(
+                mode="determinate",
+                maximum=event.total,
+                value=event.current,
+            )
+        else:
+            if self.progress.cget("mode") != "indeterminate":
+                self.progress.configure(mode="indeterminate")
+                self.progress.start()
 
     def _render_log(self) -> None:
         self.log.configure(state="normal")

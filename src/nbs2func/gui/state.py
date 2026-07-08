@@ -100,6 +100,7 @@ def load_input_song(state: WizardState, path: str | Path) -> dict[str, object]:
         old_datapack_name,
     }:
         state.datapack_name = song_path.stem or "nbs_song"
+        updates["datapack_name"] = state.datapack_name
         state.datapack_name_user_modified = False
     update_config(state, updates)
     return summary

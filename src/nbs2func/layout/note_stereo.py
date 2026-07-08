@@ -39,6 +39,7 @@ from .models import (
     BlockCollision,
     EmitterCandidate,
     LayoutCell,
+    LayoutProgressEvent,
     LayoutResult,
     NoteBasedStereoRailLayoutPreview,
     NoteEmitter,
@@ -375,6 +376,27 @@ class NoteBasedStereoLayout:
         if self.config.enable_progress_logging:
             print(f"[NoteBasedRail] {message}", flush=True)
 
+    def _progress(
+        self,
+        stage: str,
+        message: str,
+        *,
+        current: int | None = None,
+        total: int | None = None,
+        key: str | None = None,
+    ) -> None:
+        if self.config.progress_callback is None:
+            return
+        self.config.progress_callback(
+            LayoutProgressEvent(
+                stage=stage,
+                message=message,
+                current=current,
+                total=total,
+                key=key,
+            )
+        )
+
     def _get_layout_spatial_segment_hint(
         self,
         layer_id: int,
@@ -461,6 +483,13 @@ class NoteBasedStereoLayout:
             candidate_counts.append(len(candidates))
             if index % 1000 == 0 or index == len(emitters):
                 self._log(f"generating candidates: {index}/{len(emitters)}")
+                self._progress(
+                    "candidate_generation",
+                    "Generating candidates",
+                    current=index,
+                    total=len(emitters),
+                    key="note_candidates",
+                )
             self._check_time_limit(total_start, "candidate generation")
         perf_stats.candidate_generation_seconds = time.perf_counter() - stage_start
         timings.append(
@@ -1572,6 +1601,13 @@ class NoteBasedStereoLayout:
                 self._log(
                     f"{pass_name} assigning ticks: {tick_index}/{len(sorted_ticks)}"
                 )
+                self._progress(
+                    f"{pass_name}_assignment",
+                    f"{pass_name} assigning ticks",
+                    current=tick_index,
+                    total=len(sorted_ticks),
+                    key=f"{pass_name}_assignment_ticks",
+                )
 
         return tuple(failed_emitters)
 
@@ -1626,6 +1662,25 @@ class NoteBasedStereoLayout:
             )
             if index % 500 == 0 or index == len(emitters):
                 self._log(f"{progress_label}: {index}/{len(emitters)}")
+                if pass_name == "pass2":
+                    stage = "pass2_retry_candidates"
+                    message = "Generating pass2 retry candidates"
+                    key = "pass2_retry_candidates"
+                elif pass_name == "pass3":
+                    stage = "pass3_retry_candidates"
+                    message = "Generating pass3 retry candidates"
+                    key = "pass3_retry_candidates"
+                else:
+                    stage = f"{pass_name}_retry_candidates"
+                    message = f"Generating {progress_label}"
+                    key = stage
+                self._progress(
+                    stage,
+                    message,
+                    current=index,
+                    total=len(emitters),
+                    key=key,
+                )
             if total_start is not None:
                 self._check_time_limit(total_start, f"{progress_label} generation")
         return cache
@@ -2153,10 +2208,16 @@ class NoteBasedStereoLayout:
             len(relevant_rail_ids),
         )
         if stats.candidate_validation_count % 1000 == 0:
-            self._log(
-                "validating rails: "
+            message = (
+                "Validating rails: "
                 f"candidates={stats.candidate_validation_count} "
                 f"rails_checked={stats.rail_pairs_checked}"
+            )
+            self._log(message[0].lower() + message[1:])
+            self._progress(
+                "rail_validation",
+                message,
+                key="rail_validation",
             )
 
         for existing_id in relevant_rail_ids:

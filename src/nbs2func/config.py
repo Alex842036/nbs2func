@@ -18,6 +18,7 @@ class Nbs2FuncConfig:
     # output-preserving cleanup.
     input_path: str = "examples/demo.nbs"
     output: str = "output"
+    datapack_name: str | None = None
     output_format: str = "datapack"
     schematic_origin_mode: str = "generation_origin"
     schematic_output: str | None = None
