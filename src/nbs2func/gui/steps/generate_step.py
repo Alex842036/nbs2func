@@ -11,6 +11,7 @@ from nbs2func.generation import (
     GenerationEvent,
     GenerationResult,
     generate_from_config,
+    monotonic_overall_progress,
 )
 from nbs2func.gui.helpers import resolve_gui_generation_config
 from nbs2func.gui.state import append_log, clear_log
@@ -34,8 +35,13 @@ def format_generation_event(event: GenerationEvent) -> str:
 
 def format_progress_event(event: GenerationEvent) -> str:
     if event.current is not None and event.total is not None:
-        return f"{event.message}: {event.current} / {event.total}"
+        suffix = f" {event.unit}" if event.unit else ""
+        return f"{event.message}: {event.current} / {event.total}{suffix}"
     return event.message
+
+
+def format_overall_progress(percent: float) -> str:
+    return f"Overall progress: {percent:.0f}%"
 
 
 def should_continue_polling(thread_alive: bool, queue_empty: bool) -> bool:
@@ -48,26 +54,43 @@ class GenerateStep(WizardStep):
     def __init__(self, parent, app) -> None:
         super().__init__(parent, app)
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(3, weight=1)
+        self.rowconfigure(6, weight=1)
         self.status_var = tk.StringVar(value="Ready to generate.")
+        self.overall_progress_var = tk.StringVar(value="Overall progress: 0%")
+        self.current_stage_var = tk.StringVar(value="Current stage")
         self.progress_detail_var = tk.StringVar(value="")
+        self._overall_percent = 0.0
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.thread: threading.Thread | None = None
         self.result: GenerationResult | None = None
         self._saw_error_event = False
 
         ttk.Label(self, textvariable=self.status_var).grid(row=0, column=0, sticky="w")
-        self.progress = ttk.Progressbar(self, mode="indeterminate")
-        self.progress.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        ttk.Label(self, textvariable=self.overall_progress_var).grid(
+            row=1,
+            column=0,
+            sticky="w",
+            pady=(6, 0),
+        )
+        self.overall_progress = ttk.Progressbar(self, mode="determinate", maximum=100)
+        self.overall_progress.grid(row=2, column=0, sticky="ew", pady=(2, 0))
+        ttk.Label(self, textvariable=self.current_stage_var).grid(
+            row=3,
+            column=0,
+            sticky="w",
+            pady=(8, 0),
+        )
+        self.current_progress = ttk.Progressbar(self, mode="indeterminate")
+        self.current_progress.grid(row=4, column=0, sticky="ew", pady=(2, 0))
         ttk.Label(self, textvariable=self.progress_detail_var).grid(
-            row=2,
+            row=5,
             column=0,
             sticky="w",
             pady=(4, 0),
         )
 
         log_frame = ttk.Frame(self)
-        log_frame.grid(row=3, column=0, sticky="nsew", pady=(8, 8))
+        log_frame.grid(row=6, column=0, sticky="nsew", pady=(8, 8))
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
         self.log = tk.Text(log_frame, height=24, wrap="word")
@@ -77,7 +100,7 @@ class GenerateStep(WizardStep):
         scrollbar.grid(row=0, column=1, sticky="ns")
 
         buttons = ttk.Frame(self)
-        buttons.grid(row=4, column=0, sticky="ew")
+        buttons.grid(row=7, column=0, sticky="ew")
         self.open_datapack_button = ttk.Button(
             buttons,
             text="Open datapack/mcfunction folder",
@@ -111,12 +134,16 @@ class GenerateStep(WizardStep):
         clear_log(self.state)
         self.result = None
         self._saw_error_event = False
+        self._overall_percent = 0.0
+        self.overall_progress_var.set(format_overall_progress(0.0))
+        self.overall_progress.configure(value=0)
+        self.current_stage_var.set("Current stage")
         self.progress_detail_var.set("")
         self._set_open_buttons(False, False)
         self.status_var.set("Generating...")
         self._render_log()
-        self.progress.configure(mode="indeterminate")
-        self.progress.start()
+        self.current_progress.configure(mode="indeterminate")
+        self.current_progress.start()
         self.app.set_generation_running(True)
         self.thread = threading.Thread(target=self._worker, daemon=True)
         self.thread.start()
@@ -146,19 +173,25 @@ class GenerateStep(WizardStep):
                 break
 
         lines: list[str] = []
+        last_progress: GenerationEvent | None = None
+        terminal_event = False
         for kind, payload in collected:
             if kind == "event":
                 event = payload
                 assert isinstance(event, GenerationEvent)
                 if event.kind == "progress":
-                    self._update_progress_detail(event)
+                    last_progress = event
                     continue
                 if event.kind == "error":
                     self._saw_error_event = True
-                    self.progress_detail_var.set("")
-                    self.progress.stop()
+                    terminal_event = True
+                    self._reset_current_progress()
                 elif event.kind == "phase":
-                    self.progress_detail_var.set("")
+                    self._reset_current_progress()
+                elif event.kind == "done":
+                    terminal_event = True
+                    self._set_overall_percent(100.0)
+                    self._reset_current_progress()
                 line = format_generation_event(event)
                 append_log(self.state, line)
                 lines.append(line)
@@ -167,8 +200,8 @@ class GenerateStep(WizardStep):
                 assert isinstance(result, GenerationResult)
                 self.result = result
                 self.status_var.set("Generation succeeded.")
-                self.progress.stop()
-                self.progress_detail_var.set("")
+                terminal_event = True
+                self._reset_current_progress()
                 self.app.set_generation_running(False)
                 self._sync_open_buttons()
             elif kind == "exception":
@@ -181,32 +214,51 @@ class GenerateStep(WizardStep):
                     append_log(self.state, line)
                     lines.append(line)
                 self.status_var.set("Generation failed.")
-                self.progress.stop()
-                self.progress_detail_var.set("")
+                terminal_event = True
+                self._reset_current_progress()
                 self.app.set_generation_running(False)
                 self._sync_open_buttons()
                 messagebox.showerror("Generate", str(exc))
 
         if lines:
             self._append_lines(lines)
+        if last_progress is not None and not terminal_event:
+            self._update_progress_detail(last_progress)
 
         thread_alive = self.thread is not None and self.thread.is_alive()
         if should_continue_polling(thread_alive, self.events.empty()):
             self.after(100, self._poll_events)
 
     def _update_progress_detail(self, event: GenerationEvent) -> None:
+        if event.overall_percent is not None:
+            self._set_overall_percent(event.overall_percent)
+        self.current_stage_var.set("Current stage")
         self.progress_detail_var.set(f"Current: {format_progress_event(event)}")
         if event.current is not None and event.total is not None and event.total > 0:
-            self.progress.stop()
-            self.progress.configure(
+            self.current_progress.stop()
+            self.current_progress.configure(
                 mode="determinate",
                 maximum=event.total,
                 value=event.current,
             )
         else:
-            if self.progress.cget("mode") != "indeterminate":
-                self.progress.configure(mode="indeterminate")
-                self.progress.start()
+            if self.current_progress.cget("mode") != "indeterminate":
+                self.current_progress.configure(mode="indeterminate")
+                self.current_progress.start()
+
+    def _reset_current_progress(self) -> None:
+        self.current_stage_var.set("Current stage")
+        self.progress_detail_var.set("")
+        self.current_progress.stop()
+        self.current_progress.configure(mode="indeterminate", value=0)
+
+    def _set_overall_percent(self, percent: float) -> None:
+        self._overall_percent = monotonic_overall_progress(
+            self._overall_percent,
+            percent,
+        )
+        self.overall_progress_var.set(format_overall_progress(self._overall_percent))
+        self.overall_progress.configure(value=self._overall_percent)
 
     def _render_log(self) -> None:
         self.log.configure(state="normal")

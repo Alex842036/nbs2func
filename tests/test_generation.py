@@ -11,10 +11,18 @@ from nbs2func.generation import (
     GenerationEvent,
     GenerationResult,
     generate_from_config,
+    monotonic_overall_progress,
+    overall_percent_for_stage,
 )
 from nbs2func.layout.geometry import BlockPosition
 from nbs2func.layout.models import LayoutProgressEvent, LayoutResult, StereoLayoutConfig
-from nbs2func.output.command_writer import CommandWriteResult
+from nbs2func.layout.note_stereo import NoteBasedStereoLayout
+from nbs2func.output.block_builder import build_generated_plan
+from nbs2func.output.command_writer import (
+    BasicMcfunctionWriter,
+    CommandWriteResult,
+    CommandWriterConfig,
+)
 from nbs2func.output.models import GeneratedBuildPlan
 
 
@@ -51,6 +59,8 @@ def test_generation_event_and_result_models() -> None:
         current=1000,
         total=13517,
         key="note_candidates",
+        overall_percent=12.5,
+        unit="emitters",
     )
     result = GenerationResult(
         output_format="both",
@@ -65,10 +75,20 @@ def test_generation_event_and_result_models() -> None:
     assert event.current == 1000
     assert event.total == 13517
     assert event.key == "note_candidates"
+    assert event.overall_percent == 12.5
+    assert event.unit == "emitters"
     assert result.datapack_path == Path("out/song")
     assert result.schematic_path == Path("out/song.schem")
     assert result.warnings == ("careful",)
     assert result.diagnostics is not None
+
+
+def test_overall_progress_helpers_are_monotonic() -> None:
+    assert overall_percent_for_stage("candidate_generation", 50, 100) == 14.0
+    assert monotonic_overall_progress(40.0, 35.0) == 40.0
+    assert monotonic_overall_progress(40.0, 45.0) == 45.0
+    assert monotonic_overall_progress(40.0, None) == 40.0
+    assert monotonic_overall_progress(40.0, 45.0, done=True) == 100.0
 
 
 def test_generate_from_config_emits_phase_output_and_done_events(
@@ -103,7 +123,7 @@ def test_generate_from_config_emits_phase_output_and_done_events(
     )
     monkeypatch.setattr(
         "nbs2func.generation.build_generated_plan",
-        lambda layout, writer_config: GeneratedBuildPlan(blocks=()),
+        lambda layout, writer_config, **kwargs: GeneratedBuildPlan(blocks=()),
     )
     monkeypatch.setattr(
         "nbs2func.generation.filter_generated_plan",
@@ -147,6 +167,25 @@ def test_layout_progress_event_and_config_callback() -> None:
     assert received == [event]
 
 
+def test_note_based_stereo_emits_candidate_and_assignment_progress() -> None:
+    events: list[LayoutProgressEvent] = []
+    layout = NoteBasedStereoLayout(
+        config=StereoLayoutConfig(progress_callback=events.append)
+    )
+
+    layout.layout_song(_song())
+
+    candidate_events = [event for event in events if event.key == "note_candidates"]
+    assignment_events = [
+        event for event in events if event.key == "pass1_assignment_validation"
+    ]
+    assert candidate_events[0].current == 0
+    assert candidate_events[0].total == 1
+    assert assignment_events[0].current == 0
+    assert assignment_events[0].total == 1
+    assert all(event.key != "rail_validation" for event in events)
+
+
 def test_generate_from_config_can_return_diagnostics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -178,7 +217,7 @@ def test_generate_from_config_can_return_diagnostics(
     )
     monkeypatch.setattr(
         "nbs2func.generation.build_generated_plan",
-        lambda layout, writer_config: GeneratedBuildPlan(blocks=()),
+        lambda layout, writer_config, **kwargs: GeneratedBuildPlan(blocks=()),
     )
     monkeypatch.setattr(
         "nbs2func.generation.filter_generated_plan",
@@ -229,6 +268,7 @@ def test_generate_from_config_forwards_layout_progress(
                 current=1000,
                 total=13517,
                 key="note_candidates",
+                unit="emitters",
             )
         )
         return object()
@@ -247,7 +287,7 @@ def test_generate_from_config_forwards_layout_progress(
     )
     monkeypatch.setattr(
         "nbs2func.generation.build_generated_plan",
-        lambda layout, writer_config: GeneratedBuildPlan(blocks=()),
+        lambda layout, writer_config, **kwargs: GeneratedBuildPlan(blocks=()),
     )
     monkeypatch.setattr(
         "nbs2func.generation.filter_generated_plan",
@@ -263,17 +303,50 @@ def test_generate_from_config_forwards_layout_progress(
 
     generate_from_config(config, progress_callback=events.append)
 
-    progress_events = [event for event in events if event.kind == "progress"]
-    assert progress_events == [
-        GenerationEvent(
-            kind="progress",
-            message="Generating candidates",
-            detail="candidate_generation",
-            current=1000,
-            total=13517,
-            key="note_candidates",
-        )
+    candidate_events = [
+        event
+        for event in events
+        if event.kind == "progress" and event.key == "note_candidates"
     ]
+    assert len(candidate_events) == 1
+    assert candidate_events[0].message == "Generating candidates"
+    assert candidate_events[0].detail == "candidate_generation"
+    assert candidate_events[0].current == 1000
+    assert candidate_events[0].total == 13517
+    assert candidate_events[0].unit == "emitters"
+    assert candidate_events[0].overall_percent is not None
+    assert candidate_events[0].overall_percent >= 8.0
+
+
+def test_block_builder_progress_callback_reaches_total() -> None:
+    layout = _minimal_layout()
+    events: list[tuple[int, int]] = []
+
+    build_generated_plan(
+        layout,
+        CommandWriterConfig(split_functions=False),
+        progress_callback=lambda current, total: events.append((current, total)),
+    )
+
+    assert events[0] == (0, 1)
+    assert events[-1] == (1, 1)
+
+
+def test_command_writer_progress_callback_reaches_total(tmp_path: Path) -> None:
+    layout = _minimal_layout()
+    events: list[tuple[int, int, str]] = []
+    output_path = tmp_path / "song.mcfunction"
+
+    BasicMcfunctionWriter(CommandWriterConfig(split_functions=False)).write_file(
+        layout,
+        output_path,
+        progress_callback=lambda current, total, message: events.append(
+            (current, total, message)
+        ),
+    )
+
+    assert events[0] == (0, 1, "Writing datapack file")
+    assert events[-1] == (1, 1, "Writing datapack file")
 
 
 def test_generate_from_config_uses_datapack_name(
@@ -308,7 +381,7 @@ def test_generate_from_config_uses_datapack_name(
     )
     monkeypatch.setattr(
         "nbs2func.generation.build_generated_plan",
-        lambda layout, writer_config: GeneratedBuildPlan(blocks=()),
+        lambda layout, writer_config, **kwargs: GeneratedBuildPlan(blocks=()),
     )
     monkeypatch.setattr(
         "nbs2func.generation.filter_generated_plan",
@@ -386,7 +459,7 @@ def test_generate_from_config_can_emit_schematic_output(
     )
     monkeypatch.setattr(
         "nbs2func.generation.build_generated_plan",
-        lambda layout, writer_config: GeneratedBuildPlan(blocks=()),
+        lambda layout, writer_config, **kwargs: GeneratedBuildPlan(blocks=()),
     )
     monkeypatch.setattr(
         "nbs2func.generation.filter_generated_plan",

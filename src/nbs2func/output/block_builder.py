@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import Callable, TYPE_CHECKING
 
 from ..core.instrument_mapping import (
     get_instrument_block,
@@ -74,11 +74,15 @@ def build_generated_plan(
     layout: LayoutResult,
     config: CommandWriterConfig,
     options: BuildPlanOptions | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> GeneratedBuildPlan:
     """Build structured block placements and non-block commands for a layout."""
 
     sections: list[GeneratedBuildSection] = []
     warnings: list[str] = []
+    progress_total = _progress_total(layout)
+    if progress_callback is not None:
+        progress_callback(0, progress_total)
 
     starter_plan = build_starter_plan(
         layout,
@@ -101,9 +105,23 @@ def build_generated_plan(
     warnings.extend(starter_plan.warnings)
 
     if layout.note_based_preview is not None:
-        sections.extend(_note_based_preview_sections(layout.note_based_preview, config))
+        sections.extend(
+            _note_based_preview_sections(
+                layout.note_based_preview,
+                config,
+                progress_callback=progress_callback,
+                progress_total=progress_total,
+            )
+        )
     else:
-        sections.extend(_cell_sections(layout.cells, config))
+        for index, cell in enumerate(layout.cells, start=1):
+            sections.append(_section_for_cell(cell, config))
+            if progress_callback is not None and (
+                index % 1000 == 0 or index == len(layout.cells)
+            ):
+                progress_callback(index, progress_total)
+        if progress_callback is not None and not layout.cells:
+            progress_callback(progress_total, progress_total)
 
     playback_plan = build_playback_assist_plan(
         PlaybackAssistModuleConfig(
@@ -159,6 +177,16 @@ def build_generated_plan(
     if options is None or options == FULL_BUILD_PLAN:
         return plan
     return filter_generated_plan(plan, options)
+
+
+def _progress_total(layout: LayoutResult) -> int:
+    if layout.note_based_preview is not None:
+        rail_ids = {
+            assignment.rail.rail_id
+            for assignment in layout.note_based_preview.assignments
+        }
+        return max(1, len(rail_ids))
+    return max(1, len(layout.cells))
 
 
 def filter_generated_plan(
@@ -312,6 +340,9 @@ def _section_for_cell(
 def _note_based_preview_sections(
     report: NoteBasedStereoRailLayoutPreview,
     config: CommandWriterConfig,
+    *,
+    progress_callback: Callable[[int, int], None] | None = None,
+    progress_total: int | None = None,
 ) -> tuple[GeneratedBuildSection, ...]:
     sections: list[GeneratedBuildSection] = [
         GeneratedBuildSection(
@@ -336,7 +367,8 @@ def _note_based_preview_sections(
             [],
         ).append(assignment)
 
-    for rail_id, rail in sorted(rails_by_id.items()):
+    total = progress_total or max(1, len(rails_by_id))
+    for rail_index, (rail_id, rail) in enumerate(sorted(rails_by_id.items()), start=1):
         rail_ticks = [
             tick
             for assignment_rail_id, tick in assignments_by_rail_tick
@@ -420,6 +452,12 @@ def _note_based_preview_sections(
                     items=tuple(items),
                 )
             )
+        if progress_callback is not None and (
+            rail_index % 100 == 0 or rail_index == len(rails_by_id)
+        ):
+            progress_callback(rail_index, total)
+    if progress_callback is not None and not rails_by_id:
+        progress_callback(total, total)
 
     return tuple(sections)
 

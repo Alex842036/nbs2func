@@ -384,6 +384,7 @@ class NoteBasedStereoLayout:
         current: int | None = None,
         total: int | None = None,
         key: str | None = None,
+        unit: str | None = None,
     ) -> None:
         if self.config.progress_callback is None:
             return
@@ -394,6 +395,7 @@ class NoteBasedStereoLayout:
                 current=current,
                 total=total,
                 key=key,
+                unit=unit,
             )
         )
 
@@ -469,6 +471,14 @@ class NoteBasedStereoLayout:
         candidate_cache: dict[str, tuple[EmitterCandidate, ...]] = {}
         candidate_generation_stats = _CandidateGenerationStats()
         candidate_counts: list[int] = []
+        self._progress(
+            "candidate_generation",
+            "Generating candidates",
+            current=0,
+            total=len(emitters),
+            key="note_candidates",
+            unit="emitters",
+        )
         for index, emitter in enumerate(emitters, start=1):
             candidates = tuple(
                 self._emitter_candidates(
@@ -489,6 +499,7 @@ class NoteBasedStereoLayout:
                     current=index,
                     total=len(emitters),
                     key="note_candidates",
+                    unit="emitters",
                 )
             self._check_time_limit(total_start, "candidate generation")
         perf_stats.candidate_generation_seconds = time.perf_counter() - stage_start
@@ -1532,6 +1543,18 @@ class NoteBasedStereoLayout:
 
         sorted_ticks = sorted(emitters_by_tick)
         assigned_or_failed = 0
+        assignment_stage = f"{pass_name}_assignment_validation"
+        assignment_message = (
+            f"{pass_name.capitalize()} assignment / rail validation"
+        )
+        self._progress(
+            assignment_stage,
+            assignment_message,
+            current=0,
+            total=len(emitters),
+            key=f"{pass_name}_assignment_validation",
+            unit="emitters",
+        )
         for tick_index, tick in enumerate(sorted_ticks, start=1):
             used_slots = state.used_slots_by_tick[tick]
             active_rail_cells = state.active_rail_cells_by_tick[tick]
@@ -1595,18 +1618,19 @@ class NoteBasedStereoLayout:
                         f"{pass_name} assignment emitters: "
                         f"{assigned_or_failed}/{len(emitters)}"
                     )
+                    self._progress(
+                        assignment_stage,
+                        assignment_message,
+                        current=assigned_or_failed,
+                        total=len(emitters),
+                        key=f"{pass_name}_assignment_validation",
+                        unit="emitters",
+                    )
                 self._check_time_limit(total_start, f"{pass_name} assignment")
 
             if tick_index % 100 == 0 or tick_index == len(sorted_ticks):
                 self._log(
                     f"{pass_name} assigning ticks: {tick_index}/{len(sorted_ticks)}"
-                )
-                self._progress(
-                    f"{pass_name}_assignment",
-                    f"{pass_name} assigning ticks",
-                    current=tick_index,
-                    total=len(sorted_ticks),
-                    key=f"{pass_name}_assignment_ticks",
                 )
 
         return tuple(failed_emitters)
@@ -1626,6 +1650,26 @@ class NoteBasedStereoLayout:
         progress_label: str = "retry candidates",
     ) -> dict[str, tuple[EmitterCandidate, ...]]:
         cache: dict[str, tuple[EmitterCandidate, ...]] = {}
+        if pass_name == "pass2":
+            stage = "pass2_retry_candidates"
+            message = "Generating pass2 retry candidates"
+            key = "pass2_retry_candidates"
+        elif pass_name == "pass3":
+            stage = "pass3_retry_candidates"
+            message = "Generating pass3 retry candidates"
+            key = "pass3_retry_candidates"
+        else:
+            stage = f"{pass_name}_retry_candidates"
+            message = f"Generating {progress_label}"
+            key = stage
+        self._progress(
+            stage,
+            message,
+            current=0,
+            total=len(emitters),
+            key=key,
+            unit="emitters",
+        )
         for index, emitter in enumerate(emitters, start=1):
             allowed_zones = (
                 _failed_retry_pan_zones(emitter.pan_zone)
@@ -1662,24 +1706,13 @@ class NoteBasedStereoLayout:
             )
             if index % 500 == 0 or index == len(emitters):
                 self._log(f"{progress_label}: {index}/{len(emitters)}")
-                if pass_name == "pass2":
-                    stage = "pass2_retry_candidates"
-                    message = "Generating pass2 retry candidates"
-                    key = "pass2_retry_candidates"
-                elif pass_name == "pass3":
-                    stage = "pass3_retry_candidates"
-                    message = "Generating pass3 retry candidates"
-                    key = "pass3_retry_candidates"
-                else:
-                    stage = f"{pass_name}_retry_candidates"
-                    message = f"Generating {progress_label}"
-                    key = stage
                 self._progress(
                     stage,
                     message,
                     current=index,
                     total=len(emitters),
                     key=key,
+                    unit="emitters",
                 )
             if total_start is not None:
                 self._check_time_limit(total_start, f"{progress_label} generation")
@@ -2214,11 +2247,6 @@ class NoteBasedStereoLayout:
                 f"rails_checked={stats.rail_pairs_checked}"
             )
             self._log(message[0].lower() + message[1:])
-            self._progress(
-                "rail_validation",
-                message,
-                key="rail_validation",
-            )
 
         for existing_id in relevant_rail_ids:
             existing = active_rails[existing_id]

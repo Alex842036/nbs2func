@@ -53,6 +53,10 @@ class GenerationEvent:
     current: int | None = None
     total: int | None = None
     key: str | None = None
+    overall_current: int | None = None
+    overall_total: int | None = None
+    overall_percent: float | None = None
+    unit: str | None = None
 
 
 @dataclass(frozen=True)
@@ -88,6 +92,10 @@ def emit(
     current: int | None = None,
     total: int | None = None,
     key: str | None = None,
+    overall_current: int | None = None,
+    overall_total: int | None = None,
+    overall_percent: float | None = None,
+    unit: str | None = None,
 ) -> None:
     if callback is not None:
         callback(
@@ -98,8 +106,55 @@ def emit(
                 current=current,
                 total=total,
                 key=key,
+                overall_current=overall_current,
+                overall_total=overall_total,
+                overall_percent=overall_percent,
+                unit=unit,
             )
         )
+
+
+OVERALL_STAGE_RANGES: dict[str, tuple[float, float]] = {
+    "read_nbs": (0.0, 5.0),
+    "validate_config": (5.0, 8.0),
+    "candidate_generation": (8.0, 20.0),
+    "pass1_assignment_validation": (20.0, 35.0),
+    "pass2_retry_candidates": (35.0, 42.0),
+    "pass2_assignment_validation": (42.0, 48.0),
+    "pass3_retry_candidates": (48.0, 52.0),
+    "pass3_assignment_validation": (52.0, 55.0),
+    "build_layout": (8.0, 55.0),
+    "build_block_plan": (55.0, 75.0),
+    "write_datapack": (75.0, 95.0),
+    "write_schematic": (95.0, 98.0),
+    "write_outputs": (75.0, 98.0),
+    "done": (100.0, 100.0),
+}
+
+
+def overall_percent_for_stage(
+    stage_key: str,
+    current: int | None = None,
+    total: int | None = None,
+) -> float:
+    start, end = OVERALL_STAGE_RANGES.get(stage_key, (0.0, 100.0))
+    if total is None or total <= 0 or current is None:
+        return start
+    ratio = max(0.0, min(1.0, current / total))
+    return start + (end - start) * ratio
+
+
+def monotonic_overall_progress(
+    previous: float,
+    incoming: float | None,
+    *,
+    done: bool = False,
+) -> float:
+    if done:
+        return 100.0
+    if incoming is None:
+        return previous
+    return max(previous, incoming)
 
 
 def generate_from_config(
@@ -113,8 +168,35 @@ def generate_from_config(
     try:
         args = _args_namespace_from_config(config)
         path = Path(args.file)
+        overall_percent = 0.0
+
+        def emit_progress(
+            stage_key: str,
+            message: str,
+            *,
+            current: int | None = None,
+            total: int | None = None,
+            unit: str | None = None,
+            key: str | None = None,
+            detail: str | None = None,
+        ) -> None:
+            nonlocal overall_percent
+            incoming = overall_percent_for_stage(stage_key, current, total)
+            overall_percent = monotonic_overall_progress(overall_percent, incoming)
+            emit(
+                progress_callback,
+                "progress",
+                message,
+                detail=detail or stage_key,
+                current=current,
+                total=total,
+                key=key or stage_key,
+                overall_percent=overall_percent,
+                unit=unit,
+            )
 
         emit(progress_callback, "phase", "Validating config...")
+        emit_progress("validate_config", "Validating config", current=0, total=1)
         version_profile = get_minecraft_version_profile(args.minecraft_version)
         if args.tempo_control_mode == "command" and not args.enable_playback_assist:
             raise ValueError(
@@ -128,9 +210,12 @@ def generate_from_config(
             )
         if not path.is_file():
             raise ValueError(f"path is not a file: {path}")
+        emit_progress("validate_config", "Validating config", current=1, total=1)
 
         emit(progress_callback, "phase", "Reading NBS file...")
+        emit_progress("read_nbs", "Reading NBS file", current=0, total=1)
         song = read_nbs(path)
+        emit_progress("read_nbs", "Reading NBS file", current=1, total=1)
 
         tempo_report = None
         if args.tempo_control_mode != "none":
@@ -159,14 +244,15 @@ def generate_from_config(
         validate_song_instruments_for_version(song, version_profile)
 
         emit(progress_callback, "phase", "Building layout...")
+        emit_progress("build_layout", "Building layout", current=0, total=1)
         def layout_progress(event: LayoutProgressEvent) -> None:
-            emit(
-                progress_callback,
-                "progress",
+            emit_progress(
+                event.stage,
                 event.message,
                 detail=event.stage,
                 current=event.current,
                 total=event.total,
+                unit=event.unit,
                 key=event.key,
             )
 
@@ -206,8 +292,17 @@ def generate_from_config(
             raise LayoutError(
                 "Did not generate output because some emitters were not assigned."
             )
+        emit_progress("build_layout", "Building layout", current=1, total=1)
 
         emit(progress_callback, "phase", "Building block plan...")
+        block_plan_total = _block_plan_progress_total(layout)
+        emit_progress(
+            "build_block_plan",
+            "Building block plan",
+            current=0,
+            total=block_plan_total,
+            unit="cells",
+        )
         playback_config, playback_total_track_length = _playback_config(
             args,
             layout,
@@ -229,7 +324,22 @@ def generate_from_config(
             playback_config,
             playback_total_track_length,
         )
-        full_build_plan = build_generated_plan(layout, writer_config)
+        def block_plan_progress(current: int, total: int) -> None:
+            emit_progress(
+                "build_block_plan",
+                "Building block plan",
+                current=current,
+                total=total,
+                unit="cells",
+            )
+
+        full_build_plan = build_generated_plan(
+            layout,
+            writer_config,
+            progress_callback=block_plan_progress
+            if progress_callback is not None
+            else None,
+        )
         datapack_plan = full_build_plan
         schematic_plan = (
             filter_generated_plan(full_build_plan, STRUCTURE_WITH_MODULE_BLOCKS_BUILD_PLAN)
@@ -246,6 +356,13 @@ def generate_from_config(
 
         if args.output_format in {"datapack", "both"}:
             emit(progress_callback, "phase", "Writing datapack...")
+            emit_progress(
+                "write_datapack",
+                "Writing datapack",
+                current=0,
+                total=1,
+                unit="files",
+            )
             if args.no_split_functions:
                 write_pack_mcmeta(datapack_root, version_profile)
                 writer_output_path = (
@@ -256,11 +373,23 @@ def generate_from_config(
                     / args.build_function_dir
                     / "start.mcfunction"
                 )
+            def datapack_progress(current: int, total: int, message: str) -> None:
+                emit_progress(
+                    "write_datapack",
+                    message,
+                    current=current,
+                    total=total,
+                    unit="files",
+                )
+
             write_result = write_mcfunction(
                 layout,
                 writer_output_path,
                 writer_config,
                 plan=(runtime_plan if args.output_format == "both" else datapack_plan),
+                progress_callback=datapack_progress
+                if progress_callback is not None
+                else None,
             )
             datapack_path = datapack_root
             emit(progress_callback, "output", f"Generated datapack: {datapack_root}")
@@ -273,6 +402,13 @@ def generate_from_config(
 
         if args.output_format in {"schem", "both"}:
             emit(progress_callback, "phase", "Writing schematic...")
+            emit_progress(
+                "write_schematic",
+                "Writing schematic",
+                current=0,
+                total=max(1, len(schematic_plan.blocks)),
+                unit="blocks",
+            )
             generation_origin = BlockPosition(args.origin_x, args.origin_y, args.origin_z)
             schematic_origin = resolve_schematic_origin(
                 schematic_plan,
@@ -290,6 +426,13 @@ def generate_from_config(
                 version_profile=version_profile,
                 schematic_origin=schematic_origin,
                 schematic_name=args.schematic_name,
+            )
+            emit_progress(
+                "write_schematic",
+                "Writing schematic",
+                current=max(1, len(schematic_plan.blocks)),
+                total=max(1, len(schematic_plan.blocks)),
+                unit="blocks",
             )
             emit(progress_callback, "output", f"Generated schematic: {schematic_path}")
             emit(
@@ -353,6 +496,12 @@ def sanitize_datapack_name(name: str) -> str:
     sanitized = re.sub(r"[^a-z0-9._-]+", "_", name.lower())
     sanitized = re.sub(r"_+", "_", sanitized).strip("_")
     return sanitized or "nbs_song"
+
+
+def _block_plan_progress_total(layout) -> int:
+    if getattr(layout, "note_based_preview", None) is not None:
+        return max(1, len(layout.note_based_preview.assignments))
+    return max(1, len(layout.cells))
 
 
 def _profile_report_text(profiler: cProfile.Profile) -> str:

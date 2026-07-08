@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 import warnings
 
 from ..core.instrument_mapping import has_instrument_mapping
@@ -144,6 +145,7 @@ class BasicMcfunctionWriter:
         layout: LayoutResult,
         path: str | Path,
         plan: GeneratedBuildPlan | None = None,
+        progress_callback: Callable[[int, int, str], None] | None = None,
     ) -> CommandWriteResult:
         output_path = Path(path)
         self._validate_config_capabilities()
@@ -152,14 +154,22 @@ class BasicMcfunctionWriter:
         command_count = _command_count(lines)
 
         if not self.config.split_functions:
+            if progress_callback is not None:
+                progress_callback(0, 1, "Writing datapack file")
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(_join_lines(lines), encoding="utf-8")
+            if progress_callback is not None:
+                progress_callback(1, 1, "Writing datapack file")
             return CommandWriteResult(
                 total_commands=command_count,
                 split_function_parts=1,
             )
 
-        debug = self._write_player_tp_build_files(lines, output_path)
+        debug = self._write_player_tp_build_files(
+            lines,
+            output_path,
+            progress_callback=progress_callback,
+        )
         return CommandWriteResult(
             total_commands=command_count,
             split_function_parts=debug.total_parts,
@@ -219,6 +229,7 @@ class BasicMcfunctionWriter:
         self,
         lines: list[str],
         output_path: Path,
+        progress_callback: Callable[[int, int, str], None] | None = None,
     ) -> PlayerTpBuildDebug:
         datapack_root = _datapack_root_from_output_path(output_path)
         write_pack_mcmeta(datapack_root, self.config.minecraft_version_profile)
@@ -260,6 +271,25 @@ class BasicMcfunctionWriter:
                 ),
             )
 
+        window_parts = tuple(
+            _split_packets_by_command_limit(
+                list(window.packets),
+                self.config.max_commands_per_build_part,
+            ) or [[]]
+            for window in windows
+        )
+        total_files = 2 + sum(3 + len(parts) for parts in window_parts)
+        written_files = 0
+
+        def mark_file(message: str) -> None:
+            nonlocal written_files
+            written_files += 1
+            if progress_callback is not None:
+                progress_callback(written_files, total_files, message)
+
+        if progress_callback is not None:
+            progress_callback(0, total_files, "Writing datapack files")
+
         start_path = build_dir / "start.mcfunction"
         start_path.write_text(
             _join_lines(
@@ -275,16 +305,14 @@ class BasicMcfunctionWriter:
             ),
             encoding="utf-8",
         )
+        mark_file("Writing datapack files")
 
         total_parts = 0
         window_debug: list[PlayerTpWindowDebug] = []
         for index, window in enumerate(windows):
             window_dir = build_dir / f"window_{index:03d}"
             window_dir.mkdir(parents=True, exist_ok=True)
-            parts = _split_packets_by_command_limit(
-                list(window.packets),
-                self.config.max_commands_per_build_part,
-            ) or [[]]
+            parts = window_parts[index]
             total_parts += len(parts)
             center = _player_tp_window_center(self.config, window, split_axis, build_box)
             window_box = _player_tp_window_box(window, split_axis, build_box)
@@ -317,6 +345,7 @@ class BasicMcfunctionWriter:
                 ),
                 encoding="utf-8",
             )
+            mark_file("Writing datapack files")
             (window_dir / "wait.mcfunction").write_text(
                 _join_lines(
                     [
@@ -331,6 +360,7 @@ class BasicMcfunctionWriter:
                 ),
                 encoding="utf-8",
             )
+            mark_file("Writing datapack files")
 
             for part_index, part_packets in enumerate(parts):
                 part_lines = _flatten_packets(part_packets)
@@ -356,6 +386,7 @@ class BasicMcfunctionWriter:
                     _join_lines(part_lines),
                     encoding="utf-8",
                 )
+                mark_file("Writing datapack files")
 
             next_path = (
                 "done"
@@ -376,6 +407,7 @@ class BasicMcfunctionWriter:
                 ),
                 encoding="utf-8",
             )
+            mark_file("Writing datapack files")
 
         done_lines = ["# Player-tp build complete"]
         done_lines.append('tellraw @a {"text":"nbs2func build complete"}')
@@ -388,6 +420,7 @@ class BasicMcfunctionWriter:
             _join_lines(done_lines),
             encoding="utf-8",
         )
+        mark_file("Writing datapack files")
 
         estimated_ticks = sum(
             self.config.player_tp_chunk_load_wait_ticks
@@ -442,10 +475,16 @@ def write_mcfunction(
     path: str | Path,
     config: CommandWriterConfig | None = None,
     plan: GeneratedBuildPlan | None = None,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> CommandWriteResult:
     """Write a layout to a .mcfunction file using the default writer."""
 
-    return BasicMcfunctionWriter(config).write_file(layout, path, plan)
+    return BasicMcfunctionWriter(config).write_file(
+        layout,
+        path,
+        plan,
+        progress_callback=progress_callback,
+    )
 
 
 def placed_block_to_setblock(block: PlacedBlock) -> str:

@@ -21,6 +21,7 @@ from nbs2func.gui.helpers import (
     validate_module_coordinates,
 )
 from nbs2func.gui.steps.generate_step import (
+    format_overall_progress,
     format_generation_event,
     format_progress_event,
     should_continue_polling,
@@ -391,10 +392,11 @@ def test_generate_step_formats_progress_events() -> None:
                 "Generating candidates",
                 current=1000,
                 total=13517,
+                unit="notes",
                 key="note_candidates",
             )
         )
-        == "Generating candidates: 1000 / 13517"
+        == "Generating candidates: 1000 / 13517 notes"
     )
     assert (
         format_progress_event(
@@ -406,6 +408,7 @@ def test_generate_step_formats_progress_events() -> None:
         )
         == "Validating rails: candidates=12000 rails_checked=340000"
     )
+    assert format_overall_progress(62.4) == "Overall progress: 62%"
 
 
 def test_generate_step_polling_continues_until_thread_done_and_queue_empty() -> None:

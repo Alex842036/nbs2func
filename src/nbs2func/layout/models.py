@@ -498,6 +498,7 @@ class LayoutProgressEvent:
     current: int | None = None
     total: int | None = None
     key: str | None = None
+    unit: str | None = None
 
 
 @dataclass(frozen=True)
