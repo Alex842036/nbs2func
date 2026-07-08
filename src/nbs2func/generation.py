@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import cProfile
+import io
+import pstats
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -55,6 +58,20 @@ class GenerationResult:
     datapack_path: Path | None = None
     schematic_path: Path | None = None
     warnings: tuple[str, ...] = ()
+    diagnostics: GenerationDiagnostics | None = None
+
+
+@dataclass(frozen=True)
+class GenerationDiagnostics:
+    song: object
+    layout: object
+    write_result: object | None = None
+    writer_output_path: Path | None = None
+    tempo_report: object | None = None
+    playback_debug: object | None = None
+    schematic_origin: BlockPosition | None = None
+    schematic_warnings: tuple[str, ...] = ()
+    profile_report: str | None = None
 
 
 ProgressCallback = Callable[[GenerationEvent], None]
@@ -73,6 +90,8 @@ def emit(
 def generate_from_config(
     config: Nbs2FuncConfig,
     progress_callback: ProgressCallback | None = None,
+    *,
+    include_diagnostics: bool = False,
 ) -> GenerationResult:
     """Generate nbs2func outputs from a resolved config."""
 
@@ -130,9 +149,23 @@ def generate_from_config(
             origin=BlockPosition(args.origin_x, args.origin_y, args.origin_z),
             track_direction=args.direction,
             selected_track_id=args.track_id,
-            stereo_config=_stereo_layout_config(args),
+            stereo_config=_stereo_layout_config(
+                args,
+                enable_progress_logging=(
+                    include_diagnostics and args.layout_mode == "note_based_stereo"
+                ),
+            ),
         )
-        layout = layout_song(song, strategy)
+        profile_report = None
+        profiler = cProfile.Profile() if args.profile and include_diagnostics else None
+        if profiler is not None:
+            profiler.enable()
+        try:
+            layout = layout_song(song, strategy)
+        finally:
+            if profiler is not None:
+                profiler.disable()
+                profile_report = _profile_report_text(profiler)
         if layout.collisions:
             raise LayoutError(
                 "Did not generate output because block collision errors were found."
@@ -152,8 +185,9 @@ def generate_from_config(
             version_profile,
             tempo_report,
         )
+        playback_debug = None
         if args.enable_playback_assist:
-            playback_assist_debug_info(playback_config)
+            playback_debug = playback_assist_debug_info(playback_config)
 
         output_root = Path(args.output)
         datapack_root = output_root / sanitize_datapack_name(path.stem)
@@ -176,6 +210,8 @@ def generate_from_config(
 
         datapack_path: Path | None = None
         schematic_path: Path | None = None
+        schematic_origin: BlockPosition | None = None
+        write_result = None
         warnings: list[str] = []
 
         if args.output_format in {"datapack", "both"}:
@@ -190,7 +226,7 @@ def generate_from_config(
                     / args.build_function_dir
                     / "start.mcfunction"
                 )
-            write_mcfunction(
+            write_result = write_mcfunction(
                 layout,
                 writer_output_path,
                 writer_config,
@@ -259,11 +295,25 @@ def generate_from_config(
             emit(progress_callback, "warning", warning)
 
         emit(progress_callback, "done", "Generation finished.")
+        diagnostics = None
+        if include_diagnostics:
+            diagnostics = GenerationDiagnostics(
+                song=song,
+                layout=layout,
+                write_result=write_result,
+                writer_output_path=writer_output_path if write_result is not None else None,
+                tempo_report=tempo_report,
+                playback_debug=playback_debug,
+                schematic_origin=schematic_origin,
+                schematic_warnings=tuple(warnings),
+                profile_report=profile_report,
+            )
         return GenerationResult(
             output_format=args.output_format,
             datapack_path=datapack_path,
             schematic_path=schematic_path,
             warnings=tuple(warnings),
+            diagnostics=diagnostics,
         )
     except Exception as exc:
         emit(progress_callback, "error", str(exc))
@@ -276,7 +326,18 @@ def sanitize_datapack_name(name: str) -> str:
     return sanitized or "nbs_song"
 
 
-def _stereo_layout_config(args: argparse.Namespace) -> StereoLayoutConfig:
+def _profile_report_text(profiler: cProfile.Profile) -> str:
+    output = io.StringIO()
+    stats = pstats.Stats(profiler, stream=output)
+    stats.strip_dirs().sort_stats("cumulative").print_stats(30)
+    return output.getvalue()
+
+
+def _stereo_layout_config(
+    args: argparse.Namespace,
+    *,
+    enable_progress_logging: bool = False,
+) -> StereoLayoutConfig:
     return StereoLayoutConfig(
         max_hearing_distance=args.max_hearing_distance,
         min_distance=args.min_distance,
@@ -323,7 +384,7 @@ def _stereo_layout_config(args: argparse.Namespace) -> StereoLayoutConfig:
         preview_time_limit_seconds=args.preview_time_limit_seconds,
         fail_fast_on_too_many_collisions=not args.no_fail_fast_on_too_many_collisions,
         max_collision_records_before_abort=args.max_collision_records_before_abort,
-        enable_progress_logging=False,
+        enable_progress_logging=enable_progress_logging,
         enable_note_level_center_split=not args.disable_note_level_center_split,
         center_split_left_pan=args.center_split_left_pan,
         center_split_right_pan=args.center_split_right_pan,

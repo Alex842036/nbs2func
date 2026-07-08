@@ -111,6 +111,7 @@ class GenerateStep(WizardStep):
             result = generate_from_config(
                 self.state.config,
                 progress_callback=emit_to_queue,
+                include_diagnostics=False,
             )
             self.events.put(("result", result))
         except Exception as exc:

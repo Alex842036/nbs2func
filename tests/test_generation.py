@@ -7,6 +7,7 @@ import pytest
 from nbs2func.config import config_from_dict, default_config
 from nbs2func.core.models import NoteEvent, Song, Track
 from nbs2func.generation import (
+    GenerationDiagnostics,
     GenerationEvent,
     GenerationResult,
     generate_from_config,
@@ -49,6 +50,7 @@ def test_generation_event_and_result_models() -> None:
         datapack_path=Path("out/song"),
         schematic_path=Path("out/song.schem"),
         warnings=("careful",),
+        diagnostics=GenerationDiagnostics(song="song", layout="layout"),
     )
 
     assert event.kind == "phase"
@@ -56,6 +58,7 @@ def test_generation_event_and_result_models() -> None:
     assert result.datapack_path == Path("out/song")
     assert result.schematic_path == Path("out/song.schem")
     assert result.warnings == ("careful",)
+    assert result.diagnostics is not None
 
 
 def test_generate_from_config_emits_phase_output_and_done_events(
@@ -109,11 +112,65 @@ def test_generate_from_config_emits_phase_output_and_done_events(
     assert result.output_format == "datapack"
     assert result.datapack_path == tmp_path / "out" / "song"
     assert result.schematic_path is None
+    assert result.diagnostics is None
     kinds = [event.kind for event in events]
     assert "phase" in kinds
     assert "output" in kinds
     assert kinds[-1] == "done"
     assert any(event.message.startswith("Generated datapack:") for event in events)
+
+
+def test_generate_from_config_can_return_diagnostics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    nbs_path = tmp_path / "song.nbs"
+    nbs_path.write_bytes(b"placeholder")
+    config = config_from_dict(
+        {
+            **default_config().__dict__,
+            "input_path": str(nbs_path),
+            "output": str(tmp_path / "out"),
+            "layout_mode": "basic_linear",
+            "tempo_control_mode": "none",
+        }
+    )
+
+    monkeypatch.setattr("nbs2func.generation.read_nbs", lambda path: _song())
+    monkeypatch.setattr(
+        "nbs2func.generation.build_layout_strategy",
+        lambda **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        "nbs2func.generation.layout_song",
+        lambda song, strategy: _minimal_layout(),
+    )
+    monkeypatch.setattr(
+        "nbs2func.generation.total_track_length_from_layout",
+        lambda *args: 0,
+    )
+    monkeypatch.setattr(
+        "nbs2func.generation.build_generated_plan",
+        lambda layout, writer_config: GeneratedBuildPlan(blocks=()),
+    )
+    monkeypatch.setattr(
+        "nbs2func.generation.filter_generated_plan",
+        lambda plan, options: plan,
+    )
+    monkeypatch.setattr(
+        "nbs2func.generation.write_mcfunction",
+        lambda *args, **kwargs: CommandWriteResult(
+            total_commands=0,
+            split_function_parts=1,
+        ),
+    )
+
+    result = generate_from_config(config, include_diagnostics=True)
+
+    assert result.diagnostics is not None
+    assert result.diagnostics.song.name == "Generation Song"
+    assert result.diagnostics.layout.mode == "test"
+    assert result.diagnostics.write_result is not None
 
 
 def test_generate_from_config_emits_error_and_reraises(

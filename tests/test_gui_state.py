@@ -387,3 +387,4 @@ def test_generate_step_no_longer_uses_subprocess_cli_stdout() -> None:
     assert "subprocess.Popen" not in source
     assert "main.py" not in source
     assert "--config" not in source
+    assert "include_diagnostics=False" in source

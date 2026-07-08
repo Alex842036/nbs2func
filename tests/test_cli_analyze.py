@@ -474,6 +474,29 @@ def test_cli_unknown_minecraft_version_exits_before_generation(
     assert "1.20" in stdout
 
 
+def test_cli_requests_generation_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    captured = {}
+    monkeypatch.setattr(sys, "argv", ["main.py", "missing-is-ok-when-mocked.nbs"])
+
+    def fake_generate_from_config(config, progress_callback=None, **kwargs):
+        captured["progress_callback"] = progress_callback
+        captured["include_diagnostics"] = kwargs.get("include_diagnostics")
+        return generation.GenerationResult(output_format="datapack")
+
+    monkeypatch.setattr(cli, "generate_from_config", fake_generate_from_config)
+    monkeypatch.setattr(cli, "_print_cli_generation_report", lambda result, args: None)
+
+    result = cli.main()
+
+    capsys.readouterr()
+    assert result == 0
+    assert captured["progress_callback"] is None
+    assert captured["include_diagnostics"] is True
+
+
 def test_analyze_layout_spatial_does_not_call_layout_writer_or_create_build_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

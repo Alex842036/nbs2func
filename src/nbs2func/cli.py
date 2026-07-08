@@ -32,6 +32,7 @@ from .config import (
 )
 from .generation import (
     GenerationEvent,
+    GenerationResult,
     generate_from_config,
     sanitize_datapack_name,
 )
@@ -1037,122 +1038,15 @@ def _print_generation_event(event: GenerationEvent) -> None:
         print(event.message)
 
 
-def main() -> int:
-    parser = build_parser()
-    raw_args = parser.parse_args()
-    if raw_args.dump_default_config:
-        print(json.dumps(config_to_dict(default_config()), indent=2))
-        return 0
+def _print_cli_generation_report(result: GenerationResult, args: argparse.Namespace) -> None:
+    diagnostics = result.diagnostics
+    if diagnostics is None:
+        raise ValueError("CLI generation report requires diagnostics.")
 
-    try:
-        config = resolve_config_from_args(
-            raw_args,
-            _explicit_cli_destinations(parser, sys.argv[1:]),
-        )
-    except ValueError as exc:
-        print(f"Error: {exc}")
-        return 1
-
-    if raw_args.save_config is not None:
-        try:
-            save_config(config, raw_args.save_config)
-        except OSError as exc:
-            print(f"Error: could not save config: {exc}")
-            return 1
-
-    args = _args_namespace_from_config(config)
-    if args.analyze_stereo:
-        print("Error: --analyze-stereo was removed. Use --analyze-layout-spatial.")
-        return 1
-
-    if args.analyze_layout_spatial:
-        path = Path(args.file)
-        try:
-            get_minecraft_version_profile(args.minecraft_version)
-        except MinecraftVersionError as exc:
-            print(f"Error: {exc}")
-            return 1
-        if not path.exists():
-            print(f"Error: NBS file not found: {path}")
-            print(
-                "Pass a valid .nbs path, or run without arguments to use "
-                "examples/demo.nbs."
-            )
-            return 1
-        if not path.is_file():
-            print(f"Error: path is not a file: {path}")
-            return 1
-        song = read_nbs(path)
-        return _run_analyze_layout_spatial(args, song)
-
-    try:
-        generate_from_config(config, progress_callback=_print_generation_event)
-    except (
-        FileNotFoundError,
-        ValueError,
-        OSError,
-        MinecraftVersionError,
-        TempoControlError,
-        LayoutError,
-        NotImplementedError,
-    ) as exc:
-        print(f"Error: {exc}")
-        return 1
-    return 0
-
+    song = diagnostics.song
+    layout = diagnostics.layout
     path = Path(args.file)
-    try:
-        version_profile = get_minecraft_version_profile(args.minecraft_version)
-    except MinecraftVersionError as exc:
-        print(f"Error: {exc}")
-        return 1
-
-    if not path.exists():
-        print(f"Error: NBS file not found: {path}")
-        print("Pass a valid .nbs path, or run without arguments to use examples/demo.nbs.")
-        return 1
-
-    if not path.is_file():
-        print(f"Error: path is not a file: {path}")
-        return 1
-
-    song = read_nbs(path)
     note_count = sum(len(track.notes) for track in song.tracks)
-
-    if args.analyze_stereo:
-        print("Error: --analyze-stereo was removed. Use --analyze-layout-spatial.")
-        return 1
-
-    if args.analyze_layout_spatial:
-        return _run_analyze_layout_spatial(args, song)
-
-    tempo_report = None
-    if args.tempo_control_mode != "none":
-        try:
-            tempo_report = build_tempo_control_report(
-                song,
-                minecraft_version_profile=version_profile,
-                backend=args.tempo_control_backend,
-                rate_decimals=args.tempo_rate_decimals,
-                game_ticks_per_song_tick=args.game_ticks_per_song_tick,
-            )
-        except TempoControlError as exc:
-            print(f"Error: {exc}")
-            return 1
-
-    if args.tempo_control_mode == "command" and not args.enable_playback_assist:
-        print(
-            "Error: --tempo-control-mode command requires "
-            "--enable-playback-assist so the tick rate command has a playback "
-            "start command block."
-        )
-        return 1
-
-    try:
-        validate_song_instruments_for_version(song, version_profile)
-    except MinecraftVersionError as exc:
-        print(f"Error: {exc}")
-        return 1
 
     print("Song")
     print(f"  file: {path}")
@@ -1162,8 +1056,8 @@ def main() -> int:
     print(f"  tracks: {len(song.tracks)}")
     print(f"  notes: {note_count}")
     print()
-    if tempo_report is not None:
-        for line in tempo_report_lines(tempo_report):
+    if diagnostics.tempo_report is not None:
+        for line in tempo_report_lines(diagnostics.tempo_report):
             print(line)
         if args.tempo_control_mode == "report":
             print("  Mode: report only; no tick rate command will be generated.")
@@ -1194,99 +1088,10 @@ def main() -> int:
             f"{detail}"
         )
 
-    strategy = build_layout_strategy(
-        mode=args.layout_mode,
-        origin=BlockPosition(args.origin_x, args.origin_y, args.origin_z),
-        track_direction=args.direction,
-        selected_track_id=args.track_id,
-        stereo_config=StereoLayoutConfig(
-            max_hearing_distance=args.max_hearing_distance,
-            min_distance=args.min_distance,
-            max_stereo_angle_degrees=args.max_stereo_angle_degrees,
-            center_threshold=args.center_threshold,
-            center_split_policy=args.center_split_policy,
-            center_split_overrides=_parse_center_split_overrides(
-                args.center_split_override
-            ),
-            center_split_mode=args.center_split_mode,
-            center_split_pan=args.center_split_pan,
-            max_auto_center_splits=args.max_auto_center_splits,
-            enable_collision_resolver=not args.disable_collision_resolver,
-            enable_depth_mirror_fallback=not args.disable_depth_mirror_fallback,
-            enable_radius_relax_fallback=not args.disable_radius_relax_fallback,
-            max_angle_deviation_degrees=args.max_angle_deviation_degrees,
-            angle_search_step_degrees=args.angle_search_step_degrees,
-            radius_relax_step=args.radius_relax_step,
-            max_radius_relax=args.max_radius_relax,
-            min_world_y=args.min_world_y,
-            max_world_y=args.max_world_y,
-            enable_pan_zone_layout=not args.disable_pan_zone_layout,
-            allow_adjacent_pan_zone_fallback=args.allow_adjacent_pan_zone_fallback,
-            pan_zone_search_radius_limit=args.pan_zone_search_radius_limit,
-            max_candidates_per_emitter=args.max_candidates_per_emitter,
-            max_candidate_y_layers=args.max_candidate_y_layers,
-            max_candidate_lateral_positions=args.max_candidate_lateral_positions,
-            radius_search_tolerance=args.radius_search_tolerance,
-            max_lateral_distance=args.max_lateral_distance,
-            pan_zone_reference_radius=args.pan_zone_reference_radius,
-            enable_depth_mirror_candidates=(
-                not args.disable_depth_mirror_candidates
-            ),
-            preferred_depth_sign=args.preferred_depth_sign,
-            allow_negative_depth_offsets=(
-                not args.disallow_negative_depth_offsets
-            ),
-            depth_mirror_penalty=args.depth_mirror_penalty,
-            lateral_step_penalty=args.lateral_step_penalty,
-            allow_adjacent_pan_zone_fallback_for_failed=(
-                not args.disable_adjacent_pan_zone_fallback_for_failed
-            ),
-            retry_max_candidates_per_emitter=args.retry_max_candidates_per_emitter,
-            enable_same_side_zone_split_fallback=(
-                args.enable_same_side_zone_split_fallback
-            ),
-            same_side_split_volume_factor=args.same_side_split_volume_factor,
-            min_rail_center_y_gap=args.min_rail_center_y_gap,
-            activation_slot_radius=args.activation_slot_radius,
-            max_collision_records=args.max_collision_records,
-            max_collision_examples_per_group=args.max_collision_examples_per_group,
-            preview_time_limit_seconds=args.preview_time_limit_seconds,
-            fail_fast_on_too_many_collisions=(
-                not args.no_fail_fast_on_too_many_collisions
-            ),
-            max_collision_records_before_abort=(
-                args.max_collision_records_before_abort
-            ),
-            enable_progress_logging=args.layout_mode == "note_based_stereo",
-            enable_note_level_center_split=(
-                not args.disable_note_level_center_split
-            ),
-            center_split_left_pan=args.center_split_left_pan,
-            center_split_right_pan=args.center_split_right_pan,
-            center_split_volume_factor=args.center_split_volume_factor,
-            max_note_level_center_splits=args.max_note_level_center_splits,
-        ),
-    )
-    try:
-        profiler = cProfile.Profile() if args.profile else None
-        if profiler is not None:
-            profiler.enable()
-        layout = layout_song(song, strategy)
-        if profiler is not None:
-            profiler.disable()
-            _print_profile_report(profiler)
-    except NotImplementedError as exc:
-        if args.profile and "profiler" in locals() and profiler is not None:
-            profiler.disable()
-            _print_profile_report(profiler)
-        print(f"Error: {exc}")
-        return 1
-    except LayoutError as exc:
-        if args.profile and "profiler" in locals() and profiler is not None:
-            profiler.disable()
-            _print_profile_report(profiler)
-        print(f"Error: {exc}")
-        return 1
+    if diagnostics.profile_report is not None:
+        print()
+        print("cProfile cumulative time top 30")
+        print(diagnostics.profile_report)
 
     print()
     print(f"Layout preview ({layout.mode})")
@@ -1444,74 +1249,8 @@ def main() -> int:
             f"last_note=({last_pos.x},{last_pos.y},{last_pos.z})"
         )
 
-    if layout.collisions:
-        print()
-        print("Did not generate mcfunction because block collision errors were found.")
-        return 1
-
-    if (
-        layout.note_based_preview is not None
-        and layout.note_based_preview.failed_assignment_count > 0
-    ):
-        print()
-        print("Did not generate mcfunction because some emitters were not assigned.")
-        return 1
-
-    music_start_position = BlockPosition(
-        args.music_start_x,
-        args.music_start_y,
-        args.music_start_z,
-    )
-    playback_total_track_length = total_track_length_from_layout(
-        layout,
-        args.direction,
-        music_start_position,
-    )
-    playback_config = PlaybackAssistModuleConfig(
-        enable_playback_assist=args.enable_playback_assist,
-        player_name=args.playback_player_name,
-        playback_vehicle_tag=args.playback_vehicle_tag,
-        starter_tag=args.starter_tag,
-        count_objective=args.count_objective,
-        vehicle_spawn_position=_optional_position(
-            args.vehicle_spawn_x,
-            args.vehicle_spawn_y,
-            args.vehicle_spawn_z,
-        ),
-        music_start_position=music_start_position,
-        command_module_origin=_optional_position(
-            args.command_module_origin_x,
-            args.command_module_origin_y,
-            args.command_module_origin_z,
-        ),
-        track_direction=args.direction,
-        total_track_length=playback_total_track_length,
-        generate_playback_buttons=not args.no_playback_buttons,
-        playback_button_block=args.playback_button_block,
-        prepare_button_position=_optional_position(
-            args.prepare_button_x,
-            args.prepare_button_y,
-            args.prepare_button_z,
-        ),
-        start_button_position=_optional_position(
-            args.start_button_x,
-            args.start_button_y,
-            args.start_button_z,
-        ),
-        minecraft_version_profile=version_profile,
-        tempo_control_mode=args.tempo_control_mode,
-        tempo_control_report=tempo_report,
-        reset_tick_rate_after_playback=(
-            not args.no_reset_tick_rate_after_playback
-        ),
-    )
-    if args.enable_playback_assist:
-        try:
-            playback_debug = playback_assist_debug_info(playback_config)
-        except ValueError as exc:
-            print(f"Error: {exc}")
-            return 1
-
+    if diagnostics.playback_debug is not None:
+        playback_debug = diagnostics.playback_debug
         print()
         print("Playback assist")
         print(
@@ -1534,7 +1273,10 @@ def main() -> int:
             "  vehicle_spawn_position: "
             f"{_format_position(playback_debug.vehicle_spawn_position)}"
         )
-        print(f"  music_start_position: {_format_position(playback_debug.music_start_position)}")
+        print(
+            "  music_start_position: "
+            f"{_format_position(playback_debug.music_start_position)}"
+        )
         print(f"  track_direction: {playback_debug.track_direction}")
         print(f"  yaw: {playback_debug.yaw}")
         print(f"  start_music_count: {playback_debug.start_music_count}")
@@ -1545,117 +1287,7 @@ def main() -> int:
             f"{_format_position(playback_debug.command_module_origin)}"
         )
 
-    output_root = Path(args.output)
-    datapack_root = output_root / sanitize_datapack_name(path.stem)
-    writer_output_path = datapack_root
-    writer_config = CommandWriterConfig(
-        enable_starter_module=(
-            args.enable_starter_module or args.enable_playback_assist
-        ),
-        command_block_position=BlockPosition(
-            args.command_block_x,
-            args.command_block_y,
-            args.command_block_z,
-        ),
-        starter_tag=args.starter_tag,
-        starter_track_block=args.starter_track_block,
-        starter_cell_offset=args.starter_cell_offset,
-        split_functions=not args.no_split_functions,
-        function_namespace=args.function_namespace,
-        build_function_dir=args.build_function_dir,
-        minecraft_version_profile=version_profile,
-        max_commands_per_build_part=args.max_commands_per_build_part,
-        schedule_delay_ticks_between_parts=(
-            args.schedule_delay_ticks_between_parts
-        ),
-        build_player_name=args.build_player_name,
-        player_load_radius_chunks=args.player_load_radius_chunks,
-        player_tp_chunk_load_wait_ticks=args.player_tp_chunk_load_wait_ticks,
-        player_tp_after_build_wait_ticks=args.player_tp_after_build_wait_ticks,
-        player_tp_window_length_blocks=args.player_tp_window_length_blocks,
-        player_tp_window_lateral_width_blocks=(
-            args.player_tp_window_lateral_width_blocks
-        ),
-        build_tp_y=args.build_tp_y,
-        build_finish_tp_position=_optional_position(
-            args.build_finish_tp_x,
-            args.build_finish_tp_y,
-            args.build_finish_tp_z,
-        ),
-        enable_playback_assist=args.enable_playback_assist,
-        playback_player_name=args.playback_player_name,
-        playback_vehicle_tag=args.playback_vehicle_tag,
-        count_objective=args.count_objective,
-        vehicle_spawn_position=playback_config.vehicle_spawn_position,
-        music_start_position=playback_config.music_start_position,
-        command_module_origin=playback_config.command_module_origin,
-        playback_track_direction=args.direction,
-        playback_total_track_length=playback_total_track_length,
-        generate_playback_buttons=not args.no_playback_buttons,
-        playback_button_block=args.playback_button_block,
-        prepare_button_position=playback_config.prepare_button_position,
-        start_button_position=playback_config.start_button_position,
-        requested_origin_y=args.origin_y,
-        tempo_control_mode=args.tempo_control_mode,
-        tempo_control_report=tempo_report,
-        reset_tick_rate_after_playback=(
-            not args.no_reset_tick_rate_after_playback
-        ),
-    )
-    full_build_plan = build_generated_plan(layout, writer_config)
-    datapack_plan = full_build_plan
-    schematic_plan = (
-        filter_generated_plan(full_build_plan, STRUCTURE_WITH_MODULE_BLOCKS_BUILD_PLAN)
-        if args.output_format == "both"
-        else filter_generated_plan(full_build_plan, STRUCTURE_ONLY_BUILD_PLAN)
-    )
-    runtime_plan = filter_generated_plan(full_build_plan, RUNTIME_LOGIC_BUILD_PLAN)
-
-    write_result = None
-    if args.output_format in {"datapack", "both"}:
-        if args.no_split_functions:
-            write_pack_mcmeta(datapack_root, version_profile)
-            writer_output_path = (
-                datapack_root
-                / "data"
-                / args.function_namespace
-                / version_profile.function_dir_name
-                / args.build_function_dir
-                / "start.mcfunction"
-            )
-        write_result = write_mcfunction(
-            layout,
-            writer_output_path,
-            writer_config,
-            plan=(runtime_plan if args.output_format == "both" else datapack_plan),
-        )
-
-    schematic_path = None
-    schematic_origin = None
-    if args.output_format in {"schem", "both"}:
-        generation_origin = BlockPosition(args.origin_x, args.origin_y, args.origin_z)
-        try:
-            schematic_origin = resolve_schematic_origin(
-                schematic_plan,
-                args.schematic_origin_mode,
-                generation_origin,
-            )
-        except ValueError as exc:
-            print(f"Error: {exc}")
-            return 1
-        schematic_output = (
-            Path(args.schematic_output)
-            if args.schematic_output is not None
-            else output_root / f"{sanitize_datapack_name(path.stem)}.schem"
-        )
-        schematic_path = write_schematic(
-            schematic_plan,
-            schematic_output,
-            version_profile=version_profile,
-            schematic_origin=schematic_origin,
-            schematic_name=args.schematic_name,
-        )
-
+    write_result = diagnostics.write_result
     if layout.note_based_preview is not None and write_result is not None:
         _print_note_based_build_debug(layout.note_based_preview, write_result)
 
@@ -1663,29 +1295,21 @@ def main() -> int:
         _print_player_tp_build_debug(write_result.player_tp_build)
 
     print()
-    if write_result is not None and args.no_split_functions:
-        print(f"Generated datapack: {datapack_root}")
-        print(f"Generated mcfunction: {writer_output_path}")
-    elif write_result is not None:
-        print(f"Generated datapack: {datapack_root}")
+    if result.datapack_path is not None and args.no_split_functions:
+        print(f"Generated datapack: {result.datapack_path}")
+        print(f"Generated mcfunction: {diagnostics.writer_output_path}")
+    elif result.datapack_path is not None:
+        print(f"Generated datapack: {result.datapack_path}")
         print(
             "If split output was needed, run "
             f"/function {args.function_namespace}:{args.build_function_dir}/start"
         )
-    if schematic_path is not None and schematic_origin is not None:
-        print(f"Generated schematic: {schematic_path}")
-        print(f"  schematic origin: {_format_position(schematic_origin)}")
-        if args.output_format == "schem" and (
-            args.enable_starter_module or args.enable_playback_assist
-        ):
-            print(
-                "  WARNING: Schematic output does not include starter or "
-                "playback assist modules."
-            )
-            print(
-                "  WARNING: These modules require mcfunction support to "
-                "execute runtime logic."
-            )
+    if result.schematic_path is not None and diagnostics.schematic_origin is not None:
+        print(f"Generated schematic: {result.schematic_path}")
+        print(
+            "  schematic origin: "
+            f"{_format_position(diagnostics.schematic_origin)}"
+        )
         if args.output_format == "both":
             print(
                 "  Note: The .schem file contains all blocks including "
@@ -1695,9 +1319,76 @@ def main() -> int:
                 "  Note: The .mcfunction output contains runtime logic such "
                 "as scoreboard, summon, and execute."
             )
-        for warning in schematic_warnings(schematic_plan):
+        for warning in diagnostics.schematic_warnings:
             print(f"  WARNING: {warning}")
 
+
+def main() -> int:
+    parser = build_parser()
+    raw_args = parser.parse_args()
+    if raw_args.dump_default_config:
+        print(json.dumps(config_to_dict(default_config()), indent=2))
+        return 0
+
+    try:
+        config = resolve_config_from_args(
+            raw_args,
+            _explicit_cli_destinations(parser, sys.argv[1:]),
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        return 1
+
+    if raw_args.save_config is not None:
+        try:
+            save_config(config, raw_args.save_config)
+        except OSError as exc:
+            print(f"Error: could not save config: {exc}")
+            return 1
+
+    args = _args_namespace_from_config(config)
+    if args.analyze_stereo:
+        print("Error: --analyze-stereo was removed. Use --analyze-layout-spatial.")
+        return 1
+
+    if args.analyze_layout_spatial:
+        path = Path(args.file)
+        try:
+            get_minecraft_version_profile(args.minecraft_version)
+        except MinecraftVersionError as exc:
+            print(f"Error: {exc}")
+            return 1
+        if not path.exists():
+            print(f"Error: NBS file not found: {path}")
+            print(
+                "Pass a valid .nbs path, or run without arguments to use "
+                "examples/demo.nbs."
+            )
+            return 1
+        if not path.is_file():
+            print(f"Error: path is not a file: {path}")
+            return 1
+        song = read_nbs(path)
+        return _run_analyze_layout_spatial(args, song)
+
+    try:
+        result = generate_from_config(
+            config,
+            progress_callback=None,
+            include_diagnostics=True,
+        )
+    except (
+        FileNotFoundError,
+        ValueError,
+        OSError,
+        MinecraftVersionError,
+        TempoControlError,
+        LayoutError,
+        NotImplementedError,
+    ) as exc:
+        print(f"Error: {exc}")
+        return 1
+    _print_cli_generation_report(result, args)
     return 0
 
 
