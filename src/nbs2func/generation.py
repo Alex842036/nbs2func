@@ -5,6 +5,7 @@ import cProfile
 import io
 import pstats
 import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -315,7 +316,7 @@ def generate_from_config(
 
         output_root = Path(args.output)
         datapack_name = args.datapack_name or path.stem
-        datapack_root = output_root / sanitize_datapack_name(datapack_name)
+        datapack_root = output_root / sanitize_output_folder_name(datapack_name)
         writer_output_path = datapack_root
         writer_config = _writer_config(
             args,
@@ -363,6 +364,7 @@ def generate_from_config(
                 total=1,
                 unit="files",
             )
+            _clean_datapack_build_dir(datapack_root, args, version_profile)
             if args.no_split_functions:
                 write_pack_mcmeta(datapack_root, version_profile)
                 writer_output_path = (
@@ -496,6 +498,37 @@ def sanitize_datapack_name(name: str) -> str:
     sanitized = re.sub(r"[^a-z0-9._-]+", "_", name.lower())
     sanitized = re.sub(r"_+", "_", sanitized).strip("_")
     return sanitized or "nbs_song"
+
+
+def sanitize_output_folder_name(name: str) -> str:
+    invalid = '<>:"/\\|?*'
+    cleaned = "".join(
+        "_"
+        if char in invalid or ord(char) < 32
+        else char
+        for char in name
+    )
+    cleaned = cleaned.strip().strip(".")
+    return cleaned or "nbs_song"
+
+
+def _clean_datapack_build_dir(
+    datapack_root: Path,
+    args: argparse.Namespace,
+    version_profile,
+) -> None:
+    build_dir = (
+        datapack_root
+        / "data"
+        / args.function_namespace
+        / version_profile.function_dir_name
+        / args.build_function_dir
+    )
+    if build_dir.exists():
+        try:
+            shutil.rmtree(build_dir)
+        except OSError as exc:
+            raise OSError(f"Could not clean old build output {build_dir}: {exc}") from exc
 
 
 def _block_plan_progress_total(layout) -> int:

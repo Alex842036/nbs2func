@@ -13,6 +13,7 @@ from nbs2func.generation import (
     generate_from_config,
     monotonic_overall_progress,
     overall_percent_for_stage,
+    sanitize_output_folder_name,
 )
 from nbs2func.layout.geometry import BlockPosition
 from nbs2func.layout.models import LayoutProgressEvent, LayoutResult, StereoLayoutConfig
@@ -397,7 +398,66 @@ def test_generate_from_config_uses_datapack_name(
 
     result = generate_from_config(config)
 
-    assert result.datapack_path == tmp_path / "out" / "custom_pack"
+    assert result.datapack_path == tmp_path / "out" / "Custom Pack"
+
+
+def test_sanitize_output_folder_name_preserves_unicode_and_replaces_path_chars() -> None:
+    assert sanitize_output_folder_name("オーバーライド") == "オーバーライド"
+    assert sanitize_output_folder_name("窗のないアトリエにて") == "窗のないアトリエにて"
+    assert sanitize_output_folder_name("bad/name") == "bad_name"
+    assert sanitize_output_folder_name('bad:name*') == "bad_name_"
+    assert sanitize_output_folder_name(" . ") == "nbs_song"
+
+
+def test_generate_from_config_uses_unicode_datapack_folder_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    nbs_path = tmp_path / "song.nbs"
+    nbs_path.write_bytes(b"placeholder")
+    config = config_from_dict(
+        {
+            **default_config().__dict__,
+            "input_path": str(nbs_path),
+            "output": str(tmp_path / "out"),
+            "datapack_name": "ザムザ",
+            "layout_mode": "basic_linear",
+            "tempo_control_mode": "none",
+        }
+    )
+
+    monkeypatch.setattr("nbs2func.generation.read_nbs", lambda path: _song())
+    monkeypatch.setattr(
+        "nbs2func.generation.build_layout_strategy",
+        lambda **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        "nbs2func.generation.layout_song",
+        lambda song, strategy: _minimal_layout(),
+    )
+    monkeypatch.setattr(
+        "nbs2func.generation.total_track_length_from_layout",
+        lambda *args: 0,
+    )
+    monkeypatch.setattr(
+        "nbs2func.generation.build_generated_plan",
+        lambda layout, writer_config, **kwargs: GeneratedBuildPlan(blocks=()),
+    )
+    monkeypatch.setattr(
+        "nbs2func.generation.filter_generated_plan",
+        lambda plan, options: plan,
+    )
+    monkeypatch.setattr(
+        "nbs2func.generation.write_mcfunction",
+        lambda *args, **kwargs: CommandWriteResult(
+            total_commands=0,
+            split_function_parts=1,
+        ),
+    )
+
+    result = generate_from_config(config)
+
+    assert result.datapack_path == tmp_path / "out" / "ザムザ"
 
 
 def test_generate_from_config_emits_error_and_reraises(

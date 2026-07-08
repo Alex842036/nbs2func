@@ -393,6 +393,68 @@ def test_output_format_both_mcfunction_contains_only_runtime_logic(
     assert "contains runtime logic" in stdout
 
 
+def test_output_format_both_split_runtime_output_omits_structure_and_cleans_old_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    nbs_path = _write_placeholder_nbs(tmp_path)
+    output_path = tmp_path / "out"
+    old_file = (
+        output_path
+        / "song"
+        / "data"
+        / "nbs"
+        / "functions"
+        / "build"
+        / "old_structure.mcfunction"
+    )
+    old_file.parent.mkdir(parents=True)
+    old_file.write_text(
+        "setblock 0 128 0 minecraft:note_block\n# layout.cell.note_block\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            str(nbs_path),
+            "--output",
+            str(output_path),
+            "--output-format",
+            "both",
+            "--layout-mode",
+            "basic_linear",
+            "--enable-starter-module",
+            "--enable-playback-assist",
+        ],
+    )
+    _patch_small_generation(monkeypatch)
+
+    result = cli.main()
+
+    capsys.readouterr()
+    datapack_root = output_path / "song"
+    generated_functions = tuple(datapack_root.rglob("*.mcfunction"))
+    text = "\n".join(path.read_text(encoding="utf-8") for path in generated_functions)
+    forbidden = (
+        "minecraft:note_block",
+        "minecraft:repeater",
+        "layout.cell",
+        "layout.note_based",
+        "layout.cell.note_block",
+        "layout.note_based.note_block",
+        "layout.cell.repeater",
+        "layout.note_based.repeater",
+    )
+
+    assert result == 0
+    assert generated_functions
+    assert not old_file.exists()
+    assert all(snippet not in text for snippet in forbidden)
+
+
 @pytest.mark.parametrize(
     ("version_arg", "expected_profile"),
     (

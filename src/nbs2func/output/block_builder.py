@@ -114,12 +114,16 @@ def build_generated_plan(
             )
         )
     else:
+        last_emitted = 0
         for index, cell in enumerate(layout.cells, start=1):
             sections.append(_section_for_cell(cell, config))
-            if progress_callback is not None and (
-                index % 1000 == 0 or index == len(layout.cells)
+            if progress_callback is not None and _should_emit_progress(
+                index,
+                progress_total,
+                last_emitted,
             ):
                 progress_callback(index, progress_total)
+                last_emitted = index
         if progress_callback is not None and not layout.cells:
             progress_callback(progress_total, progress_total)
 
@@ -181,12 +185,29 @@ def build_generated_plan(
 
 def _progress_total(layout: LayoutResult) -> int:
     if layout.note_based_preview is not None:
-        rail_ids = {
-            assignment.rail.rail_id
-            for assignment in layout.note_based_preview.assignments
-        }
-        return max(1, len(rail_ids))
+        return _note_based_progress_total(layout.note_based_preview)
     return max(1, len(layout.cells))
+
+
+def _note_based_progress_total(report: NoteBasedStereoRailLayoutPreview) -> int:
+    max_tick_by_rail: dict[str, int] = {}
+    for assignment in report.assignments:
+        current_max = max_tick_by_rail.get(assignment.rail.rail_id, -1)
+        if assignment.emitter.tick > current_max:
+            max_tick_by_rail[assignment.rail.rail_id] = assignment.emitter.tick
+    return max(1, sum(max_tick + 1 for max_tick in max_tick_by_rail.values()))
+
+
+def _should_emit_progress(current: int, total: int, last_emitted: int) -> bool:
+    if current >= total:
+        return True
+    if total <= 100:
+        step = 1 if total <= 20 else 5
+    elif total <= 1000:
+        step = 25
+    else:
+        step = max(1, total // 100)
+    return current - last_emitted >= step
 
 
 def filter_generated_plan(
@@ -367,8 +388,10 @@ def _note_based_preview_sections(
             [],
         ).append(assignment)
 
-    total = progress_total or max(1, len(rails_by_id))
-    for rail_index, (rail_id, rail) in enumerate(sorted(rails_by_id.items()), start=1):
+    total = progress_total or _note_based_progress_total(report)
+    processed = 0
+    last_emitted = 0
+    for rail_id, rail in sorted(rails_by_id.items()):
         rail_ticks = [
             tick
             for assignment_rail_id, tick in assignments_by_rail_tick
@@ -452,10 +475,14 @@ def _note_based_preview_sections(
                     items=tuple(items),
                 )
             )
-        if progress_callback is not None and (
-            rail_index % 100 == 0 or rail_index == len(rails_by_id)
-        ):
-            progress_callback(rail_index, total)
+            processed += 1
+            if progress_callback is not None and _should_emit_progress(
+                processed,
+                total,
+                last_emitted,
+            ):
+                progress_callback(processed, total)
+                last_emitted = processed
     if progress_callback is not None and not rails_by_id:
         progress_callback(total, total)
 

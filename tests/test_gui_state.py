@@ -408,6 +408,17 @@ def test_generate_step_formats_progress_events() -> None:
         )
         == "Validating rails: candidates=12000 rails_checked=340000"
     )
+    assert (
+        format_progress_event(
+            GenerationEvent(
+                "progress",
+                "Pass3 assignment / rail validation",
+                current=0,
+                total=0,
+            )
+        )
+        == "Skipped: Pass3 assignment / rail validation"
+    )
     assert format_overall_progress(62.4) == "Overall progress: 62%"
 
 
@@ -427,6 +438,7 @@ def test_generate_step_no_longer_uses_subprocess_cli_stdout() -> None:
     assert "--config" not in source
     assert "include_diagnostics=False" in source
     assert "event.kind == \"progress\"" in source
+    assert "Current stage: Finished" in source
 
 
 def test_output_step_writes_datapack_name_to_config() -> None:

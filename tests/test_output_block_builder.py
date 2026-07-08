@@ -2,6 +2,16 @@ import unittest
 
 from nbs2func.core.models import NoteEvent, Song, Track
 from nbs2func.layout import BasicLinearLayout, BlockPosition
+from nbs2func.layout.models import (
+    ActivationRail,
+    ActivationSlot,
+    EmitterCandidate,
+    LayoutResult,
+    NoteBasedStereoRailLayoutPreview,
+    NoteEmitter,
+    RailUsageStatistic,
+    SlotAssignment,
+)
 from nbs2func.output.block_builder import (
     RUNTIME_LOGIC_BUILD_PLAN,
     STRUCTURE_ONLY_BUILD_PLAN,
@@ -295,6 +305,28 @@ class BlockBuilderTest(unittest.TestCase):
         self.assertIn("scoreboard objectives add", text)
         self.assertIn("summon minecraft:armor_stand", text)
 
+    def test_note_based_block_plan_progress_uses_rail_tick_cells(self) -> None:
+        layout = LayoutResult(
+            mode="note_based_stereo",
+            cells=(),
+            notes=(),
+            conflicts=(),
+            note_based_preview=_note_based_preview_with_ticks((0, 3)),
+        )
+        events: list[tuple[int, int]] = []
+
+        build_generated_plan(
+            layout,
+            CommandWriterConfig(split_functions=False),
+            progress_callback=lambda current, total: events.append((current, total)),
+        )
+
+        self.assertEqual(events[0], (0, 4))
+        self.assertIn((1, 4), events)
+        self.assertIn((2, 4), events)
+        self.assertIn((3, 4), events)
+        self.assertEqual(events[-1], (4, 4))
+
 
 def _song_with_instrument(instrument: int) -> Song:
     return Song(
@@ -316,6 +348,89 @@ def _song_with_instrument(instrument: int) -> Song:
                 ),
             ),
         ),
+    )
+
+
+def _note_based_preview_with_ticks(
+    ticks: tuple[int, ...],
+) -> NoteBasedStereoRailLayoutPreview:
+    assignments = tuple(_note_based_assignment(tick, index) for index, tick in enumerate(ticks))
+    rail = assignments[0].rail
+    return NoteBasedStereoRailLayoutPreview(
+        total_note_events=len(assignments),
+        total_ideal_emitters=len(assignments),
+        total_activation_rails=1,
+        unchanged_assignments=len(assignments),
+        y_movement_assignments=0,
+        z_movement_assignments=0,
+        failed_assignment_count=0,
+        average_movement_cost=0,
+        max_movement_cost=0,
+        average_used_slots_per_active_rail_cell=1,
+        rail_usage_statistics=(
+            RailUsageStatistic(
+                rail_id=rail.rail_id,
+                offset_y=rail.offset_y,
+                offset_lateral=rail.offset_lateral,
+                candidate_value=rail.candidate_value,
+                active_cell_count=len(ticks),
+                used_slot_count=len(ticks),
+                average_used_slots_per_active_cell=1,
+            ),
+        ),
+        assignments=assignments,
+        failed_emitters=(),
+        origin=BlockPosition(0, 128, 0),
+        track_direction="east",
+        tick_spacing=2,
+    )
+
+
+def _note_based_assignment(tick: int, slot_index: int) -> SlotAssignment:
+    rail = ActivationRail(
+        rail_id="rail_0_0",
+        offset_y=0,
+        offset_lateral=0,
+        candidate_value=1,
+    )
+    position = BlockPosition(tick * 2, 128, slot_index)
+    emitter = NoteEmitter(
+        emitter_id=f"emitter_{slot_index}",
+        track_id=0,
+        layer=0,
+        tick=tick,
+        instrument=0,
+        key=45,
+        final_volume=100,
+        final_panning=100,
+        ideal_position=position,
+        ideal_offset_y=0,
+        ideal_offset_lateral=slot_index,
+    )
+    slot = ActivationSlot(
+        rail_id=rail.rail_id,
+        tick=tick,
+        slot_index=slot_index,
+        position=position,
+    )
+    candidate = EmitterCandidate(
+        emitter_id=emitter.emitter_id,
+        position=position,
+        offset_y=0,
+        offset_lateral=slot_index,
+        rail_offset_y=0,
+        rail_offset_lateral=0,
+        slot_index=slot_index,
+        level=0,
+        cost=0,
+        y_movement=0,
+        lateral_movement=0,
+    )
+    return SlotAssignment(
+        emitter=emitter,
+        rail=rail,
+        slot=slot,
+        candidate=candidate,
     )
 
 

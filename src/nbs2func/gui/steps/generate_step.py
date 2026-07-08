@@ -34,6 +34,8 @@ def format_generation_event(event: GenerationEvent) -> str:
 
 
 def format_progress_event(event: GenerationEvent) -> str:
+    if event.total == 0:
+        return f"Skipped: {event.message}"
     if event.current is not None and event.total is not None:
         suffix = f" {event.unit}" if event.unit else ""
         return f"{event.message}: {event.current} / {event.total}{suffix}"
@@ -191,7 +193,7 @@ class GenerateStep(WizardStep):
                 elif event.kind == "done":
                     terminal_event = True
                     self._set_overall_percent(100.0)
-                    self._reset_current_progress()
+                    self._set_finished_progress()
                 line = format_generation_event(event)
                 append_log(self.state, line)
                 lines.append(line)
@@ -201,7 +203,7 @@ class GenerateStep(WizardStep):
                 self.result = result
                 self.status_var.set("Generation succeeded.")
                 terminal_event = True
-                self._reset_current_progress()
+                self._set_finished_progress()
                 self.app.set_generation_running(False)
                 self._sync_open_buttons()
             elif kind == "exception":
@@ -230,6 +232,8 @@ class GenerateStep(WizardStep):
             self.after(100, self._poll_events)
 
     def _update_progress_detail(self, event: GenerationEvent) -> None:
+        if event.total == 0:
+            return
         if event.overall_percent is not None:
             self._set_overall_percent(event.overall_percent)
         self.current_stage_var.set("Current stage")
@@ -251,6 +255,16 @@ class GenerateStep(WizardStep):
         self.progress_detail_var.set("")
         self.current_progress.stop()
         self.current_progress.configure(mode="indeterminate", value=0)
+
+    def _set_finished_progress(self) -> None:
+        self.current_stage_var.set("Current stage: Finished")
+        self.progress_detail_var.set("Finished")
+        self.current_progress.stop()
+        self.current_progress.configure(
+            mode="determinate",
+            maximum=100,
+            value=100,
+        )
 
     def _set_overall_percent(self, percent: float) -> None:
         self._overall_percent = monotonic_overall_progress(

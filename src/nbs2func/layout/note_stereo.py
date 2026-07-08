@@ -1148,104 +1148,42 @@ class NoteBasedStereoLayout:
         self._log(f"pass1 failed emitters: {len(failed_after_pass1)}")
 
         retry_start = time.perf_counter()
-        self._log(
-            "stage: generating pass2 retry candidates: "
-            f"{len(failed_after_pass1)} emitters"
-        )
-        pass_start = time.perf_counter()
-        pass2_cache = self._retry_candidate_cache(
-            failed_after_pass1,
-            pass_name="pass2",
-            allow_adjacent=False,
-            candidate_generation_stats=candidate_generation_stats,
-            geometry_skeleton_cache=geometry_skeleton_cache,
-            perf_stats=perf_stats,
-            total_start=total_start,
-            progress_label="pass2 retry candidates",
-        )
-        timing_stats.pass2_retry_candidate_generation_seconds = (
-            time.perf_counter() - pass_start
-        )
-        (
-            timing_stats.pass2_retry_emitter_count,
-            timing_stats.pass2_retry_total_candidates_generated,
-            timing_stats.pass2_retry_max_candidates_for_one_emitter,
-        ) = _candidate_cache_summary(pass2_cache)
-        self._log("stage: merging pass2 candidate values")
-        pass_start = time.perf_counter()
-        _merge_candidate_values(candidate_values, pass2_cache)
-        timing_stats.pass2_candidate_value_merge_seconds = (
-            time.perf_counter() - pass_start
-        )
-        retry_stats.retry_attempted += len(failed_after_pass1)
-        self._log("stage: pass2 assignment")
-        pass_start = time.perf_counter()
-        failed_after_pass2 = self._assign_emitter_pass(
-            emitters=tuple(failed_after_pass1),
-            candidate_cache=pass2_cache,
-            registry=registry,
-            candidate_values=candidate_values,
-            state=state,
-            rail_stats=rail_stats,
-            center_split_stats=center_split_stats,
-            perf_stats=perf_stats,
-            geometry_skeleton_cache=geometry_skeleton_cache,
-            total_start=total_start,
-            pass_name="pass2",
-            allow_center_split=False,
-        )
-        timing_stats.pass2_assignment_seconds = time.perf_counter() - pass_start
-        retry_stats.failed_after_pass2 = len(failed_after_pass2)
-        retry_stats.failed_examples_after_pass2 = _failed_emitter_examples(
-            failed_after_pass2
-        )
-        retry_stats.retry_accepted += len(failed_after_pass1) - len(failed_after_pass2)
-        self._log(f"pass2 failed emitters: {len(failed_after_pass2)}")
-
-        failed_after_pass3 = failed_after_pass2
-        if self.config.allow_adjacent_pan_zone_fallback_for_failed:
-            pass3_emitters = tuple(
-                emitter for emitter in failed_after_pass2 if emitter.pan_zone != "CENTER"
-            )
+        if failed_after_pass1:
             self._log(
-                "stage: generating pass3 retry candidates: "
-                f"{len(pass3_emitters)} emitters"
+                "stage: generating pass2 retry candidates: "
+                f"{len(failed_after_pass1)} emitters"
             )
             pass_start = time.perf_counter()
-            pass3_cache = self._retry_candidate_cache(
-                pass3_emitters,
-                pass_name="pass3",
-                allow_adjacent=True,
+            pass2_cache = self._retry_candidate_cache(
+                failed_after_pass1,
+                pass_name="pass2",
+                allow_adjacent=False,
                 candidate_generation_stats=candidate_generation_stats,
                 geometry_skeleton_cache=geometry_skeleton_cache,
                 perf_stats=perf_stats,
                 total_start=total_start,
-                progress_label="pass3 retry candidates",
+                progress_label="pass2 retry candidates",
             )
-            timing_stats.pass3_retry_candidate_generation_seconds = (
+            timing_stats.pass2_retry_candidate_generation_seconds = (
                 time.perf_counter() - pass_start
             )
             (
-                timing_stats.pass3_retry_emitter_count,
-                timing_stats.pass3_retry_total_candidates_generated,
-                timing_stats.pass3_retry_max_candidates_for_one_emitter,
-            ) = _candidate_cache_summary(pass3_cache)
-            self._log("stage: merging pass3 candidate values")
+                timing_stats.pass2_retry_emitter_count,
+                timing_stats.pass2_retry_total_candidates_generated,
+                timing_stats.pass2_retry_max_candidates_for_one_emitter,
+            ) = _candidate_cache_summary(pass2_cache)
+            self._log("stage: merging pass2 candidate values")
             pass_start = time.perf_counter()
-            _merge_candidate_values(candidate_values, pass3_cache)
-            timing_stats.pass3_candidate_value_merge_seconds = (
+            _merge_candidate_values(candidate_values, pass2_cache)
+            timing_stats.pass2_candidate_value_merge_seconds = (
                 time.perf_counter() - pass_start
             )
-            retry_stats.retry_attempted += len(pass3_emitters)
-            retry_stats.adjacent_attempted += len(pass3_emitters)
-            for emitter in pass3_emitters:
-                if retry_stats.adjacent_by_source_zone is not None:
-                    retry_stats.adjacent_by_source_zone[emitter.pan_zone][0] += 1
-            self._log("stage: pass3 assignment")
+            retry_stats.retry_attempted += len(failed_after_pass1)
+            self._log("stage: pass2 assignment")
             pass_start = time.perf_counter()
-            pass3_failed_non_center = self._assign_emitter_pass(
-                emitters=pass3_emitters,
-                candidate_cache=pass3_cache,
+            failed_after_pass2 = self._assign_emitter_pass(
+                emitters=tuple(failed_after_pass1),
+                candidate_cache=pass2_cache,
                 registry=registry,
                 candidate_values=candidate_values,
                 state=state,
@@ -1254,31 +1192,101 @@ class NoteBasedStereoLayout:
                 perf_stats=perf_stats,
                 geometry_skeleton_cache=geometry_skeleton_cache,
                 total_start=total_start,
-                pass_name="pass3",
+                pass_name="pass2",
                 allow_center_split=False,
             )
-            timing_stats.pass3_assignment_seconds = time.perf_counter() - pass_start
-            accepted_ids = {
-                emitter.emitter_id
-                for emitter in pass3_emitters
-                if emitter not in pass3_failed_non_center
-            }
-            for emitter in pass3_emitters:
-                if retry_stats.adjacent_by_source_zone is None:
-                    continue
-                if emitter.emitter_id in accepted_ids:
-                    retry_stats.adjacent_by_source_zone[emitter.pan_zone][1] += 1
-                else:
-                    retry_stats.adjacent_by_source_zone[emitter.pan_zone][2] += 1
-            retry_stats.adjacent_accepted += len(pass3_emitters) - len(pass3_failed_non_center)
-            retry_stats.adjacent_failed += len(pass3_failed_non_center)
-            retry_stats.retry_accepted += len(pass3_emitters) - len(pass3_failed_non_center)
-            failed_after_pass3 = tuple(
-                emitter
-                for emitter in failed_after_pass2
-                if emitter.pan_zone == "CENTER"
-            ) + tuple(pass3_failed_non_center)
-            self._log(f"pass3 failed emitters: {len(failed_after_pass3)}")
+            timing_stats.pass2_assignment_seconds = time.perf_counter() - pass_start
+            retry_stats.failed_after_pass2 = len(failed_after_pass2)
+            retry_stats.failed_examples_after_pass2 = _failed_emitter_examples(
+                failed_after_pass2
+            )
+            retry_stats.retry_accepted += len(failed_after_pass1) - len(failed_after_pass2)
+            self._log(f"pass2 failed emitters: {len(failed_after_pass2)}")
+        else:
+            self._log("stage: pass2 skipped: 0 emitters")
+            failed_after_pass2 = ()
+
+        failed_after_pass3 = failed_after_pass2
+        if self.config.allow_adjacent_pan_zone_fallback_for_failed:
+            pass3_emitters = tuple(
+                emitter for emitter in failed_after_pass2 if emitter.pan_zone != "CENTER"
+            )
+            if pass3_emitters:
+                self._log(
+                    "stage: generating pass3 retry candidates: "
+                    f"{len(pass3_emitters)} emitters"
+                )
+                pass_start = time.perf_counter()
+                pass3_cache = self._retry_candidate_cache(
+                    pass3_emitters,
+                    pass_name="pass3",
+                    allow_adjacent=True,
+                    candidate_generation_stats=candidate_generation_stats,
+                    geometry_skeleton_cache=geometry_skeleton_cache,
+                    perf_stats=perf_stats,
+                    total_start=total_start,
+                    progress_label="pass3 retry candidates",
+                )
+                timing_stats.pass3_retry_candidate_generation_seconds = (
+                    time.perf_counter() - pass_start
+                )
+                (
+                    timing_stats.pass3_retry_emitter_count,
+                    timing_stats.pass3_retry_total_candidates_generated,
+                    timing_stats.pass3_retry_max_candidates_for_one_emitter,
+                ) = _candidate_cache_summary(pass3_cache)
+                self._log("stage: merging pass3 candidate values")
+                pass_start = time.perf_counter()
+                _merge_candidate_values(candidate_values, pass3_cache)
+                timing_stats.pass3_candidate_value_merge_seconds = (
+                    time.perf_counter() - pass_start
+                )
+                retry_stats.retry_attempted += len(pass3_emitters)
+                retry_stats.adjacent_attempted += len(pass3_emitters)
+                for emitter in pass3_emitters:
+                    if retry_stats.adjacent_by_source_zone is not None:
+                        retry_stats.adjacent_by_source_zone[emitter.pan_zone][0] += 1
+                self._log("stage: pass3 assignment")
+                pass_start = time.perf_counter()
+                pass3_failed_non_center = self._assign_emitter_pass(
+                    emitters=pass3_emitters,
+                    candidate_cache=pass3_cache,
+                    registry=registry,
+                    candidate_values=candidate_values,
+                    state=state,
+                    rail_stats=rail_stats,
+                    center_split_stats=center_split_stats,
+                    perf_stats=perf_stats,
+                    geometry_skeleton_cache=geometry_skeleton_cache,
+                    total_start=total_start,
+                    pass_name="pass3",
+                    allow_center_split=False,
+                )
+                timing_stats.pass3_assignment_seconds = time.perf_counter() - pass_start
+                accepted_ids = {
+                    emitter.emitter_id
+                    for emitter in pass3_emitters
+                    if emitter not in pass3_failed_non_center
+                }
+                for emitter in pass3_emitters:
+                    if retry_stats.adjacent_by_source_zone is None:
+                        continue
+                    if emitter.emitter_id in accepted_ids:
+                        retry_stats.adjacent_by_source_zone[emitter.pan_zone][1] += 1
+                    else:
+                        retry_stats.adjacent_by_source_zone[emitter.pan_zone][2] += 1
+                retry_stats.adjacent_accepted += len(pass3_emitters) - len(pass3_failed_non_center)
+                retry_stats.adjacent_failed += len(pass3_failed_non_center)
+                retry_stats.retry_accepted += len(pass3_emitters) - len(pass3_failed_non_center)
+                failed_after_pass3 = tuple(
+                    emitter
+                    for emitter in failed_after_pass2
+                    if emitter.pan_zone == "CENTER"
+                ) + tuple(pass3_failed_non_center)
+                self._log(f"pass3 failed emitters: {len(failed_after_pass3)}")
+            else:
+                timing_stats.pass3_enabled = False
+                self._log("stage: pass3 skipped: 0 emitters")
         perf_stats.retry_total_seconds += time.perf_counter() - retry_start
 
         retry_stats.failed_after_pass3 = len(failed_after_pass3)
@@ -1650,6 +1658,9 @@ class NoteBasedStereoLayout:
         progress_label: str = "retry candidates",
     ) -> dict[str, tuple[EmitterCandidate, ...]]:
         cache: dict[str, tuple[EmitterCandidate, ...]] = {}
+        if not emitters:
+            self._log(f"{progress_label} skipped: 0 emitters")
+            return cache
         if pass_name == "pass2":
             stage = "pass2_retry_candidates"
             message = "Generating pass2 retry candidates"
