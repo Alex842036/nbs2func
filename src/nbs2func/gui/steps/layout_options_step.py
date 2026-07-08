@@ -130,14 +130,6 @@ class LayoutOptionsStep(WizardStep):
         if mode == "basic_linear":
             self._entry(row, "track_id", "Track ID")
         elif mode == "track_based_stereo":
-            ttk.Label(
-                self.form,
-                text=(
-                    "This mode is intended to generate automatically without "
-                    "manual adjustment."
-                ),
-            ).grid(row=row, column=1, sticky="w", pady=(8, 3))
-            row += 1
             self._entry(row, "min_distance", "Min distance")
         elif mode == "note_based_stereo":
             combo = labeled_option(

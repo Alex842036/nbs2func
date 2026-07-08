@@ -12,6 +12,7 @@ from nbs2func.config import (
 )
 from nbs2func.core.nbs_reader import read_nbs
 from nbs2func.gui.helpers import (
+    default_datapack_folder_name,
     default_schematic_name,
     modules_require_runtime_logic,
     normalize_gui_config,
@@ -27,11 +28,19 @@ class WizardState:
     output_log: list[str] = field(default_factory=list)
     config_path: str | None = None
     note_based_profile: str = "balanced"
+    datapack_name: str = "demo"
+    starter_origin_user_modified: bool = False
+    command_module_origin_user_modified: bool = False
+    datapack_name_user_modified: bool = False
     schematic_name_user_modified: bool = False
 
 
 def create_default_state() -> WizardState:
-    return WizardState(config=normalize_gui_config(default_config()))
+    config = normalize_gui_config(default_config())
+    return WizardState(
+        config=config,
+        datapack_name=default_datapack_folder_name(config),
+    )
 
 
 def update_config(
@@ -59,6 +68,7 @@ def set_output_format(state: WizardState, output_format: str) -> None:
 
 def load_input_song(state: WizardState, path: str | Path) -> dict[str, object]:
     old_default_name = default_schematic_name(state.config)
+    old_datapack_name = default_datapack_folder_name(state.config)
     song_path = Path(path).expanduser().resolve()
     song = read_nbs(song_path)
     note_count = sum(len(track.notes) for track in song.tracks)
@@ -85,6 +95,12 @@ def load_input_song(state: WizardState, path: str | Path) -> dict[str, object]:
     ):
         updates["schematic_name"] = song_path.stem or "nbs_song"
         state.schematic_name_user_modified = False
+    if not state.datapack_name_user_modified or state.datapack_name in {
+        "",
+        old_datapack_name,
+    }:
+        state.datapack_name = song_path.stem or "nbs_song"
+        state.datapack_name_user_modified = False
     update_config(state, updates)
     return summary
 

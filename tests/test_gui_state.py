@@ -7,6 +7,7 @@ from nbs2func.gui.helpers import (
     TRACK_BASED_GUI_FIELDS,
     absolute_path,
     apply_track_based_gui_defaults,
+    datapack_group_enabled,
     default_datapack_folder_name,
     default_schematic_name,
     direction_display_to_value,
@@ -14,6 +15,8 @@ from nbs2func.gui.helpers import (
     infer_note_profile,
     is_output_format_selectable,
     resolve_gui_generation_config,
+    resolved_command_module_origin,
+    resolved_starter_origin,
     validate_module_coordinates,
 )
 from nbs2func.gui.state import (
@@ -281,6 +284,68 @@ def test_gui_generation_resolution_derives_playback_positions_from_starter() -> 
         resolved.vehicle_spawn_y,
         resolved.vehicle_spawn_z,
     ) == (-11, 128, 0)
+
+
+def test_starter_origin_defaults_follow_direction() -> None:
+    cases = {
+        "east": (-10, 128, 0),
+        "west": (10, 128, 0),
+        "south": (0, 128, -10),
+        "north": (0, 128, 10),
+    }
+    for direction, expected in cases.items():
+        state = create_default_state()
+        update_config(state, direction=direction, origin_x=0, origin_y=128, origin_z=0)
+
+        assert resolved_starter_origin(state.config) == expected
+
+
+def test_command_module_origin_defaults_follow_starter_and_direction() -> None:
+    cases = {
+        "east": ((-10, 128, 0), (-15, 128, 0)),
+        "west": ((10, 128, 0), (15, 128, 0)),
+        "south": ((0, 128, -10), (0, 128, -15)),
+        "north": ((0, 128, 10), (0, 128, 15)),
+    }
+    for direction, (starter, expected) in cases.items():
+        state = create_default_state()
+        update_config(
+            state,
+            direction=direction,
+            command_block_x=starter[0],
+            command_block_y=starter[1],
+            command_block_z=starter[2],
+            command_module_origin_x=None,
+            command_module_origin_y=None,
+            command_module_origin_z=None,
+        )
+
+        assert resolved_command_module_origin(state.config) == expected
+
+
+def test_gui_generation_resolution_keeps_game_ticks_per_song_tick_fixed() -> None:
+    state = create_default_state()
+    update_config(state, game_ticks_per_song_tick=9)
+
+    resolved = resolve_gui_generation_config(state.config)
+
+    assert resolved.game_ticks_per_song_tick == 4
+
+
+def test_datapack_group_enabled_by_output_format() -> None:
+    assert datapack_group_enabled("datapack") is True
+    assert datapack_group_enabled("both") is True
+    assert datapack_group_enabled("schem") is False
+
+
+def test_datapack_name_default_and_manual_state() -> None:
+    state = create_default_state()
+
+    assert state.datapack_name == "demo"
+    state.datapack_name = "custom_pack"
+    state.datapack_name_user_modified = True
+
+    assert state.datapack_name == "custom_pack"
 
 
 def test_gui_path_normalization_and_default_file_names() -> None:

@@ -6,6 +6,8 @@ from tkinter import ttk
 from nbs2func.gui.helpers import (
     parse_int,
     resolve_gui_generation_config,
+    resolved_command_module_origin,
+    resolved_starter_origin,
     validate_module_coordinates,
 )
 from nbs2func.gui.state import update_config
@@ -35,9 +37,33 @@ class ModulesStep(WizardStep):
         self.form.columnconfigure(0, weight=1)
 
     def on_show(self) -> None:
-        if self.state.config.enable_playback_assist:
-            self.state.config = resolve_gui_generation_config(self.state.config)
+        self._apply_module_defaults()
         self._build_form()
+
+    def _apply_module_defaults(self) -> None:
+        updates: dict[str, object] = {}
+        if not self.state.starter_origin_user_modified:
+            starter = resolved_starter_origin(self.state.config)
+            updates.update(
+                {
+                    "command_block_x": starter[0],
+                    "command_block_y": starter[1],
+                    "command_block_z": starter[2],
+                }
+            )
+        if updates:
+            update_config(self.state, updates)
+        if not self.state.command_module_origin_user_modified:
+            command = resolved_command_module_origin(
+                self.state.config,
+                use_existing=False,
+            )
+            update_config(
+                self.state,
+                command_module_origin_x=command[0],
+                command_module_origin_y=command[1],
+                command_module_origin_z=command[2],
+            )
 
     def _var(self, field: str, kind: type[tk.Variable] = tk.StringVar) -> tk.Variable:
         value = getattr(self.state.config, field)
@@ -149,23 +175,17 @@ class ModulesStep(WizardStep):
             step=self,
         )
         self._entry(tempo, 2, "tempo_rate_decimals", "Tempo rate decimals")
-        self._entry(
-            tempo,
-            3,
-            "game_ticks_per_song_tick",
-            "Game ticks per song tick",
-        )
         reset_check = ttk.Checkbutton(
             tempo,
             text="Reset tick rate after playback",
             variable=self._var("reset_tick_rate_after_playback", tk.BooleanVar),
         )
-        reset_check.grid(row=4, column=1, sticky="w", pady=3)
+        reset_check.grid(row=3, column=1, sticky="w", pady=3)
         self.register_help(reset_check, HELP_TEXT_BY_FIELD["reset_tick_rate_after_playback"])
         ttk.Label(
             tempo,
             text="Recommended tick rate preview is printed during generation.",
-        ).grid(row=5, column=1, sticky="w", pady=3)
+        ).grid(row=4, column=1, sticky="w", pady=3)
         self._sync_module_controls()
 
     def _sync_module_controls(self) -> None:
@@ -189,7 +209,6 @@ class ModulesStep(WizardStep):
             "command_module_origin_y",
             "command_module_origin_z",
             "tempo_rate_decimals",
-            "game_ticks_per_song_tick",
         }
         optional_int_fields = {
             "command_module_origin_x",
@@ -203,6 +222,16 @@ class ModulesStep(WizardStep):
             "reset_tick_rate_after_playback",
         }
         updates: dict[str, object] = {}
+        previous_starter = (
+            self.state.config.command_block_x,
+            self.state.config.command_block_y,
+            self.state.config.command_block_z,
+        )
+        previous_command = (
+            self.state.config.command_module_origin_x,
+            self.state.config.command_module_origin_y,
+            self.state.config.command_module_origin_z,
+        )
         for field, variable in self.vars.items():
             value = variable.get()
             if field in bool_fields:
@@ -215,7 +244,22 @@ class ModulesStep(WizardStep):
                 )
             else:
                 updates[field] = str(value)
+        updates["game_ticks_per_song_tick"] = 4
         update_config(self.state, updates)
+        current_starter = (
+            self.state.config.command_block_x,
+            self.state.config.command_block_y,
+            self.state.config.command_block_z,
+        )
+        current_command = (
+            self.state.config.command_module_origin_x,
+            self.state.config.command_module_origin_y,
+            self.state.config.command_module_origin_z,
+        )
+        if current_starter != previous_starter:
+            self.state.starter_origin_user_modified = True
+        if current_command != previous_command:
+            self.state.command_module_origin_user_modified = True
         self.state.config = resolve_gui_generation_config(self.state.config)
         errors = validate_module_coordinates(self.state.config)
         if errors:
@@ -241,6 +285,5 @@ HELP_TEXT_BY_FIELD = {
     "tempo_control_mode": "Tempo control can report or emit tick-rate commands without changing the tempo formula.",
     "tempo_control_backend": "Tempo backend selects Carpet or vanilla tick-rate command syntax where supported.",
     "tempo_rate_decimals": "Decimal places used when formatting recommended tick-rate commands.",
-    "game_ticks_per_song_tick": "Redstone timing model used to compute tempo recommendations.",
     "reset_tick_rate_after_playback": "Generate a reset command so tick rate returns to normal after playback.",
 }

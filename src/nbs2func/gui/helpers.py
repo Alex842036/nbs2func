@@ -76,6 +76,10 @@ def is_output_format_selectable(config: Nbs2FuncConfig, output_format: str) -> b
     return output_format in OUTPUT_FORMAT_CHOICES
 
 
+def datapack_group_enabled(output_format: str) -> bool:
+    return output_format in {"datapack", "both"}
+
+
 def fallback_output_format(config: Nbs2FuncConfig) -> str:
     if is_output_format_selectable(config, config.output_format):
         return config.output_format
@@ -188,6 +192,10 @@ def starter_origin(config: Nbs2FuncConfig) -> tuple[int, int, int]:
     return config.command_block_x, config.command_block_y, config.command_block_z
 
 
+def resolved_starter_origin(config: Nbs2FuncConfig) -> tuple[int, int, int]:
+    return offset_behind(layout_origin(config), config.direction, 10)
+
+
 def offset_behind(
     reference: tuple[int, int, int],
     direction: str,
@@ -240,8 +248,10 @@ def starter_origin_error(config: Nbs2FuncConfig) -> str | None:
 
 def resolved_command_module_origin(
     config: Nbs2FuncConfig,
+    *,
+    use_existing: bool = True,
 ) -> tuple[int, int, int]:
-    if (
+    if use_existing and (
         config.command_module_origin_x is not None
         and config.command_module_origin_y is not None
         and config.command_module_origin_z is not None
@@ -251,9 +261,7 @@ def resolved_command_module_origin(
             config.command_module_origin_y,
             config.command_module_origin_z,
         )
-    reference = starter_origin(config) if config.enable_starter_module else layout_origin(config)
-    distance = 5 if config.enable_starter_module else 15
-    return offset_behind(reference, config.direction, distance)
+    return offset_behind(starter_origin(config), config.direction, 5)
 
 
 def command_module_origin_error(config: Nbs2FuncConfig) -> str | None:
@@ -304,6 +312,7 @@ def resolve_gui_generation_config(config: Nbs2FuncConfig) -> Nbs2FuncConfig:
     data["music_start_x"] = resolved.origin_x
     data["music_start_y"] = resolved.origin_y
     data["music_start_z"] = resolved.origin_z
+    data["game_ticks_per_song_tick"] = 4
     if resolved.enable_playback_assist:
         command_origin = resolved_command_module_origin(resolved)
         vehicle_spawn = resolved_vehicle_spawn_position(resolved)

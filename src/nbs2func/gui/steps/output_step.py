@@ -106,7 +106,12 @@ class OutputStep(WizardStep):
         self.vars.clear()
         self.datapack_widgets.clear()
         self.schematic_widgets.clear()
-        self.datapack_name_var.set(default_datapack_folder_name(self.state.config))
+        if (
+            not self.state.datapack_name_user_modified
+            and self.state.datapack_name in {"", default_datapack_folder_name(self.state.config)}
+        ):
+            self.state.datapack_name = default_datapack_folder_name(self.state.config)
+        self.datapack_name_var.set(self.state.datapack_name)
 
         datapack = ttk.LabelFrame(
             self.form,
@@ -145,7 +150,6 @@ class OutputStep(WizardStep):
             step=self,
         )
         self.datapack_name_entry = name_entry
-        name_entry.configure(state="disabled")
         self.datapack_widgets.append(name_entry)
         namespace = labeled_entry(
             datapack,
@@ -217,7 +221,7 @@ class OutputStep(WizardStep):
         for widget in self.schematic_widgets:
             widget.configure(state=schematic_state)
         if self.datapack_name_entry is not None:
-            self.datapack_name_entry.configure(state="disabled")
+            self.datapack_name_entry.configure(state=datapack_state)
 
     def _browse_output(self) -> None:
         path = filedialog.askdirectory(title="Select datapack output folder")
@@ -235,6 +239,11 @@ class OutputStep(WizardStep):
             output_format = fallback_output_format(self.state.config)
             self.format_var.set(output_format)
         updates: dict[str, object] = {"output_format": output_format}
+        default_datapack_name = default_datapack_folder_name(self.state.config)
+        self.state.datapack_name = self.datapack_name_var.get().strip() or default_datapack_name
+        self.state.datapack_name_user_modified = (
+            self.state.datapack_name != default_datapack_name
+        )
         for field, variable in self.vars.items():
             value = variable.get().strip()
             if field == "output":
