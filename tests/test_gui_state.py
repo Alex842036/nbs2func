@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from nbs2func.config import config_to_dict, load_config, save_config
+from nbs2func.generation import GenerationEvent
 from nbs2func.gui.helpers import (
     GUI_MINECRAFT_VERSION_CHOICES,
     TRACK_BASED_GUI_FIELDS,
@@ -19,6 +20,7 @@ from nbs2func.gui.helpers import (
     resolved_starter_origin,
     validate_module_coordinates,
 )
+from nbs2func.gui.steps.generate_step import format_generation_event
 from nbs2func.gui.state import (
     create_default_state,
     load_input_song,
@@ -356,3 +358,32 @@ def test_gui_path_normalization_and_default_file_names() -> None:
     assert Path(str(state.config.schematic_output)).is_absolute()
     assert default_schematic_name(state.config) == "demo"
     assert default_datapack_folder_name(state.config) == "demo"
+
+
+def test_generate_step_formats_generation_events() -> None:
+    assert (
+        format_generation_event(GenerationEvent("phase", "Reading NBS"))
+        == "[Phase] Reading NBS"
+    )
+    assert (
+        format_generation_event(GenerationEvent("warning", "Careful"))
+        == "[Warning] Careful"
+    )
+    assert (
+        format_generation_event(GenerationEvent("output", "Generated schematic: x"))
+        == "[Output] Generated schematic: x"
+    )
+    assert (
+        format_generation_event(GenerationEvent("done", "Generation finished."))
+        == "[Done] Generation finished."
+    )
+
+
+def test_generate_step_no_longer_uses_subprocess_cli_stdout() -> None:
+    source = Path("src/nbs2func/gui/steps/generate_step.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "subprocess.Popen" not in source
+    assert "main.py" not in source
+    assert "--config" not in source

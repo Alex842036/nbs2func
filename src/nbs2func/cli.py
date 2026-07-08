@@ -30,6 +30,11 @@ from .config import (
     load_config,
     save_config,
 )
+from .generation import (
+    GenerationEvent,
+    generate_from_config,
+    sanitize_datapack_name,
+)
 from .core.instrument_mapping import validate_song_instruments_for_version
 from .layout import build_layout_strategy, layout_song
 from .layout.geometry import BlockPosition, LayoutError
@@ -1021,6 +1026,17 @@ def _args_namespace_from_config(config: Nbs2FuncConfig) -> argparse.Namespace:
     )
 
 
+def _print_generation_event(event: GenerationEvent) -> None:
+    if event.kind == "notice":
+        print(f"NOTICE: {event.message}")
+    elif event.kind == "warning":
+        print(f"WARNING: {event.message}")
+    elif event.kind == "error":
+        return
+    else:
+        print(event.message)
+
+
 def main() -> int:
     parser = build_parser()
     raw_args = parser.parse_args()
@@ -1045,6 +1061,45 @@ def main() -> int:
             return 1
 
     args = _args_namespace_from_config(config)
+    if args.analyze_stereo:
+        print("Error: --analyze-stereo was removed. Use --analyze-layout-spatial.")
+        return 1
+
+    if args.analyze_layout_spatial:
+        path = Path(args.file)
+        try:
+            get_minecraft_version_profile(args.minecraft_version)
+        except MinecraftVersionError as exc:
+            print(f"Error: {exc}")
+            return 1
+        if not path.exists():
+            print(f"Error: NBS file not found: {path}")
+            print(
+                "Pass a valid .nbs path, or run without arguments to use "
+                "examples/demo.nbs."
+            )
+            return 1
+        if not path.is_file():
+            print(f"Error: path is not a file: {path}")
+            return 1
+        song = read_nbs(path)
+        return _run_analyze_layout_spatial(args, song)
+
+    try:
+        generate_from_config(config, progress_callback=_print_generation_event)
+    except (
+        FileNotFoundError,
+        ValueError,
+        OSError,
+        MinecraftVersionError,
+        TempoControlError,
+        LayoutError,
+        NotImplementedError,
+    ) as exc:
+        print(f"Error: {exc}")
+        return 1
+    return 0
+
     path = Path(args.file)
     try:
         version_profile = get_minecraft_version_profile(args.minecraft_version)

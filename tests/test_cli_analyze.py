@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from nbs2func import cli
+from nbs2func import generation
 from nbs2func.output.command_writer import CommandWriteResult
 from nbs2func.config import (
     config_from_dict,
@@ -71,10 +72,14 @@ def _small_layout() -> LayoutResult:
 
 
 def _patch_small_generation(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli, "read_nbs", lambda path: _song())
-    monkeypatch.setattr(cli, "build_layout_strategy", lambda **kwargs: object())
-    monkeypatch.setattr(cli, "layout_song", lambda song, strategy: _small_layout())
-    monkeypatch.setattr(cli, "total_track_length_from_layout", lambda *args: 0)
+    monkeypatch.setattr(generation, "read_nbs", lambda path: _song())
+    monkeypatch.setattr(generation, "build_layout_strategy", lambda **kwargs: object())
+    monkeypatch.setattr(
+        generation,
+        "layout_song",
+        lambda song, strategy: _small_layout(),
+    )
+    monkeypatch.setattr(generation, "total_track_length_from_layout", lambda *args: 0)
 
 
 def test_parser_keeps_existing_cli_arguments_available() -> None:
@@ -416,10 +421,10 @@ def test_generation_uses_minecraft_version_alias_profile(
             str(tmp_path / "out"),
         ],
     )
-    monkeypatch.setattr(cli, "read_nbs", lambda path: _song())
-    monkeypatch.setattr(cli, "build_layout_strategy", lambda **kwargs: object())
+    monkeypatch.setattr(generation, "read_nbs", lambda path: _song())
+    monkeypatch.setattr(generation, "build_layout_strategy", lambda **kwargs: object())
     monkeypatch.setattr(
-        cli,
+        generation,
         "layout_song",
         lambda song, strategy: LayoutResult(
             mode="test",
@@ -428,13 +433,13 @@ def test_generation_uses_minecraft_version_alias_profile(
             conflicts=(),
         ),
     )
-    monkeypatch.setattr(cli, "total_track_length_from_layout", lambda *args: 0)
+    monkeypatch.setattr(generation, "total_track_length_from_layout", lambda *args: 0)
 
     def fake_write_mcfunction(layout, path, config, **kwargs):
         captured["profile"] = config.minecraft_version_profile
         return CommandWriteResult(total_commands=0, split_function_parts=1)
 
-    monkeypatch.setattr(cli, "write_mcfunction", fake_write_mcfunction)
+    monkeypatch.setattr(generation, "write_mcfunction", fake_write_mcfunction)
 
     result = cli.main()
 
@@ -492,9 +497,7 @@ def test_analyze_layout_spatial_does_not_call_layout_writer_or_create_build_outp
     def fail_if_called(*args, **kwargs):
         raise AssertionError("generation path should not be called")
 
-    monkeypatch.setattr(cli, "build_layout_strategy", fail_if_called)
-    monkeypatch.setattr(cli, "layout_song", fail_if_called)
-    monkeypatch.setattr(cli, "write_mcfunction", fail_if_called)
+    monkeypatch.setattr(cli, "generate_from_config", fail_if_called)
 
     result = cli.main()
 
