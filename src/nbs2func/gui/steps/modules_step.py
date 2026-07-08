@@ -3,7 +3,11 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
-from nbs2func.gui.helpers import parse_int
+from nbs2func.gui.helpers import (
+    parse_int,
+    resolve_gui_generation_config,
+    validate_module_coordinates,
+)
 from nbs2func.gui.state import update_config
 from nbs2func.gui.steps.base import (
     ScrollableFrame,
@@ -15,6 +19,7 @@ from nbs2func.gui.steps.base import (
 
 class ModulesStep(WizardStep):
     title = "Modules"
+    help_text = "Configure optional runtime modules and tempo commands."
 
     def __init__(self, parent, app) -> None:
         super().__init__(parent, app)
@@ -30,6 +35,8 @@ class ModulesStep(WizardStep):
         self.form.columnconfigure(0, weight=1)
 
     def on_show(self) -> None:
+        if self.state.config.enable_playback_assist:
+            self.state.config = resolve_gui_generation_config(self.state.config)
         self._build_form()
 
     def _var(self, field: str, kind: type[tk.Variable] = tk.StringVar) -> tk.Variable:
@@ -50,7 +57,14 @@ class ModulesStep(WizardStep):
         widgets: list[tk.Widget] | None = None,
     ) -> None:
         self.field_labels[field] = label
-        entry = labeled_entry(parent, row, label, self._var(field))
+        entry = labeled_entry(
+            parent,
+            row,
+            label,
+            self._var(field),
+            help_text=HELP_TEXT_BY_FIELD.get(field),
+            step=self,
+        )
         if widgets is not None:
             widgets.append(entry)
 
@@ -65,12 +79,14 @@ class ModulesStep(WizardStep):
         starter = ttk.LabelFrame(self.form, text="Starter Module", padding=10)
         starter.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         starter.columnconfigure(1, weight=1)
-        ttk.Checkbutton(
+        starter_check = ttk.Checkbutton(
             starter,
             text="Enable starter module",
             variable=self._var("enable_starter_module", tk.BooleanVar),
             command=self._sync_module_controls,
-        ).grid(row=0, column=1, sticky="w", pady=3)
+        )
+        starter_check.grid(row=0, column=1, sticky="w", pady=3)
+        self.register_help(starter_check, HELP_TEXT_BY_FIELD["enable_starter_module"])
         for row, (field, label) in enumerate(
             (
                 ("command_block_x", "Starter origin X"),
@@ -84,19 +100,18 @@ class ModulesStep(WizardStep):
         playback = ttk.LabelFrame(self.form, text="Playback Assist", padding=10)
         playback.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         playback.columnconfigure(1, weight=1)
-        ttk.Checkbutton(
+        playback_check = ttk.Checkbutton(
             playback,
             text="Enable playback assist",
             variable=self._var("enable_playback_assist", tk.BooleanVar),
             command=self._sync_module_controls,
-        ).grid(row=0, column=1, sticky="w", pady=3)
+        )
+        playback_check.grid(row=0, column=1, sticky="w", pady=3)
+        self.register_help(playback_check, HELP_TEXT_BY_FIELD["enable_playback_assist"])
         row = 1
         for field, label in (
             ("playback_player_name", "Playback player name"),
             ("playback_vehicle_tag", "Vehicle tag"),
-            ("music_start_x", "Music start X"),
-            ("music_start_y", "Music start Y"),
-            ("music_start_z", "Music start Z"),
             ("command_module_origin_x", "Command module origin X"),
             ("command_module_origin_y", "Command module origin Y"),
             ("command_module_origin_z", "Command module origin Z"),
@@ -108,6 +123,7 @@ class ModulesStep(WizardStep):
             text="Playback buttons",
             variable=self._var("generate_playback_buttons", tk.BooleanVar),
         )
+        self.register_help(check, HELP_TEXT_BY_FIELD["generate_playback_buttons"])
         check.grid(row=row, column=1, sticky="w", pady=3)
         self.playback_widgets.append(check)
 
@@ -120,6 +136,8 @@ class ModulesStep(WizardStep):
             "Tempo control mode",
             self._var("tempo_control_mode"),
             ("none", "report", "command"),
+            help_text=HELP_TEXT_BY_FIELD["tempo_control_mode"],
+            step=self,
         )
         labeled_option(
             tempo,
@@ -127,6 +145,8 @@ class ModulesStep(WizardStep):
             "Tempo backend",
             self._var("tempo_control_backend"),
             ("auto", "carpet", "vanilla"),
+            help_text=HELP_TEXT_BY_FIELD["tempo_control_backend"],
+            step=self,
         )
         self._entry(tempo, 2, "tempo_rate_decimals", "Tempo rate decimals")
         self._entry(
@@ -135,11 +155,13 @@ class ModulesStep(WizardStep):
             "game_ticks_per_song_tick",
             "Game ticks per song tick",
         )
-        ttk.Checkbutton(
+        reset_check = ttk.Checkbutton(
             tempo,
             text="Reset tick rate after playback",
             variable=self._var("reset_tick_rate_after_playback", tk.BooleanVar),
-        ).grid(row=4, column=1, sticky="w", pady=3)
+        )
+        reset_check.grid(row=4, column=1, sticky="w", pady=3)
+        self.register_help(reset_check, HELP_TEXT_BY_FIELD["reset_tick_rate_after_playback"])
         ttk.Label(
             tempo,
             text="Recommended tick rate preview is printed during generation.",
@@ -163,9 +185,6 @@ class ModulesStep(WizardStep):
             "command_block_x",
             "command_block_y",
             "command_block_z",
-            "music_start_x",
-            "music_start_y",
-            "music_start_z",
             "command_module_origin_x",
             "command_module_origin_y",
             "command_module_origin_z",
@@ -197,12 +216,31 @@ class ModulesStep(WizardStep):
             else:
                 updates[field] = str(value)
         update_config(self.state, updates)
+        self.state.config = resolve_gui_generation_config(self.state.config)
+        errors = validate_module_coordinates(self.state.config)
+        if errors:
+            raise ValueError("\n".join(errors))
         return True
 
     def status_text(self) -> str:
-        config = self.state.config
-        return (
-            f"Modules: starter={config.enable_starter_module}, "
-            f"playback_assist={config.enable_playback_assist}, "
-            f"tempo={config.tempo_control_mode}"
-        )
+        return self.help_text
+
+
+HELP_TEXT_BY_FIELD = {
+    "enable_starter_module": "Starter module creates a synchronized start command block for the generated music.",
+    "command_block_x": "Starter origin is the start command block X. It must be behind the layout origin for the selected direction.",
+    "command_block_y": "Starter origin Y is the height of the start command block.",
+    "command_block_z": "Starter origin is the start command block Z. It must be behind the layout origin for the selected direction.",
+    "enable_playback_assist": "Playback assist adds minecart runtime logic for starting playback.",
+    "playback_player_name": "Player name used by playback assist scoreboard commands.",
+    "playback_vehicle_tag": "Entity tag assigned to the playback minecart.",
+    "command_module_origin_x": "Command module origin is the playback assist command block area X. It must be further behind starter origin.",
+    "command_module_origin_y": "Command module origin Y is the height of playback assist command blocks.",
+    "command_module_origin_z": "Command module origin is the playback assist command block area Z. It must be further behind starter origin.",
+    "generate_playback_buttons": "Generate prepare/start buttons next to playback assist command blocks.",
+    "tempo_control_mode": "Tempo control can report or emit tick-rate commands without changing the tempo formula.",
+    "tempo_control_backend": "Tempo backend selects Carpet or vanilla tick-rate command syntax where supported.",
+    "tempo_rate_decimals": "Decimal places used when formatting recommended tick-rate commands.",
+    "game_ticks_per_song_tick": "Redstone timing model used to compute tempo recommendations.",
+    "reset_tick_rate_after_playback": "Generate a reset command so tick rate returns to normal after playback.",
+}

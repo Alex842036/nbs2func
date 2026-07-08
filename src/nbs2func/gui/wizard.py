@@ -6,6 +6,7 @@ from tkinter import filedialog, messagebox, ttk
 from typing import TYPE_CHECKING
 
 from nbs2func.config import load_config, save_config
+from nbs2func.gui.helpers import normalize_gui_config
 from nbs2func.gui.state import (
     WizardState,
     create_default_state,
@@ -58,14 +59,13 @@ class WizardApp(tk.Tk):
     def _build_menu(self) -> None:
         menu = tk.Menu(self)
         self.file_menu = tk.Menu(menu, tearoff=False)
-        file_menu = self.file_menu
-        file_menu.add_command(label="New", command=self.new_config)
-        file_menu.add_command(label="Load Config", command=self.load_config_file)
-        file_menu.add_command(label="Save Config", command=self.save_config_file)
-        file_menu.add_command(label="Save Config As", command=self.save_config_as)
-        file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self.destroy)
-        menu.add_cascade(label="File", menu=file_menu)
+        self.file_menu.add_command(label="New", command=self.new_config)
+        self.file_menu.add_command(label="Load Config", command=self.load_config_file)
+        self.file_menu.add_command(label="Save Config", command=self.save_config_file)
+        self.file_menu.add_command(label="Save Config As", command=self.save_config_as)
+        self.file_menu.add_separator()
+        self.file_menu.add_command(label="Exit", command=self.destroy)
+        menu.add_cascade(label="File", menu=self.file_menu)
 
         help_menu = tk.Menu(menu, tearoff=False)
         help_menu.add_command(label="About", command=self.show_about)
@@ -188,10 +188,10 @@ class WizardApp(tk.Tk):
         for index, button in enumerate(self.step_buttons):
             title = STEP_MODULES[index][0]
             if index == self.current_index:
-                button.configure(text=f"▶ {index + 1} {title}")
+                button.configure(text=f"> {index + 1} {title}")
                 button.configure(style="Current.Step.TButton")
             elif index < self.current_index and self.steps[index].is_complete():
-                button.configure(text=f"✓ {index + 1} {title}")
+                button.configure(text=f"OK {index + 1} {title}")
                 button.configure(style="Step.TButton")
             else:
                 button.configure(text=f"{index + 1} {title}")
@@ -214,7 +214,10 @@ class WizardApp(tk.Tk):
         if self.current_index == len(self.steps) - 2:
             self.next_button.configure(text="Generate", command=self.go_generate)
         elif self.current_index == len(self.steps) - 1:
-            self.next_button.configure(text="Back to Summary", command=self.back_to_summary)
+            self.next_button.configure(
+                text="Back to Summary",
+                command=self.back_to_summary,
+            )
         else:
             self.next_button.configure(text="Next >", command=self.next)
         self.next_button.state(
@@ -226,6 +229,9 @@ class WizardApp(tk.Tk):
 
     def _refresh_status(self) -> None:
         self.status_var.set(self.steps[self.current_index].status_text())
+
+    def set_help_text(self, text: str) -> None:
+        self.status_var.set(text)
 
     def back(self) -> None:
         self.show_step(self.current_index - 1)
@@ -269,7 +275,7 @@ class WizardApp(tk.Tk):
         if not path:
             return
         try:
-            self.state_data.config = load_config(path)
+            self.state_data.config = normalize_gui_config(load_config(path))
             self.state_data.config_path = path
             input_path = self.state_data.config.input_path
             if Path(input_path).is_file():

@@ -4,12 +4,14 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from nbs2func.gui.helpers import absolute_path_text
 from nbs2func.gui.state import load_input_song
 from nbs2func.gui.steps.base import WizardStep
 
 
 class InputStep(WizardStep):
     title = "Input"
+    help_text = "Choose an Open Note Block Studio .nbs file and load its song summary."
 
     def __init__(self, parent, app) -> None:
         super().__init__(parent, app)
@@ -22,13 +24,18 @@ class InputStep(WizardStep):
         row = ttk.Frame(self)
         row.grid(row=1, column=0, sticky="ew", pady=(8, 12))
         row.columnconfigure(0, weight=1)
-        ttk.Entry(row, textvariable=self.path_var).grid(row=0, column=0, sticky="ew")
-        ttk.Button(row, text="Browse...", command=self.browse).grid(
-            row=0, column=1, padx=(8, 0)
+        path_entry = ttk.Entry(row, textvariable=self.path_var)
+        path_entry.grid(row=0, column=0, sticky="ew")
+        self.register_help(
+            path_entry,
+            "Full path to the .nbs song file to convert.",
         )
-        ttk.Button(row, text="Load NBS", command=self.load_path).grid(
-            row=0, column=2, padx=(8, 0)
-        )
+        browse_button = ttk.Button(row, text="Browse...", command=self.browse)
+        browse_button.grid(row=0, column=1, padx=(8, 0))
+        self.register_help(browse_button, "Open a file picker for .nbs input files.")
+        load_button = ttk.Button(row, text="Load NBS", command=self.load_path)
+        load_button.grid(row=0, column=2, padx=(8, 0))
+        self.register_help(load_button, "Read the selected .nbs file and show its summary.")
 
         ttk.Label(self, textvariable=self.summary_var, justify="left").grid(
             row=2, column=0, sticky="nw"
@@ -38,7 +45,7 @@ class InputStep(WizardStep):
         )
 
     def on_show(self) -> None:
-        self.path_var.set(self.state.config.input_path)
+        self.path_var.set(absolute_path_text(self.state.config.input_path))
         if self.state.input_song_summary is not None:
             self._render_summary()
 
@@ -48,7 +55,7 @@ class InputStep(WizardStep):
             filetypes=(("Open Note Block Studio", "*.nbs"), ("All files", "*.*")),
         )
         if path:
-            self.path_var.set(path)
+            self.path_var.set(absolute_path_text(path))
             self.load_path()
 
     def load_path(self) -> None:
@@ -61,6 +68,7 @@ class InputStep(WizardStep):
             self.summary_var.set("No song loaded.")
             self.app.refresh()
             return
+        self.path_var.set(self.state.config.input_path)
         self._render_summary()
         self.app.refresh()
 
@@ -89,11 +97,15 @@ class InputStep(WizardStep):
         )
 
     def apply(self) -> bool:
-        selected_path = Path(self.path_var.get())
+        selected_path = Path(self.path_var.get()).expanduser().resolve()
         loaded_path = None
         if self.state.input_song_summary is not None:
             raw_loaded_path = self.state.input_song_summary.get("path")
-            loaded_path = Path(str(raw_loaded_path)) if raw_loaded_path else None
+            loaded_path = (
+                Path(str(raw_loaded_path)).expanduser().resolve()
+                if raw_loaded_path
+                else None
+            )
         if selected_path.is_file() and selected_path != loaded_path:
             self.load_path()
         if not self.is_complete():
@@ -105,8 +117,4 @@ class InputStep(WizardStep):
         return self.state.input_song_summary is not None
 
     def status_text(self) -> str:
-        if self.error_var.get():
-            return self.error_var.get()
-        if self.is_complete():
-            return "Input loaded. Continue to choose a layout mode."
-        return "Select a .nbs file."
+        return self.help_text

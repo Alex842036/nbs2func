@@ -25,6 +25,7 @@ LAYOUT_DESCRIPTIONS = {
 
 class LayoutStep(WizardStep):
     title = "Layout"
+    help_text = "Select how nbs2func places note blocks and redstone tracks."
 
     def __init__(self, parent, app) -> None:
         super().__init__(parent, app)
@@ -36,13 +37,18 @@ class LayoutStep(WizardStep):
         modes = ttk.Frame(self)
         modes.grid(row=1, column=0, sticky="ew", pady=(8, 12))
         for index, mode in enumerate(LAYOUT_DESCRIPTIONS):
-            ttk.Radiobutton(
+            button = ttk.Radiobutton(
                 modes,
                 text=mode,
                 value=mode,
                 variable=self.mode_var,
                 command=self._on_change,
-            ).grid(row=index, column=0, sticky="w", pady=3)
+            )
+            button.grid(row=index, column=0, sticky="w", pady=3)
+            self.register_help(
+                button,
+                "Select how nbs2func places note blocks and redstone tracks.",
+            )
         ttk.Label(self, textvariable=self.description_var, justify="left").grid(
             row=2, column=0, sticky="nw"
         )
@@ -67,4 +73,4 @@ class LayoutStep(WizardStep):
         return self.mode_var.get() in LAYOUT_DESCRIPTIONS
 
     def status_text(self) -> str:
-        return f"Selected layout mode: {self.state.config.layout_mode}"
+        return self.help_text

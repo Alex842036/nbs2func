@@ -4,11 +4,10 @@ import tkinter as tk
 from tkinter import ttk
 
 from nbs2func.gui.helpers import (
-    CENTER_SPLIT_MODE_CHOICES,
-    CENTER_SPLIT_POLICY_CHOICES,
     DIRECTION_DISPLAY_TO_VALUE,
     GUI_MINECRAFT_VERSION_CHOICES,
     NOTE_PRESETS,
+    apply_track_based_gui_defaults,
     direction_display_to_value,
     direction_value_to_display,
     infer_note_profile,
@@ -37,6 +36,7 @@ NOTE_ADVANCED_FIELDS = (
 
 class LayoutOptionsStep(WizardStep):
     title = "Layout Options"
+    help_text = "Set placement direction, origin, Minecraft version, and mode-specific layout options."
 
     def __init__(self, parent, app) -> None:
         super().__init__(parent, app)
@@ -79,7 +79,15 @@ class LayoutOptionsStep(WizardStep):
 
     def _entry(self, row: int, field: str, label: str) -> ttk.Entry:
         self._remember_label(field, label)
-        return labeled_entry(self.form, row, label, self._var(field))
+        help_text = HELP_TEXT_BY_FIELD.get(field)
+        return labeled_entry(
+            self.form,
+            row,
+            label,
+            self._var(field),
+            help_text=help_text,
+            step=self,
+        )
 
     def _build_form(self) -> None:
         for child in self.form.winfo_children():
@@ -94,6 +102,8 @@ class LayoutOptionsStep(WizardStep):
             "Direction",
             self._var("direction"),
             tuple(DIRECTION_DISPLAY_TO_VALUE),
+            help_text=HELP_TEXT_BY_FIELD["direction"],
+            step=self,
         )
         self._remember_label("direction", "Direction")
         row += 1
@@ -110,6 +120,8 @@ class LayoutOptionsStep(WizardStep):
             "Minecraft version",
             self._var("minecraft_version"),
             GUI_MINECRAFT_VERSION_CHOICES,
+            help_text=HELP_TEXT_BY_FIELD["minecraft_version"],
+            step=self,
         )
         self._remember_label("minecraft_version", "Minecraft version")
         row += 1
@@ -120,38 +132,13 @@ class LayoutOptionsStep(WizardStep):
         elif mode == "track_based_stereo":
             ttk.Label(
                 self.form,
-                text="Minecraft note block hearing distance is treated as 48 blocks.",
+                text=(
+                    "This mode is intended to generate automatically without "
+                    "manual adjustment."
+                ),
             ).grid(row=row, column=1, sticky="w", pady=(8, 3))
             row += 1
-            for field, label in (
-                ("min_distance", "Min distance"),
-                ("max_stereo_angle_degrees", "Max stereo angle degrees"),
-            ):
-                self._entry(row, field, label)
-                row += 1
-            labeled_option(
-                self.form,
-                row,
-                "Center split policy",
-                self._var("center_split_policy"),
-                CENTER_SPLIT_POLICY_CHOICES,
-            )
-            self._remember_label("center_split_policy", "Center split policy")
-            row += 1
-            labeled_option(
-                self.form,
-                row,
-                "Center split mode",
-                self._var("center_split_mode"),
-                CENTER_SPLIT_MODE_CHOICES,
-            )
-            self._remember_label("center_split_mode", "Center split mode")
-            row += 1
-            ttk.Checkbutton(
-                self.form,
-                text="Auto spread on collision",
-                variable=self._var("enable_collision_resolver", tk.BooleanVar),
-            ).grid(row=row, column=1, sticky="w", pady=3)
+            self._entry(row, "min_distance", "Min distance")
         elif mode == "note_based_stereo":
             combo = labeled_option(
                 self.form,
@@ -159,6 +146,8 @@ class LayoutOptionsStep(WizardStep):
                 "Profile",
                 self.profile_var,
                 ("safe", "balanced", "dense", "custom"),
+                help_text=HELP_TEXT_BY_FIELD["note_profile"],
+                step=self,
             )
             combo.bind("<<ComboboxSelected>>", lambda _event: self._on_profile_change())
             row += 1
@@ -173,6 +162,7 @@ class LayoutOptionsStep(WizardStep):
                 text="Depth mirror candidates",
                 variable=self._var("enable_depth_mirror_candidates", tk.BooleanVar),
             )
+            self.register_help(check, HELP_TEXT_BY_FIELD["enable_depth_mirror_candidates"])
             if readonly:
                 check.configure(state="disabled")
             check.grid(row=row, column=1, sticky="w", pady=3)
@@ -200,7 +190,6 @@ class LayoutOptionsStep(WizardStep):
         }
         float_fields = {
             "min_distance",
-            "max_stereo_angle_degrees",
             "radius_search_tolerance",
             "depth_mirror_penalty",
         }
@@ -222,12 +211,29 @@ class LayoutOptionsStep(WizardStep):
                 updates[field] = str(value)
         self.state.note_based_profile = self.profile_var.get()
         update_config(self.state, updates)
+        if self.state.config.layout_mode == "track_based_stereo":
+            self.state.config = apply_track_based_gui_defaults(self.state.config)
         return True
 
     def status_text(self) -> str:
-        config = self.state.config
-        return (
-            f"{config.layout_mode}: direction {config.direction}, "
-            f"origin {config.origin_x},{config.origin_y},{config.origin_z}, "
-            f"Minecraft {config.minecraft_version}"
-        )
+        return self.help_text
+
+
+HELP_TEXT_BY_FIELD = {
+    "direction": "Select the direction the redstone track advances from the layout origin.",
+    "origin_x": "Layout origin X is the first music structure position in world coordinates.",
+    "origin_y": "Layout origin Y is the build height for the generated music structure.",
+    "origin_z": "Layout origin Z is the first music structure position in world coordinates.",
+    "minecraft_version": "Choose the exact Minecraft Java profile used for datapack and block compatibility.",
+    "track_id": "Basic linear mode can generate one selected track when the song has multiple tracks.",
+    "min_distance": "Minimum stereo distance keeps track-based stereo placements away from the center line.",
+    "note_profile": "Preset profiles lock advanced note-based parameters; custom allows editing them.",
+    "max_candidates_per_emitter": "Maximum candidate positions considered for each note emitter.",
+    "retry_max_candidates_per_emitter": "Candidate count used when retrying failed note emitter placement.",
+    "max_candidate_y_layers": "Maximum vertical layers scanned for note-based placement candidates.",
+    "max_candidate_lateral_positions": "Maximum lateral positions scanned for note-based placement candidates.",
+    "radius_search_tolerance": "Allowed distance error while matching note-level stereo radius.",
+    "preferred_depth_sign": "Preferred vertical depth direction before mirror fallback.",
+    "depth_mirror_penalty": "Extra placement cost for mirrored depth candidates.",
+    "enable_depth_mirror_candidates": "Allow mirrored vertical candidates when placing note emitters.",
+}

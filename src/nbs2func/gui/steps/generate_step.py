@@ -12,7 +12,11 @@ from tkinter import messagebox, ttk
 
 from nbs2func.cli import sanitize_datapack_name
 from nbs2func.config import save_config
-from nbs2func.gui.helpers import datapack_output_folder, schematic_output_folder
+from nbs2func.gui.helpers import (
+    datapack_output_folder,
+    resolve_gui_generation_config,
+    schematic_output_folder,
+)
 from nbs2func.gui.state import append_log, clear_log
 from nbs2func.gui.steps.base import WizardStep
 
@@ -66,6 +70,7 @@ class GenerateStep(WizardStep):
     def start_generation(self) -> None:
         if self.thread is not None and self.thread.is_alive():
             return
+        self.state.config = resolve_gui_generation_config(self.state.config)
         clear_log(self.state)
         self.open_datapack_button.configure(state="disabled")
         self.open_schematic_button.configure(state="disabled")

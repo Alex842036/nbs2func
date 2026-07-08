@@ -11,7 +11,12 @@ from nbs2func.config import (
     default_config,
 )
 from nbs2func.core.nbs_reader import read_nbs
-from nbs2func.gui.helpers import modules_require_runtime_logic
+from nbs2func.gui.helpers import (
+    default_schematic_name,
+    modules_require_runtime_logic,
+    normalize_gui_config,
+    validate_module_coordinates,
+)
 
 
 @dataclass
@@ -22,10 +27,11 @@ class WizardState:
     output_log: list[str] = field(default_factory=list)
     config_path: str | None = None
     note_based_profile: str = "balanced"
+    schematic_name_user_modified: bool = False
 
 
 def create_default_state() -> WizardState:
-    return WizardState(config=default_config())
+    return WizardState(config=normalize_gui_config(default_config()))
 
 
 def update_config(
@@ -52,7 +58,8 @@ def set_output_format(state: WizardState, output_format: str) -> None:
 
 
 def load_input_song(state: WizardState, path: str | Path) -> dict[str, object]:
-    song_path = Path(path)
+    old_default_name = default_schematic_name(state.config)
+    song_path = Path(path).expanduser().resolve()
     song = read_nbs(song_path)
     note_count = sum(len(track.notes) for track in song.tracks)
     instruments: dict[int, int] = {}
@@ -71,7 +78,14 @@ def load_input_song(state: WizardState, path: str | Path) -> dict[str, object]:
         "instrument_summary": dict(sorted(instruments.items())),
     }
     state.input_song_summary = summary
-    update_config(state, input_path=str(song_path))
+    updates: dict[str, object] = {"input_path": str(song_path)}
+    if (
+        not state.schematic_name_user_modified
+        or state.config.schematic_name in {None, "", old_default_name}
+    ):
+        updates["schematic_name"] = song_path.stem or "nbs_song"
+        state.schematic_name_user_modified = False
+    update_config(state, updates)
     return summary
 
 
@@ -100,6 +114,7 @@ def validate_ready_to_generate(state: WizardState) -> list[str]:
         and not state.config.enable_playback_assist
     ):
         errors.append("Tempo command mode requires playback assist.")
+    errors.extend(validate_module_coordinates(state.config))
     return errors
 
 

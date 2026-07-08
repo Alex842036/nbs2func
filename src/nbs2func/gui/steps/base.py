@@ -10,6 +10,7 @@ if TYPE_CHECKING:
 
 class WizardStep(ttk.Frame):
     title = ""
+    help_text = ""
 
     def __init__(self, parent: tk.Widget, app: WizardApp) -> None:
         super().__init__(parent)
@@ -29,7 +30,11 @@ class WizardStep(ttk.Frame):
         return True
 
     def status_text(self) -> str:
-        return ""
+        return self.help_text
+
+    def register_help(self, widget: tk.Widget, text: str) -> None:
+        widget.bind("<FocusIn>", lambda _event: self.app.set_help_text(text))
+        widget.bind("<Enter>", lambda _event: self.app.set_help_text(text))
 
 
 class ScrollableFrame(ttk.Frame):
@@ -69,10 +74,14 @@ def labeled_entry(
     label: str,
     variable: tk.Variable,
     width: int = 28,
+    help_text: str | None = None,
+    step: WizardStep | None = None,
 ) -> ttk.Entry:
     ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=3)
     entry = ttk.Entry(parent, textvariable=variable, width=width)
     entry.grid(row=row, column=1, sticky="ew", pady=3)
+    if help_text is not None and step is not None:
+        step.register_help(entry, help_text)
     return entry
 
 
@@ -82,10 +91,14 @@ def labeled_option(
     label: str,
     variable: tk.Variable,
     values: tuple[str, ...] | list[str],
+    help_text: str | None = None,
+    step: WizardStep | None = None,
 ) -> ttk.Combobox:
     ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=3)
     combo = ttk.Combobox(parent, textvariable=variable, values=tuple(values), state="readonly")
     combo.grid(row=row, column=1, sticky="ew", pady=3)
+    if help_text is not None and step is not None:
+        step.register_help(combo, help_text)
     return combo
 
 
