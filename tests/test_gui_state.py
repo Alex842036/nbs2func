@@ -15,16 +15,23 @@ from nbs2func.gui.helpers import (
     direction_value_to_display,
     infer_note_profile,
     is_output_format_selectable,
+    parse_float,
+    parse_int,
     resolve_gui_generation_config,
     resolved_command_module_origin,
     resolved_starter_origin,
     resolved_vehicle_spawn_position,
+    validate_layout_options,
     validate_module_coordinates,
 )
 from nbs2func.gui.steps.input_step import input_path_needs_reload
 from nbs2func.gui.steps.modules_step import (
     module_int_fields_to_parse,
     normalize_module_toggles,
+)
+from nbs2func.gui.steps.output_step import (
+    DATAPACK_ADVANCED_FIELDS,
+    output_datapack_controls_enabled,
 )
 from nbs2func.gui.steps.generate_step import (
     format_overall_progress,
@@ -175,6 +182,54 @@ def test_gui_ready_validation_checks_function_resource_paths() -> None:
     update_config(state, build_function_dir="Build Dir")
 
     assert any("build_function_dir" in error for error in validate_ready_to_generate(state))
+
+
+def test_origin_y_validation_uses_version_height_and_note_block_range() -> None:
+    cases = (
+        ("1.16.5", 48, False),
+        ("1.16.5", 207, False),
+        ("1.16.5", 47, True),
+        ("1.16.5", 208, True),
+        ("1.20.1", -16, False),
+        ("1.20.1", 271, False),
+        ("1.20.1", -17, True),
+        ("1.20.1", 272, True),
+    )
+    for version, origin_y, should_error in cases:
+        state = create_default_state()
+        update_config(state, minecraft_version=version, origin_y=origin_y)
+
+        errors = validate_layout_options(state.config)
+
+        assert bool(errors) is should_error
+
+
+def test_gui_numeric_parsers_reject_non_finite_and_invalid_ranges() -> None:
+    for value in ("nan", "inf", "-inf"):
+        try:
+            parse_float(value, "Min distance", min_value=0)
+        except ValueError as exc:
+            assert "finite" in str(exc)
+        else:
+            raise AssertionError(f"{value!r} should be invalid")
+
+    try:
+        parse_float("-1", "Min distance", min_value=0)
+    except ValueError as exc:
+        assert "at least 0" in str(exc)
+    else:
+        raise AssertionError("negative min_distance should be invalid")
+
+    assert parse_float("0", "Min distance", min_value=0) == 0
+
+    try:
+        parse_int("0", "Max commands per function", min_value=1)
+    except ValueError as exc:
+        assert "at least 1" in str(exc)
+    else:
+        raise AssertionError("zero max commands should be invalid")
+
+    assert parse_int("10000", "Max commands per function", min_value=1) == 10000
 
 
 def test_track_based_gui_fixed_options_are_not_exposed_and_are_resolved() -> None:
@@ -415,6 +470,18 @@ def test_datapack_group_enabled_by_output_format() -> None:
     assert datapack_group_enabled("schem") is False
 
 
+def test_output_datapack_advanced_controls_follow_output_format() -> None:
+    assert output_datapack_controls_enabled("datapack") is True
+    assert output_datapack_controls_enabled("both") is True
+    assert output_datapack_controls_enabled("schem") is False
+    assert DATAPACK_ADVANCED_FIELDS == (
+        "split_functions",
+        "max_commands_per_build_part",
+        "player_tp_window_length_blocks",
+        "player_tp_window_lateral_width_blocks",
+    )
+
+
 def test_datapack_name_default_and_manual_state() -> None:
     state = create_default_state()
 
@@ -542,3 +609,19 @@ def test_output_step_writes_datapack_name_to_config() -> None:
     )
 
     assert 'updates["datapack_name"] = self.state.datapack_name' in source
+
+
+def test_output_step_writes_split_player_tp_fields_and_avoids_refresh_loop() -> None:
+    source = Path("src/nbs2func/gui/steps/output_step.py").read_text(
+        encoding="utf-8"
+    )
+    on_change_source = source.split("def _on_format_change", 1)[1].split(
+        "def _build_form",
+        1,
+    )[0]
+
+    assert "max_commands_per_build_part" in source
+    assert "player_tp_window_length_blocks" in source
+    assert "player_tp_window_lateral_width_blocks" in source
+    assert "self.app.refresh()" not in on_change_source
+    assert "self.app._refresh_buttons()" in on_change_source

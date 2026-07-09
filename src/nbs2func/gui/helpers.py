@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from nbs2func.config import Nbs2FuncConfig, config_from_dict, config_to_dict
-from nbs2func.core.minecraft_version import supported_minecraft_versions
+from nbs2func.core.minecraft_version import (
+    MinecraftVersionError,
+    get_minecraft_version_profile,
+    supported_minecraft_versions,
+)
 
 
 GUI_MINECRAFT_VERSION_CHOICES = supported_minecraft_versions()
@@ -107,20 +112,70 @@ def infer_note_profile(config: Nbs2FuncConfig, current_profile: str) -> str:
     return "custom"
 
 
-def parse_int(value: str, label: str, *, allow_empty: bool = False) -> int | None:
+def parse_int(
+    value: str,
+    label: str,
+    *,
+    allow_empty: bool = False,
+    min_value: int | None = None,
+    max_value: int | None = None,
+) -> int | None:
     if value == "" and allow_empty:
         return None
     try:
-        return int(value)
+        parsed = int(value)
     except ValueError as exc:
         raise ValueError(f"{label} must be an integer.") from exc
+    if min_value is not None and parsed < min_value:
+        raise ValueError(f"{label} must be at least {min_value}.")
+    if max_value is not None and parsed > max_value:
+        raise ValueError(f"{label} must be at most {max_value}.")
+    return parsed
 
 
-def parse_float(value: str, label: str) -> float:
+def parse_float(
+    value: str,
+    label: str,
+    *,
+    min_value: float | None = None,
+    max_value: float | None = None,
+) -> float:
     try:
-        return float(value)
+        parsed = float(value)
     except ValueError as exc:
         raise ValueError(f"{label} must be a number.") from exc
+    if not math.isfinite(parsed):
+        raise ValueError(f"{label} must be a finite number.")
+    if min_value is not None and parsed < min_value:
+        raise ValueError(f"{label} must be at least {min_value}.")
+    if max_value is not None and parsed > max_value:
+        raise ValueError(f"{label} must be at most {max_value}.")
+    return parsed
+
+
+def origin_y_range_error(config: Nbs2FuncConfig) -> str | None:
+    try:
+        profile = get_minecraft_version_profile(config.minecraft_version)
+    except MinecraftVersionError as exc:
+        return str(exc)
+    sound_range = 48
+    min_origin_y = profile.min_build_y + sound_range
+    max_origin_y = profile.max_build_y - sound_range
+    if min_origin_y <= config.origin_y <= max_origin_y:
+        return None
+    return (
+        f"For Minecraft {profile.version_id}, origin Y must be chosen so that "
+        f"[origin_y - 48, origin_y + 48] stays within "
+        f"{profile.min_build_y}..{profile.max_build_y}."
+    )
+
+
+def validate_layout_options(config: Nbs2FuncConfig) -> list[str]:
+    errors: list[str] = []
+    origin_error = origin_y_range_error(config)
+    if origin_error is not None:
+        errors.append(origin_error)
+    return errors
 
 
 def absolute_path(value: str | Path) -> Path:

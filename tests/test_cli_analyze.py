@@ -117,6 +117,57 @@ def test_parser_accepts_datapack_name_argument() -> None:
     assert config.datapack_name == "Custom Pack"
 
 
+def test_cli_parser_covers_gui_exposed_config_fields() -> None:
+    parser = cli.build_parser()
+    option_strings = {
+        option
+        for action in parser._actions
+        for option in action.option_strings
+    }
+    expected_options = {
+        "--minecraft-version",
+        "--layout-mode",
+        "--direction",
+        "--origin-x",
+        "--origin-y",
+        "--origin-z",
+        "--output-format",
+        "--output",
+        "--datapack-name",
+        "--schematic-output",
+        "--schematic-name",
+        "--schematic-origin-mode",
+        "--function-namespace",
+        "--enable-starter-module",
+        "--command-block-x",
+        "--command-block-y",
+        "--command-block-z",
+        "--enable-playback-assist",
+        "--playback-player-name",
+        "--playback-vehicle-tag",
+        "--command-module-origin-x",
+        "--command-module-origin-y",
+        "--command-module-origin-z",
+        "--no-playback-buttons",
+        "--tempo-control-mode",
+        "--tempo-control-backend",
+        "--min-distance",
+        "--max-candidates-per-emitter",
+        "--retry-max-candidates-per-emitter",
+        "--max-candidate-y-layers",
+        "--max-candidate-lateral-positions",
+        "--radius-search-tolerance",
+        "--preferred-depth-sign",
+        "--depth-mirror-penalty",
+        "--no-split-functions",
+        "--max-commands-per-build-part",
+        "--player-tp-window-length-blocks",
+        "--player-tp-window-lateral-width-blocks",
+    }
+
+    assert expected_options <= option_strings
+
+
 def test_parser_accepts_minecraft_version_argument() -> None:
     exact_args = cli.build_parser().parse_args(
         ["song.nbs", "--minecraft-version", "1.16.5"]

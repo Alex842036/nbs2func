@@ -13,7 +13,9 @@ from nbs2func.gui.helpers import (
     infer_note_profile,
     parse_float,
     parse_int,
+    validate_layout_options,
 )
+from nbs2func.config import config_from_dict, config_to_dict
 from nbs2func.gui.state import update_config
 from nbs2func.gui.steps.base import (
     ScrollableFrame,
@@ -196,15 +198,27 @@ class LayoutOptionsStep(WizardStep):
             elif field == "track_id":
                 updates[field] = parse_int(str(value), label, allow_empty=True)
             elif field in int_fields:
-                updates[field] = parse_int(str(value), label)
+                updates[field] = parse_int(
+                    str(value),
+                    label,
+                    min_value=_INT_MIN_VALUES.get(field),
+                )
             elif field in float_fields:
-                updates[field] = parse_float(str(value), label)
+                updates[field] = parse_float(
+                    str(value),
+                    label,
+                    min_value=_FLOAT_MIN_VALUES.get(field),
+                )
             else:
                 updates[field] = str(value)
         self.state.note_based_profile = self.profile_var.get()
-        update_config(self.state, updates)
-        if self.state.config.layout_mode == "track_based_stereo":
-            self.state.config = apply_track_based_gui_defaults(self.state.config)
+        candidate = config_from_dict({**config_to_dict(self.state.config), **updates})
+        if candidate.layout_mode == "track_based_stereo":
+            candidate = apply_track_based_gui_defaults(candidate)
+        errors = validate_layout_options(candidate)
+        if errors:
+            raise ValueError("\n".join(errors))
+        self.state.config = candidate
         return True
 
     def status_text(self) -> str:
@@ -228,4 +242,17 @@ HELP_TEXT_BY_FIELD = {
     "preferred_depth_sign": "Preferred vertical depth direction before mirror fallback.",
     "depth_mirror_penalty": "Extra placement cost for mirrored depth candidates.",
     "enable_depth_mirror_candidates": "Allow mirrored vertical candidates when placing note emitters.",
+}
+
+
+_INT_MIN_VALUES = {
+    "max_candidates_per_emitter": 1,
+    "retry_max_candidates_per_emitter": 1,
+    "max_candidate_y_layers": 1,
+    "max_candidate_lateral_positions": 1,
+}
+
+_FLOAT_MIN_VALUES = {
+    "min_distance": 0.0,
+    "radius_search_tolerance": 0.0,
 }

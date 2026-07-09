@@ -120,7 +120,7 @@ class Nbs2FuncConfig:
     start_button_z: int | None = None
 
     split_functions: bool = True
-    max_commands_per_build_part: int = 500
+    max_commands_per_build_part: int = 65535
     schedule_delay_ticks_between_parts: int = 4
     build_player_name: str = "Alex842036"
     player_load_radius_chunks: int = 6

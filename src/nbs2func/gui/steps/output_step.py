@@ -12,6 +12,7 @@ from nbs2func.gui.helpers import (
     is_output_format_selectable,
     modules_require_runtime_logic,
     normalize_gui_config,
+    parse_int,
 )
 from nbs2func.gui.state import set_output_format, update_config
 from nbs2func.gui.steps.base import WizardStep, labeled_entry, labeled_option
@@ -21,6 +22,22 @@ OUTPUT_FORMAT_HELP = (
     "datapack generates mcfunction build logic; schem generates a WorldEdit "
     "schematic; both combines schematic blocks with mcfunction runtime logic."
 )
+
+DATAPACK_ADVANCED_FIELDS = (
+    "split_functions",
+    "max_commands_per_build_part",
+    "player_tp_window_length_blocks",
+    "player_tp_window_lateral_width_blocks",
+)
+FIELD_LABELS = {
+    "max_commands_per_build_part": "Max commands per function",
+    "player_tp_window_length_blocks": "Player-tp window length",
+    "player_tp_window_lateral_width_blocks": "Player-tp window lateral width",
+}
+
+
+def output_datapack_controls_enabled(output_format: str) -> bool:
+    return output_format in {"datapack", "both"}
 
 
 class OutputStep(WizardStep):
@@ -70,9 +87,16 @@ class OutputStep(WizardStep):
         self._sync_format_buttons()
         self._build_form()
 
-    def _var(self, field: str) -> tk.StringVar:
+    def _var(
+        self,
+        field: str,
+        kind: type[tk.Variable] = tk.StringVar,
+    ) -> tk.Variable:
         value = getattr(self.state.config, field)
-        variable = tk.StringVar(value="" if value is None else str(value))
+        if kind is tk.BooleanVar:
+            variable = tk.BooleanVar(value=bool(value))
+        else:
+            variable = tk.StringVar(value="" if value is None else str(value))
         self.vars[field] = variable
         return variable
 
@@ -97,10 +121,15 @@ class OutputStep(WizardStep):
         if not is_output_format_selectable(self.state.config, self.format_var.get()):
             self.format_var.set(fallback_output_format(self.state.config))
         set_output_format(self.state, self.format_var.get())
-        self._build_form()
-        self.app.refresh()
+        values = {field: variable.get() for field, variable in self.vars.items()}
+        datapack_name = self.datapack_name_var.get()
+        self._build_form(values)
+        self.datapack_name_var.set(datapack_name)
+        self._sync_format_buttons()
+        self.app._refresh_buttons()
+        self.app._refresh_status()
 
-    def _build_form(self) -> None:
+    def _build_form(self, preserved_values: dict[str, object] | None = None) -> None:
         for child in self.form.winfo_children():
             child.destroy()
         self.vars.clear()
@@ -160,6 +189,61 @@ class OutputStep(WizardStep):
             step=self,
         )
         self.datapack_widgets.append(namespace)
+        advanced = ttk.LabelFrame(
+            datapack,
+            text="Advanced datapack build options",
+            padding=8,
+        )
+        advanced.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        advanced.columnconfigure(1, weight=1)
+        split_check = ttk.Checkbutton(
+            advanced,
+            text="Split functions",
+            variable=self._var("split_functions", tk.BooleanVar),
+        )
+        split_check.grid(row=0, column=1, sticky="w", pady=3)
+        self.register_help(
+            split_check,
+            "Split functions keeps generated mcfunction files from becoming too large.",
+        )
+        self.datapack_widgets.append(split_check)
+        max_commands = labeled_entry(
+            advanced,
+            1,
+            "Max commands per function",
+            self._var("max_commands_per_build_part"),
+            help_text=(
+                "Controls how many commands go into each split build function part."
+            ),
+            step=self,
+        )
+        self.datapack_widgets.append(max_commands)
+        ttk.Label(
+            advanced,
+            text="Player-tp output mode is used when split functions are enabled.",
+        ).grid(row=2, column=1, sticky="w", pady=(8, 3))
+        window_length = labeled_entry(
+            advanced,
+            3,
+            "Player-tp window length",
+            self._var("player_tp_window_length_blocks"),
+            help_text=(
+                "Main-axis size of each player-tp build window for large structures."
+            ),
+            step=self,
+        )
+        self.datapack_widgets.append(window_length)
+        window_width = labeled_entry(
+            advanced,
+            4,
+            "Player-tp window lateral width",
+            self._var("player_tp_window_lateral_width_blocks"),
+            help_text=(
+                "Lateral size of each player-tp build window for large structures."
+            ),
+            step=self,
+        )
+        self.datapack_widgets.append(window_width)
 
         schematic = ttk.LabelFrame(self.form, text="Schematic output", padding=10)
         schematic.grid(row=1, column=0, sticky="ew")
@@ -210,11 +294,17 @@ class OutputStep(WizardStep):
                 ".minecraft/config/worldedit/schematics/"
             ),
         ).grid(row=3, column=1, sticky="w", pady=(8, 0))
+        if preserved_values:
+            for field, value in preserved_values.items():
+                if field in self.vars:
+                    self.vars[field].set(value)
         self._sync_group_states()
 
     def _sync_group_states(self) -> None:
         output_format = self.format_var.get()
-        datapack_state = "normal" if output_format in {"datapack", "both"} else "disabled"
+        datapack_state = (
+            "normal" if output_datapack_controls_enabled(output_format) else "disabled"
+        )
         schematic_state = "normal" if output_format in {"schem", "both"} else "disabled"
         for widget in self.datapack_widgets:
             widget.configure(state=datapack_state)
@@ -246,8 +336,26 @@ class OutputStep(WizardStep):
         )
         updates["datapack_name"] = self.state.datapack_name
         for field, variable in self.vars.items():
-            value = variable.get().strip()
-            if field == "output":
+            if (
+                field in DATAPACK_ADVANCED_FIELDS
+                and not output_datapack_controls_enabled(output_format)
+            ):
+                continue
+            raw_value = variable.get()
+            value = str(raw_value).strip()
+            if field == "split_functions":
+                updates[field] = bool(raw_value)
+            elif field in {
+                "max_commands_per_build_part",
+                "player_tp_window_length_blocks",
+                "player_tp_window_lateral_width_blocks",
+            }:
+                updates[field] = parse_int(
+                    str(value),
+                    FIELD_LABELS[field],
+                    min_value=1,
+                )
+            elif field == "output":
                 updates[field] = absolute_path_text(value)
             elif field == "schematic_output":
                 updates[field] = absolute_path_text(value or self.state.config.output)

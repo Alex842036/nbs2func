@@ -16,6 +16,7 @@ from nbs2func.gui.helpers import (
     default_schematic_name,
     modules_require_runtime_logic,
     normalize_gui_config,
+    validate_layout_options,
     validate_module_coordinates,
 )
 from nbs2func.generation import function_path_errors
@@ -148,6 +149,7 @@ def validate_ready_to_generate(state: WizardState) -> list[str]:
     ):
         errors.append("Tempo command mode requires playback assist.")
     errors.extend(validate_module_coordinates(state.config))
+    errors.extend(validate_layout_options(state.config))
     errors.extend(
         function_path_errors(
             state.config.function_namespace,
