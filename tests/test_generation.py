@@ -10,6 +10,7 @@ from nbs2func.generation import (
     GenerationDiagnostics,
     GenerationEvent,
     GenerationResult,
+    function_path_errors,
     generate_from_config,
     monotonic_overall_progress,
     overall_percent_for_stage,
@@ -407,6 +408,8 @@ def test_sanitize_output_folder_name_preserves_unicode_and_replaces_path_chars()
     assert sanitize_output_folder_name("bad/name") == "bad_name"
     assert sanitize_output_folder_name('bad:name*') == "bad_name_"
     assert sanitize_output_folder_name(" . ") == "nbs_song"
+    assert sanitize_output_folder_name("CON") == "CON_"
+    assert sanitize_output_folder_name("NUL") == "NUL_"
 
 
 def test_generate_from_config_uses_unicode_datapack_folder_name(
@@ -458,6 +461,78 @@ def test_generate_from_config_uses_unicode_datapack_folder_name(
     result = generate_from_config(config)
 
     assert result.datapack_path == tmp_path / "out" / "ザムザ"
+
+
+def test_function_path_validation_rules() -> None:
+    assert function_path_errors("nbs", "build") == []
+    assert function_path_errors("nbs.pack-1", "build/sub") == []
+    assert function_path_errors("My Namespace", "build")
+    assert function_path_errors("中文", "build")
+    assert function_path_errors("nbs", "Build Dir")
+
+
+def test_generate_from_config_uses_unicode_schematic_default_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    nbs_path = tmp_path / "ザムザ.nbs"
+    nbs_path.write_bytes(b"placeholder")
+    config = config_from_dict(
+        {
+            **default_config().__dict__,
+            "input_path": str(nbs_path),
+            "output": str(tmp_path / "out"),
+            "output_format": "schem",
+            "schematic_name": None,
+            "schematic_output": None,
+            "layout_mode": "basic_linear",
+            "tempo_control_mode": "none",
+        }
+    )
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr("nbs2func.generation.read_nbs", lambda path: _song())
+    monkeypatch.setattr(
+        "nbs2func.generation.build_layout_strategy",
+        lambda **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        "nbs2func.generation.layout_song",
+        lambda song, strategy: _minimal_layout(),
+    )
+    monkeypatch.setattr(
+        "nbs2func.generation.total_track_length_from_layout",
+        lambda *args: 0,
+    )
+    monkeypatch.setattr(
+        "nbs2func.generation.build_generated_plan",
+        lambda layout, writer_config, **kwargs: GeneratedBuildPlan(blocks=()),
+    )
+    monkeypatch.setattr(
+        "nbs2func.generation.filter_generated_plan",
+        lambda plan, options: plan,
+    )
+    monkeypatch.setattr(
+        "nbs2func.generation.resolve_schematic_origin",
+        lambda plan, mode, origin: BlockPosition(0, 128, 0),
+    )
+
+    def fake_write_schematic(plan, output_path, **kwargs) -> Path:
+        captured["output_path"] = Path(output_path)
+        captured["schematic_name"] = kwargs.get("schematic_name")
+        schematic_path = Path(output_path) / f"{kwargs['schematic_name']}.schem"
+        schematic_path.parent.mkdir(parents=True, exist_ok=True)
+        schematic_path.write_text("schem", encoding="utf-8")
+        return schematic_path
+
+    monkeypatch.setattr("nbs2func.generation.write_schematic", fake_write_schematic)
+    monkeypatch.setattr("nbs2func.generation.schematic_warnings", lambda plan: ())
+
+    result = generate_from_config(config)
+
+    assert captured["output_path"] == tmp_path / "out"
+    assert captured["schematic_name"] == "ザムザ"
+    assert result.schematic_path == tmp_path / "out" / "ザムザ.schem"
 
 
 def test_generate_from_config_emits_error_and_reraises(

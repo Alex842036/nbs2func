@@ -297,14 +297,14 @@ def command_module_origin_error(config: Nbs2FuncConfig) -> str | None:
 
 
 def resolved_vehicle_spawn_position(config: Nbs2FuncConfig) -> tuple[int, int, int]:
+    if config.enable_playback_assist:
+        return offset_behind(starter_origin(config), config.direction, 1)
     if (
         config.vehicle_spawn_x is not None
         and config.vehicle_spawn_y is not None
         and config.vehicle_spawn_z is not None
     ):
         return config.vehicle_spawn_x, config.vehicle_spawn_y, config.vehicle_spawn_z
-    if config.enable_starter_module and config.enable_playback_assist:
-        return offset_behind(starter_origin(config), config.direction, 1)
     return offset_behind(layout_origin(config), config.direction, 10)
 
 

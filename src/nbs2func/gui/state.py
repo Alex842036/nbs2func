@@ -18,6 +18,7 @@ from nbs2func.gui.helpers import (
     normalize_gui_config,
     validate_module_coordinates,
 )
+from nbs2func.generation import function_path_errors
 
 
 @dataclass
@@ -40,6 +41,19 @@ def create_default_state() -> WizardState:
     return WizardState(
         config=config,
         datapack_name=default_datapack_folder_name(config),
+    )
+
+
+def create_state_from_config(
+    config: Nbs2FuncConfig,
+    *,
+    config_path: str | None = None,
+) -> WizardState:
+    normalized = normalize_gui_config(config)
+    return WizardState(
+        config=normalized,
+        config_path=config_path,
+        datapack_name=default_datapack_folder_name(normalized),
     )
 
 
@@ -126,12 +140,20 @@ def validate_ready_to_generate(state: WizardState) -> list[str]:
         errors.append(
             "Schem-only output is not compatible with starter or playback assist."
         )
+    if state.config.enable_playback_assist and not state.config.enable_starter_module:
+        errors.append("Playback assist requires starter module to be enabled.")
     if (
         state.config.tempo_control_mode == "command"
         and not state.config.enable_playback_assist
     ):
         errors.append("Tempo command mode requires playback assist.")
     errors.extend(validate_module_coordinates(state.config))
+    errors.extend(
+        function_path_errors(
+            state.config.function_namespace,
+            state.config.build_function_dir,
+        )
+    )
     return errors
 
 

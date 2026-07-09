@@ -98,6 +98,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Parent directory for the generated datapack. Defaults to output.",
     )
     parser.add_argument(
+        "--datapack-name",
+        default=None,
+        help=(
+            "Optional datapack output folder name. Defaults to the input NBS "
+            "file stem."
+        ),
+    )
+    parser.add_argument(
         "--output-format",
         choices=("datapack", "schem", "both"),
         default="datapack",
@@ -894,6 +902,7 @@ def _args_namespace_from_config(config: Nbs2FuncConfig) -> argparse.Namespace:
     return argparse.Namespace(
         file=config.input_path,
         output=config.output,
+        datapack_name=config.datapack_name,
         output_format=config.output_format,
         schematic_origin_mode=config.schematic_origin_mode,
         schematic_output=config.schematic_output,

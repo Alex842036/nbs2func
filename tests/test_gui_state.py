@@ -18,7 +18,13 @@ from nbs2func.gui.helpers import (
     resolve_gui_generation_config,
     resolved_command_module_origin,
     resolved_starter_origin,
+    resolved_vehicle_spawn_position,
     validate_module_coordinates,
+)
+from nbs2func.gui.steps.input_step import input_path_needs_reload
+from nbs2func.gui.steps.modules_step import (
+    module_int_fields_to_parse,
+    normalize_module_toggles,
 )
 from nbs2func.gui.steps.generate_step import (
     format_overall_progress,
@@ -27,6 +33,7 @@ from nbs2func.gui.steps.generate_step import (
     should_continue_polling,
 )
 from nbs2func.gui.state import (
+    create_state_from_config,
     create_default_state,
     load_input_song,
     set_layout_mode,
@@ -140,6 +147,15 @@ def test_gui_input_song_summary_loads_demo() -> None:
     assert isinstance(summary["layer_count"], int)
 
 
+def test_input_path_mismatch_requires_reload_after_successful_load() -> None:
+    state = create_default_state()
+    summary = load_input_song(state, "examples/demo.nbs")
+
+    assert input_path_needs_reload(str(summary["path"]), summary) is False
+    assert input_path_needs_reload("missing-file.nbs", summary) is True
+    assert input_path_needs_reload("", summary) is True
+
+
 def test_gui_generation_validation_checks_input_path() -> None:
     state = create_default_state()
     update_config(state, input_path="missing-file.nbs")
@@ -147,6 +163,18 @@ def test_gui_generation_validation_checks_input_path() -> None:
     errors = validate_ready_to_generate(state)
 
     assert "Select a valid .nbs input file." in errors
+
+
+def test_gui_ready_validation_checks_function_resource_paths() -> None:
+    state = create_default_state()
+    update_config(state, function_namespace="My Namespace")
+
+    assert any("function_namespace" in error for error in validate_ready_to_generate(state))
+
+    state = create_default_state()
+    update_config(state, build_function_dir="Build Dir")
+
+    assert any("build_function_dir" in error for error in validate_ready_to_generate(state))
 
 
 def test_track_based_gui_fixed_options_are_not_exposed_and_are_resolved() -> None:
@@ -293,6 +321,48 @@ def test_gui_generation_resolution_derives_playback_positions_from_starter() -> 
     ) == (-11, 128, 0)
 
 
+def test_vehicle_spawn_for_playback_assist_uses_starter_origin_by_direction() -> None:
+    cases = {
+        "east": ((-10, 128, 0), (-11, 128, 0)),
+        "west": ((10, 128, 0), (11, 128, 0)),
+        "south": ((0, 128, -10), (0, 128, -11)),
+        "north": ((0, 128, 10), (0, 128, 11)),
+    }
+    for direction, (starter, expected) in cases.items():
+        state = create_default_state()
+        update_config(
+            state,
+            enable_starter_module=True,
+            enable_playback_assist=True,
+            direction=direction,
+            command_block_x=starter[0],
+            command_block_y=starter[1],
+            command_block_z=starter[2],
+            vehicle_spawn_x=999,
+            vehicle_spawn_y=999,
+            vehicle_spawn_z=999,
+        )
+
+        assert resolved_vehicle_spawn_position(state.config) == expected
+
+
+def test_disabled_module_fields_are_not_parsed_when_modules_are_off() -> None:
+    assert module_int_fields_to_parse(
+        enable_starter_module=False,
+        enable_playback_assist=False,
+    ) == {"tempo_rate_decimals"}
+    assert "command_module_origin_x" not in module_int_fields_to_parse(
+        enable_starter_module=True,
+        enable_playback_assist=False,
+    )
+
+
+def test_playback_assist_toggle_depends_on_starter_module() -> None:
+    assert normalize_module_toggles(False, True) == (False, False)
+    assert normalize_module_toggles(True, True) == (True, True)
+    assert normalize_module_toggles(True, False) == (True, False)
+
+
 def test_starter_origin_defaults_follow_direction() -> None:
     cases = {
         "east": (-10, 128, 0),
@@ -353,6 +423,25 @@ def test_datapack_name_default_and_manual_state() -> None:
     state.datapack_name_user_modified = True
 
     assert state.datapack_name == "custom_pack"
+
+
+def test_create_state_from_loaded_config_resets_gui_only_flags() -> None:
+    old = create_default_state()
+    old.starter_origin_user_modified = True
+    old.command_module_origin_user_modified = True
+    old.datapack_name_user_modified = True
+    old.schematic_name_user_modified = True
+    update_config(old, datapack_name="Loaded Pack")
+
+    loaded = create_state_from_config(old.config, config_path="loaded.json")
+
+    assert loaded.config_path == "loaded.json"
+    assert loaded.datapack_name == "Loaded Pack"
+    assert loaded.input_song_summary is None
+    assert loaded.starter_origin_user_modified is False
+    assert loaded.command_module_origin_user_modified is False
+    assert loaded.datapack_name_user_modified is False
+    assert loaded.schematic_name_user_modified is False
 
 
 def test_gui_path_normalization_and_default_file_names() -> None:
@@ -439,6 +528,12 @@ def test_generate_step_no_longer_uses_subprocess_cli_stdout() -> None:
     assert "include_diagnostics=False" in source
     assert "event.kind == \"progress\"" in source
     assert "Current stage: Finished" in source
+
+
+def test_wizard_save_config_applies_current_step_before_writing() -> None:
+    source = Path("src/nbs2func/gui/wizard.py").read_text(encoding="utf-8")
+
+    assert "if not self.leave_current_step():" in source
 
 
 def test_output_step_writes_datapack_name_to_config() -> None:

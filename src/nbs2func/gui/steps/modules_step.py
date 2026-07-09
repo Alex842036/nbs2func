@@ -19,6 +19,40 @@ from nbs2func.gui.steps.base import (
 )
 
 
+def normalize_module_toggles(
+    enable_starter_module: bool,
+    enable_playback_assist: bool,
+) -> tuple[bool, bool]:
+    if not enable_starter_module:
+        return False, False
+    return True, bool(enable_playback_assist)
+
+
+def module_int_fields_to_parse(
+    *,
+    enable_starter_module: bool,
+    enable_playback_assist: bool,
+) -> set[str]:
+    fields = {"tempo_rate_decimals"}
+    if enable_starter_module:
+        fields.update(
+            {
+                "command_block_x",
+                "command_block_y",
+                "command_block_z",
+            }
+        )
+    if enable_playback_assist:
+        fields.update(
+            {
+                "command_module_origin_x",
+                "command_module_origin_y",
+                "command_module_origin_z",
+            }
+        )
+    return fields
+
+
 class ModulesStep(WizardStep):
     title = "Modules"
     help_text = "Configure optional runtime modules and tempo commands."
@@ -132,6 +166,7 @@ class ModulesStep(WizardStep):
             variable=self._var("enable_playback_assist", tk.BooleanVar),
             command=self._sync_module_controls,
         )
+        self.playback_check = playback_check
         playback_check.grid(row=0, column=1, sticky="w", pady=3)
         self.register_help(playback_check, HELP_TEXT_BY_FIELD["enable_playback_assist"])
         row = 1
@@ -189,11 +224,16 @@ class ModulesStep(WizardStep):
         self._sync_module_controls()
 
     def _sync_module_controls(self) -> None:
-        starter_state = (
-            "normal" if bool(self.vars["enable_starter_module"].get()) else "disabled"
+        starter_enabled = bool(self.vars["enable_starter_module"].get())
+        if not starter_enabled:
+            self.vars["enable_playback_assist"].set(False)
+        playback_enabled = starter_enabled and bool(
+            self.vars["enable_playback_assist"].get()
         )
-        playback_state = (
-            "normal" if bool(self.vars["enable_playback_assist"].get()) else "disabled"
+        starter_state = "normal" if starter_enabled else "disabled"
+        playback_state = "normal" if playback_enabled else "disabled"
+        self.playback_check.configure(
+            state="normal" if starter_enabled else "disabled"
         )
         for widget in self.starter_widgets:
             widget.configure(state=starter_state)
@@ -201,15 +241,18 @@ class ModulesStep(WizardStep):
             widget.configure(state=playback_state)
 
     def apply(self) -> bool:
-        int_fields = {
-            "command_block_x",
-            "command_block_y",
-            "command_block_z",
-            "command_module_origin_x",
-            "command_module_origin_y",
-            "command_module_origin_z",
-            "tempo_rate_decimals",
-        }
+        starter_enabled, playback_enabled = normalize_module_toggles(
+            bool(self.vars["enable_starter_module"].get()),
+            bool(self.vars["enable_playback_assist"].get()),
+        )
+        if bool(self.vars["enable_playback_assist"].get()) and not starter_enabled:
+            self.app.status_var.set(
+                "Playback assist requires starter module to be enabled."
+            )
+        int_fields = module_int_fields_to_parse(
+            enable_starter_module=starter_enabled,
+            enable_playback_assist=playback_enabled,
+        )
         optional_int_fields = {
             "command_module_origin_x",
             "command_module_origin_y",
@@ -235,14 +278,26 @@ class ModulesStep(WizardStep):
         for field, variable in self.vars.items():
             value = variable.get()
             if field in bool_fields:
-                updates[field] = bool(value)
+                if field == "enable_starter_module":
+                    updates[field] = starter_enabled
+                elif field == "enable_playback_assist":
+                    updates[field] = playback_enabled
+                else:
+                    updates[field] = bool(value)
             elif field in int_fields:
                 updates[field] = parse_int(
                     str(value),
                     self.field_labels.get(field, field),
                     allow_empty=field in optional_int_fields,
                 )
-            else:
+            elif field not in {
+                "command_block_x",
+                "command_block_y",
+                "command_block_z",
+                "command_module_origin_x",
+                "command_module_origin_y",
+                "command_module_origin_z",
+            }:
                 updates[field] = str(value)
         updates["game_ticks_per_song_tick"] = 4
         update_config(self.state, updates)
@@ -275,7 +330,7 @@ HELP_TEXT_BY_FIELD = {
     "command_block_x": "Starter origin is the start command block X. It must be behind the layout origin for the selected direction.",
     "command_block_y": "Starter origin Y is the height of the start command block.",
     "command_block_z": "Starter origin is the start command block Z. It must be behind the layout origin for the selected direction.",
-    "enable_playback_assist": "Playback assist adds minecart runtime logic for starting playback.",
+    "enable_playback_assist": "Playback assist adds minecart runtime logic for starting playback. It requires starter module to be enabled.",
     "playback_player_name": "Player name used by playback assist scoreboard commands.",
     "playback_vehicle_tag": "Entity tag assigned to the playback minecart.",
     "command_module_origin_x": "Command module origin is the playback assist command block area X. It must be further behind starter origin.",

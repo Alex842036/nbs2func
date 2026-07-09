@@ -9,6 +9,24 @@ from nbs2func.gui.state import load_input_song
 from nbs2func.gui.steps.base import WizardStep
 
 
+def loaded_input_path(summary: dict[str, object] | None) -> Path | None:
+    if summary is None:
+        return None
+    raw_path = summary.get("path")
+    if not raw_path:
+        return None
+    return Path(str(raw_path)).expanduser().resolve()
+
+
+def input_path_needs_reload(
+    selected_text: str,
+    summary: dict[str, object] | None,
+) -> bool:
+    if not selected_text.strip():
+        return True
+    return Path(selected_text).expanduser().resolve() != loaded_input_path(summary)
+
+
 class InputStep(WizardStep):
     title = "Input"
     help_text = "Choose an Open Note Block Studio .nbs file and load its song summary."
@@ -48,6 +66,8 @@ class InputStep(WizardStep):
         self.path_var.set(absolute_path_text(self.state.config.input_path))
         if self.state.input_song_summary is not None:
             self._render_summary()
+        else:
+            self.summary_var.set("No song loaded.")
 
     def browse(self) -> None:
         path = filedialog.askopenfilename(
@@ -58,19 +78,44 @@ class InputStep(WizardStep):
             self.path_var.set(absolute_path_text(path))
             self.load_path()
 
-    def load_path(self) -> None:
+    def load_path(self) -> bool:
         self.error_var.set("")
+        raw_path = self.path_var.get().strip()
+        if not raw_path:
+            self.state.input_song_summary = None
+            self.summary_var.set("No song loaded.")
+            self.error_var.set("Choose an .nbs file before loading.")
+            self.app._refresh_buttons()
+            self.app._refresh_status()
+            return False
+        path = Path(raw_path).expanduser().resolve()
+        if not path.exists():
+            self.state.input_song_summary = None
+            self.summary_var.set("No song loaded.")
+            self.error_var.set(f"NBS file does not exist: {path}")
+            self.app._refresh_buttons()
+            self.app._refresh_status()
+            return False
+        if not path.is_file():
+            self.state.input_song_summary = None
+            self.summary_var.set("No song loaded.")
+            self.error_var.set(f"NBS path is not a file: {path}")
+            self.app._refresh_buttons()
+            self.app._refresh_status()
+            return False
         try:
-            load_input_song(self.state, self.path_var.get())
+            load_input_song(self.state, path)
         except Exception as exc:  # Keep GUI alive for malformed preview inputs.
             self.state.input_song_summary = None
             self.error_var.set(f"Could not read NBS file: {exc}")
             self.summary_var.set("No song loaded.")
-            self.app.refresh()
-            return
+            self.app._refresh_buttons()
+            self.app._refresh_status()
+            return False
         self.path_var.set(self.state.config.input_path)
         self._render_summary()
         self.app.refresh()
+        return True
 
     def _render_summary(self) -> None:
         summary = self.state.input_song_summary or {}
@@ -97,16 +142,10 @@ class InputStep(WizardStep):
         )
 
     def apply(self) -> bool:
-        selected_path = Path(self.path_var.get()).expanduser().resolve()
-        loaded_path = None
-        if self.state.input_song_summary is not None:
-            raw_loaded_path = self.state.input_song_summary.get("path")
-            loaded_path = (
-                Path(str(raw_loaded_path)).expanduser().resolve()
-                if raw_loaded_path
-                else None
-            )
-        if selected_path.is_file() and selected_path != loaded_path:
+        if input_path_needs_reload(
+            self.path_var.get(),
+            self.state.input_song_summary,
+        ):
             self.load_path()
         if not self.is_complete():
             messagebox.showerror("Input required", "Select a readable .nbs file first.")

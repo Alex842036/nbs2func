@@ -99,6 +99,22 @@ def test_parser_keeps_existing_cli_arguments_available() -> None:
     assert args.layout_mode == "basic_linear"
     assert args.minecraft_version == "1.16.5"
     assert args.output == "build"
+    assert args.datapack_name is None
+
+
+def test_parser_accepts_datapack_name_argument() -> None:
+    parser = cli.build_parser()
+    args = parser.parse_args(["song.nbs", "--datapack-name", "Custom Pack"])
+    config = cli.resolve_config_from_args(
+        args,
+        cli._explicit_cli_destinations(
+            parser,
+            ["song.nbs", "--datapack-name", "Custom Pack"],
+        ),
+    )
+
+    assert args.datapack_name == "Custom Pack"
+    assert config.datapack_name == "Custom Pack"
 
 
 def test_parser_accepts_minecraft_version_argument() -> None:

@@ -83,6 +83,16 @@ class GenerationDiagnostics:
 
 
 ProgressCallback = Callable[[GenerationEvent], None]
+FUNCTION_NAMESPACE_RE = re.compile(r"^[a-z0-9._-]+$")
+BUILD_FUNCTION_DIR_RE = re.compile(r"^[a-z0-9._/-]+$")
+WINDOWS_RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
 
 
 def emit(
@@ -199,6 +209,7 @@ def generate_from_config(
         emit(progress_callback, "phase", "Validating config...")
         emit_progress("validate_config", "Validating config", current=0, total=1)
         version_profile = get_minecraft_version_profile(args.minecraft_version)
+        validate_function_paths(args.function_namespace, args.build_function_dir)
         if args.tempo_control_mode == "command" and not args.enable_playback_assist:
             raise ValueError(
                 "--tempo-control-mode command requires --enable-playback-assist so "
@@ -420,14 +431,18 @@ def generate_from_config(
             schematic_output = (
                 Path(args.schematic_output)
                 if args.schematic_output is not None
-                else output_root / f"{sanitize_datapack_name(path.stem)}.schem"
+                else output_root
             )
+            schematic_output_is_file = schematic_output.suffix.lower() == ".schem"
+            schematic_name = args.schematic_name
+            if schematic_name is None and not schematic_output_is_file:
+                schematic_name = sanitize_output_folder_name(path.stem)
             schematic_path = write_schematic(
                 schematic_plan,
                 schematic_output,
                 version_profile=version_profile,
                 schematic_origin=schematic_origin,
-                schematic_name=args.schematic_name,
+                schematic_name=schematic_name,
             )
             emit_progress(
                 "write_schematic",
@@ -509,7 +524,44 @@ def sanitize_output_folder_name(name: str) -> str:
         for char in name
     )
     cleaned = cleaned.strip().strip(".")
-    return cleaned or "nbs_song"
+    if not cleaned:
+        return "nbs_song"
+    if cleaned.upper() in WINDOWS_RESERVED_NAMES:
+        return f"{cleaned}_"
+    return cleaned
+
+
+def function_path_errors(
+    function_namespace: str,
+    build_function_dir: str,
+) -> list[str]:
+    errors: list[str] = []
+    if (
+        not function_namespace
+        or FUNCTION_NAMESPACE_RE.fullmatch(function_namespace) is None
+    ):
+        errors.append(
+            "function_namespace must contain only lowercase letters, digits, '.', "
+            "'_', or '-'."
+        )
+    if (
+        not build_function_dir
+        or BUILD_FUNCTION_DIR_RE.fullmatch(build_function_dir) is None
+    ):
+        errors.append(
+            "build_function_dir must contain only lowercase letters, digits, '.', "
+            "'_', '-', or '/'."
+        )
+    return errors
+
+
+def validate_function_paths(
+    function_namespace: str,
+    build_function_dir: str,
+) -> None:
+    errors = function_path_errors(function_namespace, build_function_dir)
+    if errors:
+        raise ValueError("\n".join(errors))
 
 
 def _clean_datapack_build_dir(

@@ -6,10 +6,10 @@ from tkinter import filedialog, messagebox, ttk
 from typing import TYPE_CHECKING
 
 from nbs2func.config import load_config, save_config
-from nbs2func.gui.helpers import normalize_gui_config
 from nbs2func.gui.state import (
     WizardState,
     create_default_state,
+    create_state_from_config,
     load_input_song,
     validate_ready_to_generate,
 )
@@ -275,24 +275,33 @@ class WizardApp(tk.Tk):
         if not path:
             return
         try:
-            self.state_data.config = normalize_gui_config(load_config(path))
-            self.state_data.config_path = path
-            input_path = self.state_data.config.input_path
+            new_state = create_state_from_config(load_config(path), config_path=path)
+            input_path = new_state.config.input_path
             if Path(input_path).is_file():
-                load_input_song(self.state_data, input_path)
+                try:
+                    load_input_song(new_state, input_path)
+                except Exception as exc:
+                    new_state.input_song_summary = None
+                    messagebox.showerror("Load Config", f"Could not read input: {exc}")
+            self.state_data = new_state
         except (OSError, ValueError) as exc:
             messagebox.showerror("Load Config", str(exc))
             return
-        self.max_unlocked_index = max(self.max_unlocked_index, 1)
-        self.refresh()
+        self.max_unlocked_index = 1 if self.state_data.input_song_summary else 0
+        self.generate_unlocked = False
+        self._display_step(0)
 
     def save_config_file(self) -> None:
         if self.state_data.config_path is None:
             self.save_config_as()
             return
+        if not self.leave_current_step():
+            return
         self._save_to_path(self.state_data.config_path)
 
     def save_config_as(self) -> None:
+        if not self.leave_current_step():
+            return
         path = filedialog.asksaveasfilename(
             title="Save nbs2func config",
             defaultextension=".json",

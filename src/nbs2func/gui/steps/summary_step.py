@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import ttk
 
-from nbs2func.config import save_config
 from nbs2func.gui.state import summary_lines, validate_ready_to_generate
 from nbs2func.gui.steps.base import WizardStep
 
@@ -37,22 +36,7 @@ class SummaryStep(WizardStep):
         self.text.configure(state="disabled")
 
     def save_config(self) -> None:
-        path = self.state.config_path
-        if path is None:
-            path = filedialog.asksaveasfilename(
-                title="Save nbs2func config",
-                defaultextension=".json",
-                filetypes=(("JSON config", "*.json"), ("All files", "*.*")),
-            )
-        if not path:
-            return
-        try:
-            save_config(self.state.config, path)
-        except OSError as exc:
-            messagebox.showerror("Save Config", str(exc))
-            return
-        self.state.config_path = path
-        self.app.status_var.set(f"Saved config: {path}")
+        self.app.save_config_file()
 
     def is_complete(self) -> bool:
         return not validate_ready_to_generate(self.state)
