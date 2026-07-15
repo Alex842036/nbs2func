@@ -659,6 +659,29 @@ def test_wizard_exit_routes_use_one_close_handler() -> None:
     assert 'label="Exit", command=self.request_close' in source
 
 
+def test_summary_and_generate_navigation_buttons_are_not_duplicated() -> None:
+    summary_source = Path("src/nbs2func/gui/steps/summary_step.py").read_text(
+        encoding="utf-8"
+    )
+    wizard_source = Path("src/nbs2func/gui/wizard.py").read_text(encoding="utf-8")
+
+    assert 'text="Save Config"' in summary_source
+    assert 'text="Generate"' not in summary_source
+    assert 'text="Generate", command=self.go_generate' in wizard_source
+    assert 'text="Finish"' in wizard_source
+    assert "command=self.request_close" in wizard_source
+    assert "Back to Summary" not in wizard_source
+    assert "def back_to_summary" not in wizard_source
+    assert "self.show_step(self.current_index - 1)" in wizard_source
+
+
+def test_generate_navigation_buttons_follow_generation_running_state() -> None:
+    source = Path("src/nbs2func/gui/wizard.py").read_text(encoding="utf-8")
+
+    assert "self.current_index > 0 and not self.generation_running" in source
+    assert "current.is_complete() and not self.generation_running" in source
+
+
 def test_existing_datapack_confirmation_follows_output_format(tmp_path: Path) -> None:
     state = create_default_state()
     target = tmp_path / "out" / "Preview Pack"

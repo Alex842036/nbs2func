@@ -218,8 +218,8 @@ class WizardApp(tk.Tk):
             self.next_button.configure(text="Generate", command=self.go_generate)
         elif self.current_index == len(self.steps) - 1:
             self.next_button.configure(
-                text="Back to Summary",
-                command=self.back_to_summary,
+                text="Finish",
+                command=self.request_close,
             )
         else:
             self.next_button.configure(text="Next >", command=self.next)
@@ -258,9 +258,6 @@ class WizardApp(tk.Tk):
         generate_step = self.steps[-1]
         if hasattr(generate_step, "start_generation"):
             generate_step.start_generation()
-
-    def back_to_summary(self) -> None:
-        self.show_step(len(self.steps) - 2)
 
     def new_config(self) -> None:
         if self.generation_running:

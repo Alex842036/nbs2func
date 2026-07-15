@@ -21,9 +21,6 @@ class SummaryStep(WizardStep):
         ttk.Button(actions, text="Save Config", command=self.save_config).grid(
             row=0, column=0, sticky="w"
         )
-        ttk.Button(actions, text="Generate", command=self.app.go_generate).grid(
-            row=0, column=1, sticky="w", padx=(8, 0)
-        )
 
     def on_show(self) -> None:
         self.text.configure(state="normal")
