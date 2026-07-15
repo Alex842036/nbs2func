@@ -1,407 +1,346 @@
 # nbs2func
 
-`nbs2func` converts Open Note Block Studio `.nbs` songs into Minecraft Java Edition datapacks / `.mcfunction` build functions for redstone note block music.
+**Current version: v0.1.0-gui-preview**
 
-Current status: **v0.1.0-preview**.
+`nbs2func` converts Open Note Block Studio `.nbs` songs into Minecraft Java
+Edition redstone note-block structures. It provides a Windows-focused Tkinter
+wizard, a full CLI, datapack build functions, and WorldEdit-compatible
+`.schem` output.
 
-The project is usable for preview builds, including large note-based stereo tests, but it is still experimental. Back up your world before running generated functions.
+## Preview Status
 
-## What it generates
+This is a preview release. The core generator, wizard GUI, datapack output,
+and schematic output are usable, but the project is not production-ready.
+`note_based_stereo` remains heuristic, and difficult or very large songs may
+require substantial CPU time and memory.
 
-`nbs2func` reads an `.nbs` file, computes note positions, and writes a generated datapack containing build functions. It can also write `.schem` files from the same structured block placement data. The generated outputs place:
+Back up your Minecraft world before executing generated build functions.
 
-- note blocks;
-- instrument blocks under note blocks;
-- support blocks for gravity blocks such as sand;
-- repeaters and track blocks;
-- optional starter structures;
-- optional minecart playback assist command blocks.
+## Platform And Requirements
 
-The default build output is still a split datapack designed for large structures. Instead of relying on `forceload`, the generated build function teleports a configured build player through build windows so nearby chunks can load before each batch of `setblock` commands runs.
+- Python 3.11 or newer.
+- Dependencies from `requirements.txt`, including `mcschematic` and `pytest`.
+- Minecraft Java Edition. Bedrock Edition is not supported.
+- Primary development and GUI testing platform: Windows.
 
-## Supported Minecraft versions
+`run_gui.bat` and `install_requirements.bat` are Windows helpers. Opening output
+folders from the GUI is currently supported only on Windows. The Python source
+may work on macOS or Linux, but GUI behavior there has not been fully verified.
 
-The project targets **Minecraft Java Edition 1.14+**. Older Java versions such as 1.12 and 1.13 are intentionally not supported.
+The repository is not currently a pip-installable package. Run it from the
+project root with `PYTHONPATH=src`.
 
-Currently implemented version profiles:
+## Windows GUI Quick Start
 
-| CLI value | Exact profile used | Datapack functions directory | Notes |
-|---|---:|---|---|
-| `1.14` or `1.14.4` | `1.14.4` | `data/<namespace>/functions/` | Supports the standard 1.14+ note block instrument set. |
-| `1.16` or `1.16.5` | `1.16.5` | `data/<namespace>/functions/` | Default and main tested baseline. |
-| `1.18` or `1.18.2` | `1.18.2` | `data/<namespace>/functions/` | Uses the newer world height range. |
-| `1.20` or `1.20.1` | `1.20.1` | `data/<namespace>/functions/` | Exact profile only; not a blanket claim for all 1.20.x versions. |
-| `1.21` or `1.21.1` | `1.21.1` | `data/<namespace>/function/` | Supports the 1.21 profile and copper note block instruments. |
+1. Install Python 3.11 or newer.
+2. Extract or clone this repository.
+3. Double-click `install_requirements.bat`.
+4. Double-click `run_gui.bat`.
 
-Aliases such as `1.20` select one explicit profile, currently `1.20.1`; they do **not** mean every patch version in that series is supported.
+`run_gui.bat` changes to the project root, sets `PYTHONPATH` to `src`, prefers
+`py -3`, and falls back to `python`.
 
-The selected version profile controls:
-
-- `pack.mcmeta` `pack_format`;
-- datapack function directory layout;
-- supported note block instruments;
-- supported instrument base blocks;
-- build height validation;
-- output module capability checks.
-
-If an input song uses an instrument or base block unsupported by the selected Minecraft version, generation fails instead of silently falling back to another sound.
-
-## Requirements
-
-- Python 3.11 or newer is recommended.
-- `mcschematic` is a standard runtime dependency for `.schem` output.
-- `pytest` is required only for running tests.
-
-Install for local development:
+Equivalent PowerShell commands:
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
-
-The repository is not packaged as an installable Python package yet. Use `PYTHONPATH=src` when running from source.
-
-## Quick start
-
-Run the bundled demo:
-
-```powershell
-$env:PYTHONPATH = "src"
-python main.py
-```
-
-Launch the preview wizard GUI:
-
-```powershell
+python -m pip install -r requirements.txt
 $env:PYTHONPATH = "src"
 python -m nbs2func.gui.app
 ```
 
-Generate from your own `.nbs` file:
+See [docs/gui.md](docs/gui.md) for the complete wizard guide.
+
+## CLI Quick Start
+
+Install dependencies and set the source path:
 
 ```powershell
+python -m pip install -r requirements.txt
 $env:PYTHONPATH = "src"
+```
+
+Generate the bundled demo with the default config:
+
+```powershell
+python main.py
+```
+
+Generate another song:
+
+```powershell
 python main.py path\to\song.nbs
 ```
 
-Choose a target Minecraft profile:
+Choose an output format or datapack build style:
 
 ```powershell
-$env:PYTHONPATH = "src"
-python main.py path\to\song.nbs --minecraft-version 1.16.5
-```
-
-Recommended preview command for a large stereo test:
-
-```powershell
-$env:PYTHONPATH = "src"
-python main.py path\to\song.nbs --minecraft-version 1.16.5 --layout-mode note_based_stereo --direction east --enable-playback-assist --playback-player-name YourName --build-player-name YourName
-```
-
-For a small single-file debug output:
-
-```powershell
-$env:PYTHONPATH = "src"
-python main.py examples\demo.nbs --layout-mode basic_linear --track-id 0 --no-split-functions
-```
-
-Generate a schematic instead of a datapack:
-
-```powershell
-$env:PYTHONPATH = "src"
 python main.py path\to\song.nbs --output-format schem
-```
-
-Generate both outputs:
-
-```powershell
-$env:PYTHONPATH = "src"
 python main.py path\to\song.nbs --output-format both
+python main.py path\to\song.nbs --datapack-build-style simple_chain
+python main.py path\to\song.nbs --datapack-build-style player_tp
 ```
 
-## Output layout
+Run `python main.py --help` for the complete CLI option list.
 
-By default, the output parent directory is `output/`. For an input file named `song.nbs`, the generated datapack root is usually:
+## GUI Workflow
+
+The wizard preserves one `Nbs2FuncConfig` while moving through seven steps:
+
+1. Input
+2. Layout
+3. Layout Options
+4. Modules
+5. Output
+6. Summary
+7. Generate
+
+Completed steps can be revisited from the step bar. Summary provides config
+saving and the bottom Generate action. Generate shows overall and current-stage
+progress, concise structured logs, output-folder actions, Generate another,
+Back, and Finish.
+
+The GUI calls the same `generate_from_config()` entry point as the CLI. It does
+not launch the CLI as a subprocess or parse CLI output.
+
+## Output Formats
+
+### `datapack`
+
+Writes a complete datapack containing `pack.mcmeta` and generated build
+functions. The datapack includes the main structure and any enabled modules.
+
+For Minecraft 1.14.4 through 1.20.1:
 
 ```text
-output/song/
+<datapack>/data/<namespace>/functions/<build_function_dir>/...
 ```
 
-For Minecraft versions using the legacy plural function directory, build functions are written under:
+For Minecraft 1.21.1:
 
 ```text
-output/song/data/nbs/functions/build/
+<datapack>/data/<namespace>/function/<build_function_dir>/...
 ```
 
-For profiles using the newer singular directory layout, such as `1.21.1`, build functions are written under:
+### `schem`
 
-```text
-output/song/data/nbs/function/build/
-```
+Writes a `.schem` from the same structured block plan used by datapack output.
+The default file name comes from the input NBS stem and preserves Unicode.
+Schematic coordinates use `generation_origin` by default; `min_corner` is also
+available.
 
-The entry function is still called with the same function namespace/path form in-game:
+Schem-only output contains the main redstone structure. Starter and playback
+assist depend on runtime logic and are not included. The GUI prevents this
+incompatible combination.
 
-```mcfunction
-/function nbs:build/start
-```
+### `both`
 
-For split output, the generated datapack contains:
+Writes complementary outputs:
 
-```text
-pack.mcmeta
-data/nbs/functions/build/...   # or data/nbs/function/build/... for profiles that use singular paths
-```
+- The `.schem` contains the full block structure, including module command
+  blocks and their NBT where supported.
+- The datapack contains runtime-only commands such as scoreboard, summon,
+  execute, and entity setup.
+- The datapack does not duplicate the main note-block/repeater structure.
+- Summoned entities such as armor stands and minecarts are not embedded as live
+  schematic entities; runtime commands create them.
 
-For `.schem` output, the default file is written next to the datapack output parent:
+## Datapack Build Styles
 
-```text
-output/song.schem
-```
+### `simple_chain`
 
-Schematic coordinates are relative to the generation origin by default. In `--output-format schem`, the schematic contains the main redstone music structure only; starter and playback assist modules are skipped because they require runtime `.mcfunction` logic. In `--output-format both`, the schematic contains all blocks, including starter/playback command blocks with NBT, while the generated `.mcfunction` output contains only runtime commands such as scoreboard setup and entity summons. Starter armor stand marker entities are not written into `.schem` files.
+- Splits large command output into directly connected mcfunction files.
+- Each file contains at most 65535 commands.
+- Non-final files reserve one command for calling the next function file.
+- Does not teleport the player, wait for chunks, use player-tp windows, or add
+  scheduled delays between parts.
+- Requires the target area to remain loaded.
+- Best for smaller builds, testing, or controlled loaded areas.
 
-## Using the datapack in Minecraft
+### `player_tp`
 
-1. Generate the datapack.
-2. Copy the generated datapack folder into your world’s `datapacks/` directory.
-3. Enter the world.
-4. Run:
+- Default GUI and config build style.
+- Divides the build into spatial windows.
+- Teleports the configured build player to each window.
+- Waits for nearby chunks to load and runs scheduled command parts.
+- Adds more helper commands and takes more ticks.
+- Recommended for large structures.
+
+Do not leave the dimension, disconnect the build player, or interrupt a
+player-tp build while it is running.
+
+`--no-split-functions` remains a compatibility alias for `simple_chain`. New
+commands should use `--datapack-build-style simple_chain` or
+`--datapack-build-style player_tp`.
+
+## Layout Modes
+
+### `basic_linear`
+
+Generates one selected track as a straight redstone line. It is mainly useful
+for small structures, parser checks, and debugging. Songs with multiple
+non-empty tracks require a track id.
+
+### `track_based_stereo`
+
+Assigns each NBS layer/track a stable spatial position from its volume and
+panning. It supports per-track center splitting and is simpler and generally
+more predictable than note-level stereo.
+
+### `note_based_stereo`
+
+The default preview layout. Each note emitter receives a target derived from
+final volume and panning, then uses rail-slot candidate generation, assignment,
+validation, and retries. This mode is heuristic: complex songs are not
+guaranteed to receive an ideal arrangement, and large inputs can be expensive.
+
+See [docs/modes.md](docs/modes.md) for detailed controls and limitations.
+
+## Optional Modules
+
+### Starter module
+
+Adds synchronized starter cells and a command block used to begin the generated
+music structure.
+
+### Playback assist
+
+Adds minecart-based playback runtime logic, scoreboard state, Prepare/Start
+controls, and movement commands. In the GUI, playback assist requires the
+starter module. Player names, tags, module positions, and related advanced
+settings are available through config and CLI options.
+
+Runtime-dependent modules cannot be used with schem-only output in the GUI.
+Choose `datapack` or `both` instead.
+
+## Tempo Control
+
+Tempo control uses the shared timing model in `core/tempo_control.py`:
+
+- `none`: does not calculate or apply tempo-control behavior.
+- `report`: the default safe mode. Calculates and reports a recommended
+  Minecraft tick rate without changing the world tick rate.
+- `command`: requires playback assist and inserts tick-rate commands into the
+  playback start/reset logic. Resetting to 20 TPS after playback is configurable.
+
+Backends:
+
+- `auto` selects the backend from the exact Minecraft version profile.
+- Older supported profiles use Carpet-compatible tick-rate commands.
+- The 1.21.1 profile uses the supported vanilla tick-rate command profile.
+
+The user still needs suitable permissions and any required mod or server
+capability. Not every supported Minecraft version provides a native `/tick`
+command.
+
+## Supported Minecraft Versions
+
+| Exact profile | CLI aliases | Pack format | Build height | Function directory | Tempo backend |
+|---|---|---:|---:|---|---|
+| `1.14.4` | `1.14`, `1.14.x` | 4 | `0..255` | `functions/` | Carpet-compatible |
+| `1.16.5` | `1.16`, `1.16.x` | 6 | `0..255` | `functions/` | Carpet-compatible |
+| `1.18.2` | `1.18`, `1.18.x` | 9 | `-64..319` | `functions/` | Carpet-compatible |
+| `1.20.1` | `1.20` | 15 | `-64..319` | `functions/` | Carpet-compatible |
+| `1.21.1` | `1.21` | 48 | `-64..319` | `function/` | Vanilla profile |
+
+Aliases select one exact profile; they are not compatibility promises for an
+entire patch series. Profiles determine pack format, build height, instrument
+support, tempo backend, function-directory layout, and output capabilities.
+Unsupported instruments or base blocks fail generation rather than silently
+falling back.
+
+## Output And In-Game Use
+
+With the default namespace and build directory, install the generated datapack
+in the world's `datapacks` directory, then run:
 
 ```mcfunction
 /reload
 /function nbs:build/start
 ```
 
-For large builds, the default player-tp build mode:
+For WorldEdit, place generated `.schem` files in the schematic folder used by
+your WorldEdit installation, then load and paste them according to WorldEdit's
+commands. Back up the world first.
 
-1. teleports the configured build player to a build window;
-2. waits for chunks to load;
-3. runs scheduled build parts;
-4. moves to the next window;
-5. repeats until the build is complete.
+Before writing a datapack, nbs2func replaces the generated build-function
+directory it owns. The GUI asks before reusing an existing datapack root; the
+CLI overwrites automatically. Other namespaces under the datapack root are not
+removed by this cleanup.
 
-Do not switch dimensions, manually move far away, or interrupt the build while it is running.
+## Config Files And CLI Overrides
 
-## Layout modes
+Configuration precedence is:
 
-### `basic_linear`
+```text
+default_config()
+  -> --config JSON
+  -> explicit CLI arguments
+```
 
-Simple single-track redstone line layout.
-
-Use it for:
-
-- parser validation;
-- small debug output;
-- minimal single-track tests.
-
-If the NBS has multiple non-empty tracks, pass `--track-id`.
-
-### `track_based_stereo`
-
-Places each NBS track at a stable position derived from layer volume and stereo.
-
-Use it when you want:
-
-- a simpler stereo layout;
-- fixed per-track positions;
-- lower complexity than note-level stereo.
-
-### `note_based_stereo`
-
-Preview-quality rail-based note-level stereo layout. Each note computes a target position from final volume and final panning, then assigns the note emitter to an activation rail slot.
-
-This is the default layout mode and the current main development target. It has been tested on large 30k / 40k note NBS files, but it remains heuristic and can still require tuning for difficult songs.
-
-## Playback Assist
-
-The optional playback assist module generates a minecart-based playback helper.
-
-Enable it with:
+Useful config commands:
 
 ```powershell
---enable-playback-assist --playback-player-name YourName
+python main.py --dump-default-config
+python main.py path\to\song.nbs --save-config song-config.json
+python main.py --config song-config.json
 ```
 
-Typical flow:
+The GUI initializes from the same defaults, can load/save JSON config files,
+and sends the resulting `Nbs2FuncConfig` to the shared generator. CLI-only
+analysis and advanced diagnostic controls are intentionally not exposed in the
+wizard.
 
-1. Build the generated structure.
-2. Press the generated Prepare button to summon/reset the playback minecart and counters.
-3. Enter the minecart.
-4. Press the Start button.
-5. The command loop moves the minecart along the track while the starter system activates the music.
+## Known Limitations
 
-Useful parameters:
+- `note_based_stereo` remains heuristic.
+- Very large songs may use significant CPU time and memory.
+- There is no safe cancellation operation during generation.
+- Simple-chain builds do not load chunks or wait between function files.
+- Player-tp builds depend on a valid online build player and can be interrupted.
+- GUI testing and output-folder opening are currently Windows-focused.
+- Schematic files do not embed summoned entities as live schematic entities.
+- Manual arrangement and interactive 2D/3D editing are not implemented.
 
-```text
---enable-playback-assist
---playback-player-name
---playback-vehicle-tag
---music-start-x / --music-start-y / --music-start-z
---command-module-origin-x / --command-module-origin-y / --command-module-origin-z
---no-playback-buttons
-```
+See [docs/known_issues.md](docs/known_issues.md) before using generated output.
 
-## Common CLI options
+## Documentation
 
-General:
+- [GUI guide](docs/gui.md)
+- [Generation modes](docs/modes.md)
+- [Architecture](docs/architecture.md)
+- [Known issues](docs/known_issues.md)
+- [Changelog](CHANGELOG.md)
+- [Example files](examples/README.md)
 
-```text
---minecraft-version
---output
---output-format
---schematic-origin-mode
---schematic-output
---schematic-name
---layout-mode
---direction
---origin-x / --origin-y / --origin-z
---no-split-functions
-```
+## Development And Testing
 
-Stereo:
-
-```text
---max-hearing-distance
---min-distance
---max-stereo-angle-degrees
---center-split-policy
---center-split-override
-```
-
-Note-based stereo:
-
-```text
---max-candidates-per-emitter
---retry-max-candidates-per-emitter
---max-candidate-y-layers
---max-candidate-lateral-positions
---radius-search-tolerance
---disable-depth-mirror-candidates
---preferred-depth-sign
---depth-mirror-penalty
---profile
-```
-
-Player-tp build:
-
-```text
---build-player-name
---max-commands-per-build-part
---schedule-delay-ticks-between-parts
---player-tp-window-length-blocks
---player-tp-window-lateral-width-blocks
---player-tp-chunk-load-wait-ticks
---player-tp-after-build-wait-ticks
---build-tp-y
---build-finish-tp-x / --build-finish-tp-y / --build-finish-tp-z
-```
-
-Run `python main.py --help` for the complete option list.
-
-## Layout spatial analysis
-
-`nbs2func` also includes a read-only layout spatial analyzer. It can inspect layers, windows, density, pan, volume, and texture-like properties without generating a datapack.
+Run the complete test suite from the project root:
 
 ```powershell
 $env:PYTHONPATH = "src"
-python main.py path\to\song.nbs --analyze-layout-spatial --analysis-detail summary
+python -m pytest
 ```
 
-Write analysis JSON to a file:
-
-```powershell
-$env:PYTHONPATH = "src"
-python main.py path\to\song.nbs --analyze-layout-spatial --analysis-detail full --analysis-output analysis.json
-```
-
-The old `--analyze-stereo` option has been removed.
-
-## Known limitations
-
-- `note_based_stereo` is still preview-quality and heuristic.
-- Large NBS files can take minutes to generate.
-- Large generated structures can take time to build in-game.
-- The split build mode teleports the configured build player between build windows.
-- Unsupported target-version instruments cause generation to fail; there is no silent fallback.
-- The project currently targets Minecraft Java Edition only, not Bedrock Edition.
-- Song tempo adaptation is not implemented yet. 
-
-
-## Project structure
-
-```text
-main.py
-src/nbs2func/
-  cli.py
-  config.py
-  core/
-    nbs_reader.py
-    models.py
-    minecraft_version.py
-    instrument_mapping.py
-    tempo_control.py
-  layout/
-    facade.py
-    basic.py
-    track_stereo.py
-    note_stereo.py
-  output/
-    block_builder.py
-    command_writer.py
-    models.py
-    schematic_writer.py
-  gui/
-    app.py
-    state.py
-    wizard.py
-    steps/
-  modules/
-    starter.py
-    playback_assist.py
-  analysis/
-    spatial_analyzer.py
-docs/
-examples/
-tests/
-```
-
-Key modules:
-
-- `core/nbs_reader.py`: reads `.nbs` files.
-- `core/models.py`: shared song, track, and note models.
-- `core/minecraft_version.py`: target version profiles and datapack metadata settings.
-- `core/instrument_mapping.py`: NBS/Minecraft instrument mapping and version validation.
-- `layout/`: layout strategies and note-based stereo rail preview logic.
-- `output/command_writer.py`: datapack and `.mcfunction` output.
-- `output/block_builder.py`: structured generated block placement data.
-- `output/schematic_writer.py`: `.schem` output.
-- `gui/`: preview tkinter wizard GUI driven by the shared config system.
-- `modules/starter.py`: optional starter activation module.
-- `modules/playback_assist.py`: optional minecart playback assist module.
-- `analysis/spatial_analyzer.py`: read-only spatial analysis.
-
-## Development notes
-
-The project favors small, output-preserving changes. For generation logic changes, run the test suite and compare output on a small `.nbs` before testing large files.
-
-Do not commit large `.nbs` files unless you have the rights to distribute them. The repository intentionally keeps only the tiny demo file by default.
+The project favors focused, output-preserving changes. Do not commit or publish
+NBS songs unless you have the right to redistribute them.
 
 ## Roadmap
 
-Possible future work:
+Possible future work, without release-date commitments:
 
-- further candidate generation performance optimization;
-- more detailed progress logging for large songs;
-- additional Minecraft Java version profiles;
-- `.schem` output;
-- GUI or visual preview tooling;
-- RCON or server-assisted build modes.
+- manual track/group arrangement mode;
+- manual override visualization;
+- performance improvements for very large note-based layouts;
+- safe cancellation or a process-based generation worker;
+- packaging and installable releases;
+- additional exact Minecraft version profiles;
+- optional 2D/3D layout visualization;
+- server-assisted or RCON workflows.
 
 ## License
 
-This project is licensed under the MIT License. See `LICENSE` for the full license text.
+This project is licensed under the MIT License. See [LICENSE](LICENSE).
 
-The MIT License applies to the `nbs2func` source code.
-
-Generated datapacks and `.mcfunction` files may contain musical arrangements derived from the input `.nbs` file. Users are responsible for ensuring they have the right to use, modify, and distribute their input songs and generated outputs.
+Generated datapacks, functions, and schematics may contain musical arrangements
+derived from the input NBS file. Users are responsible for the rights to use,
+modify, and distribute their songs and generated output.

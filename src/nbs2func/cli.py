@@ -95,7 +95,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-o",
         "--output",
         default=str(DEFAULT_OUTPUT_PATH),
-        help="Parent directory for the generated datapack. Defaults to output.",
+        help="Parent directory for generated output. Defaults to output.",
     )
     parser.add_argument(
         "--datapack-name",
@@ -110,9 +110,10 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("simple_chain", "player_tp"),
         default="player_tp",
         help=(
-            "Datapack build style. simple_chain writes a simple single function "
-            "chain without player teleport; player_tp uses segmented player-tp "
-            "build output. Defaults to player_tp."
+            "Datapack build style. simple_chain writes directly connected "
+            "function files without player teleport or scheduled delay; "
+            "player_tp uses segmented player-tp build output. Defaults to "
+            "player_tp."
         ),
     )
     parser.add_argument(
@@ -642,7 +643,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-split-functions",
         action="store_true",
-        help="Write one .mcfunction file instead of splitting large builds.",
+        help=(
+            "Legacy compatibility alias for --datapack-build-style "
+            "simple_chain."
+        ),
     )
     parser.add_argument(
         "--max-commands-per-build-part",
@@ -718,12 +722,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--function-namespace",
         default="nbs",
-        help="Function namespace for split output. Defaults to nbs.",
+        help="Function namespace for datapack output. Defaults to nbs.",
     )
     parser.add_argument(
         "--build-function-dir",
         default="build",
-        help="Function directory for split output. Defaults to build.",
+        help="Directory for generated build functions. Defaults to build.",
     )
     parser.add_argument(
         "--minecraft-version",

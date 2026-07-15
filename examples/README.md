@@ -1,10 +1,9 @@
 # Examples
 
-This directory is for small local test `.nbs` files.
-
-- `demo.nbs` is the default sample used when no input path is provided.
-- Do not commit NBS files unless you have the rights to distribute them.
-- Large test songs should stay local and should not be committed to the repo.
-
-The repository `.gitignore` ignores `examples/*.nbs` by default, except for
-`examples/demo.nbs`.
+- `demo.nbs` is the only distributed sample and is used when no input path is
+  supplied.
+- Other local `.nbs` files in this directory are ignored by Git.
+- Unicode NBS file names are supported for local input and output naming.
+- Commit or publish a song only if you have the right to redistribute it.
+- Generated datapacks, functions, and schematics are derived from the input song
+  and may have separate copyright or distribution considerations.
