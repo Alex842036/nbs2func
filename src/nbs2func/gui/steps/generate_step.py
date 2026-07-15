@@ -320,6 +320,12 @@ class GenerateStep(WizardStep):
             return
         try:
             os.startfile(folder)  # type: ignore[attr-defined]
+        except AttributeError:
+            messagebox.showerror(
+                "Open folder",
+                "Opening output folders is currently supported only on Windows "
+                "in this preview.",
+            )
         except OSError as exc:
             messagebox.showerror("Open folder", str(exc))
 

@@ -1,3 +1,2 @@
 mcschematic>=11.4,<12
-
-# Install development/test dependencies from requirements-dev.txt if needed.
+pytest>=8,<9

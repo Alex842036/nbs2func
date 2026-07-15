@@ -47,24 +47,78 @@ class CommandWriterSplitTest(unittest.TestCase):
             self.assertNotIn("tp Builder", text)
             self.assertNotIn("schedule function", text)
 
-    def test_no_split_output_rejects_too_many_simple_chain_commands(self) -> None:
+    def test_simple_chain_splits_at_command_limit_boundaries(self) -> None:
         layout = LayoutResult(
             mode="test",
             cells=(),
             notes=(),
             conflicts=(),
         )
+        expected_part_counts = {
+            0: 1,
+            1: 1,
+            65534: 1,
+            65535: 1,
+            65536: 2,
+            131069: 2,
+            131070: 3,
+        }
 
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            output_path = Path(tmp_dir) / "song.mcfunction"
-            writer = BasicMcfunctionWriter(CommandWriterConfig(split_functions=False))
+        for command_count, expected_part_count in expected_part_counts.items():
+            with self.subTest(command_count=command_count), tempfile.TemporaryDirectory() as tmp_dir:
+                output_path = Path(tmp_dir) / "start.mcfunction"
+                source_commands = [f"say command_{index}" for index in range(command_count)]
+                writer = BasicMcfunctionWriter(
+                    CommandWriterConfig(
+                        split_functions=False,
+                        function_namespace="nbs",
+                        build_function_dir="build",
+                    )
+                )
 
-            with patch.object(
-                BasicMcfunctionWriter,
-                "_lines",
-                return_value=["say hi"] * (SIMPLE_CHAIN_MAX_COMMANDS + 1),
-            ), self.assertRaisesRegex(ValueError, "Simple function chain"):
-                writer.write_file(layout, output_path)
+                with patch.object(
+                    BasicMcfunctionWriter,
+                    "_lines",
+                    return_value=source_commands,
+                ):
+                    result = writer.write_file(layout, output_path)
+
+                part_paths = [output_path, *sorted(Path(tmp_dir).glob("part_*.mcfunction"))]
+                self.assertEqual(len(part_paths), expected_part_count)
+                recovered_commands: list[str] = []
+                for index, part_path in enumerate(part_paths):
+                    part_commands = [
+                        line
+                        for line in part_path.read_text(encoding="utf-8").splitlines()
+                        if line.strip() and not line.lstrip().startswith("#")
+                    ]
+                    self.assertLessEqual(
+                        len(part_commands),
+                        SIMPLE_CHAIN_MAX_COMMANDS,
+                    )
+                    if index < len(part_paths) - 1:
+                        self.assertEqual(
+                            part_commands[-1],
+                            f"function nbs:build/part_{index + 1:03d}",
+                        )
+                        recovered_commands.extend(part_commands[:-1])
+                    else:
+                        self.assertFalse(
+                            part_commands
+                            and part_commands[-1].startswith("function nbs:build/part_")
+                        )
+                        recovered_commands.extend(part_commands)
+
+                self.assertEqual(recovered_commands, source_commands)
+                self.assertEqual(result.total_commands, command_count)
+                self.assertEqual(result.split_function_parts, len(part_paths))
+
+                all_text = "\n".join(
+                    path.read_text(encoding="utf-8") for path in part_paths
+                )
+                self.assertNotIn("tp @", all_text)
+                self.assertNotIn("schedule function", all_text)
+                self.assertNotIn("window_", all_text)
 
     def test_player_tp_output_writes_window_functions(self) -> None:
         layout = LayoutResult(

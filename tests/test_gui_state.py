@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
+from unittest.mock import patch
 
+from nbs2func import __version__
 from nbs2func.config import config_to_dict, load_config, save_config
 from nbs2func.generation import GenerationEvent
 from nbs2func.gui.helpers import (
@@ -48,6 +50,7 @@ from nbs2func.gui.state import (
     update_config,
     validate_ready_to_generate,
 )
+from nbs2func.gui.wizard import WizardApp
 
 
 def test_gui_state_can_be_created_from_default_config() -> None:
@@ -621,3 +624,91 @@ def test_output_step_writes_build_style_and_hides_internal_player_tp_fields() ->
     assert "player_tp_window_lateral_width_blocks" not in source
     assert "self.app.refresh()" not in on_change_source
     assert "self.app._refresh_buttons()" in on_change_source
+
+
+class _CloseAppStub:
+    def __init__(self, generation_running: bool) -> None:
+        self.generation_running = generation_running
+        self.destroyed = False
+
+    def destroy(self) -> None:
+        self.destroyed = True
+
+
+def test_wizard_close_handler_confirms_only_while_generation_is_running() -> None:
+    idle = _CloseAppStub(generation_running=False)
+    with patch("nbs2func.gui.wizard.messagebox.askyesno") as confirm:
+        WizardApp.request_close(idle)  # type: ignore[arg-type]
+    assert idle.destroyed is True
+    confirm.assert_not_called()
+
+    running = _CloseAppStub(generation_running=True)
+    with patch("nbs2func.gui.wizard.messagebox.askyesno", return_value=False):
+        WizardApp.request_close(running)  # type: ignore[arg-type]
+    assert running.destroyed is False
+
+    with patch("nbs2func.gui.wizard.messagebox.askyesno", return_value=True):
+        WizardApp.request_close(running)  # type: ignore[arg-type]
+    assert running.destroyed is True
+
+
+def test_wizard_exit_routes_use_one_close_handler() -> None:
+    source = Path("src/nbs2func/gui/wizard.py").read_text(encoding="utf-8")
+
+    assert 'self.protocol("WM_DELETE_WINDOW", self.request_close)' in source
+    assert 'label="Exit", command=self.request_close' in source
+
+
+def test_existing_datapack_confirmation_follows_output_format(tmp_path: Path) -> None:
+    state = create_default_state()
+    target = tmp_path / "out" / "Preview Pack"
+    target.mkdir(parents=True)
+    update_config(
+        state,
+        output=str(tmp_path / "out"),
+        datapack_name="Preview Pack",
+        output_format="datapack",
+    )
+    app = type("AppStub", (), {"state_data": state})()
+
+    with patch("nbs2func.gui.wizard.messagebox.askyesno", return_value=False) as confirm:
+        assert WizardApp._confirm_datapack_overwrite(app) is False  # type: ignore[arg-type]
+    confirm.assert_called_once()
+
+    update_config(state, output_format="both")
+    with patch("nbs2func.gui.wizard.messagebox.askyesno", return_value=True) as confirm:
+        assert WizardApp._confirm_datapack_overwrite(app) is True  # type: ignore[arg-type]
+    confirm.assert_called_once()
+
+    update_config(state, output_format="schem")
+    with patch("nbs2func.gui.wizard.messagebox.askyesno") as confirm:
+        assert WizardApp._confirm_datapack_overwrite(app) is True  # type: ignore[arg-type]
+    confirm.assert_not_called()
+
+    target.rmdir()
+    update_config(state, output_format="datapack")
+    with patch("nbs2func.gui.wizard.messagebox.askyesno") as confirm:
+        assert WizardApp._confirm_datapack_overwrite(app) is True  # type: ignore[arg-type]
+    confirm.assert_not_called()
+
+
+def test_gui_preview_version_and_windows_launchers_are_consistent() -> None:
+    assert __version__ == "0.1.0-gui-preview"
+    wizard_source = Path("src/nbs2func/gui/wizard.py").read_text(encoding="utf-8")
+    assert "from nbs2func import __version__" in wizard_source
+    assert "v0.1.0-" + "preview" not in wizard_source
+
+    run_gui = Path("run_gui.bat").read_text(encoding="utf-8")
+    install = Path("install_requirements.bat").read_text(encoding="utf-8")
+    assert "cd /d \"%~dp0\"" in run_gui
+    assert 'set "PYTHONPATH=%CD%\\src"' in run_gui
+    assert "-m nbs2func.gui.app" in run_gui
+    assert "requirements.txt" in install
+
+
+def test_requirements_use_one_file_without_dev_file_reference() -> None:
+    requirements = Path("requirements.txt").read_text(encoding="utf-8")
+
+    assert "mcschematic" in requirements
+    assert "pytest" in requirements
+    assert "requirements" + "-dev.txt" not in requirements

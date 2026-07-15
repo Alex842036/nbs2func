@@ -326,8 +326,7 @@ def generate_from_config(
             playback_debug = playback_assist_debug_info(playback_config)
 
         output_root = Path(args.output)
-        datapack_name = args.datapack_name or path.stem
-        datapack_root = output_root / sanitize_output_folder_name(datapack_name)
+        datapack_root = resolve_datapack_output_path(config)
         writer_output_path = datapack_root
         writer_config = _writer_config(
             args,
@@ -529,6 +528,12 @@ def sanitize_output_folder_name(name: str) -> str:
     if cleaned.upper() in WINDOWS_RESERVED_NAMES:
         return f"{cleaned}_"
     return cleaned
+
+
+def resolve_datapack_output_path(config: Nbs2FuncConfig) -> Path:
+    input_path = Path(config.input_path)
+    datapack_name = config.datapack_name or input_path.stem
+    return Path(config.output) / sanitize_output_folder_name(datapack_name)
 
 
 def function_path_errors(

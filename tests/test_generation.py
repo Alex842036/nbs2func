@@ -14,6 +14,7 @@ from nbs2func.generation import (
     generate_from_config,
     monotonic_overall_progress,
     overall_percent_for_stage,
+    resolve_datapack_output_path,
     sanitize_output_folder_name,
 )
 from nbs2func.layout.geometry import BlockPosition
@@ -400,6 +401,24 @@ def test_generate_from_config_uses_datapack_name(
     result = generate_from_config(config)
 
     assert result.datapack_path == tmp_path / "out" / "Custom Pack"
+
+
+def test_resolve_datapack_output_path_matches_generation_folder_rules(
+    tmp_path: Path,
+) -> None:
+    config = config_from_dict(
+        {
+            **default_config().__dict__,
+            "input_path": str(tmp_path / "Input Song.nbs"),
+            "output": str(tmp_path / "out"),
+            "datapack_name": "bad/name",
+        }
+    )
+
+    assert resolve_datapack_output_path(config) == tmp_path / "out" / "bad_name"
+
+    config = config_from_dict({**config.__dict__, "datapack_name": None})
+    assert resolve_datapack_output_path(config) == tmp_path / "out" / "Input Song"
 
 
 def test_sanitize_output_folder_name_preserves_unicode_and_replaces_path_chars() -> None:

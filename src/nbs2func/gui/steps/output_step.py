@@ -29,12 +29,14 @@ BUILD_STYLE_LABELS = {
 }
 BUILD_STYLE_HELP = {
     "simple_chain": (
-        "Fewer commands. No player teleport, no chunk-loading assist, "
-        "and no scheduled delay."
+        "Splits large builds into directly connected function files. It does "
+        "not teleport the player, wait for chunk loading, or delay between "
+        "parts. Use it when the target area is already loaded or the build is "
+        "relatively small."
     ),
     "player_tp": (
-        "Safer for large builds. Uses player teleport, chunk-load wait, "
-        "windows, and scheduled delay."
+        "Teleports the player between build windows and waits for chunks to "
+        "load. Recommended for large structures."
     ),
 }
 

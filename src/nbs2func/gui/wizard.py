@@ -5,7 +5,9 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import TYPE_CHECKING
 
+from nbs2func import __version__
 from nbs2func.config import load_config, save_config
+from nbs2func.generation import resolve_datapack_output_path
 from nbs2func.gui.state import (
     WizardState,
     create_default_state,
@@ -44,6 +46,7 @@ class WizardApp(tk.Tk):
         self.status_var = tk.StringVar(value="Select an NBS file to begin.")
         self.generate_unlocked = False
         self.generation_running = False
+        self.protocol("WM_DELETE_WINDOW", self.request_close)
 
         self._configure_styles()
         self._build_menu()
@@ -64,7 +67,7 @@ class WizardApp(tk.Tk):
         self.file_menu.add_command(label="Save Config", command=self.save_config_file)
         self.file_menu.add_command(label="Save Config As", command=self.save_config_as)
         self.file_menu.add_separator()
-        self.file_menu.add_command(label="Exit", command=self.destroy)
+        self.file_menu.add_command(label="Exit", command=self.request_close)
         menu.add_cascade(label="File", menu=self.file_menu)
 
         help_menu = tk.Menu(menu, tearoff=False)
@@ -248,6 +251,8 @@ class WizardApp(tk.Tk):
         if errors:
             messagebox.showerror("Cannot generate", "\n".join(errors))
             return
+        if not self._confirm_datapack_overwrite():
+            return
         self.generate_unlocked = True
         self._display_step(len(self.steps) - 1)
         generate_step = self.steps[-1]
@@ -323,7 +328,36 @@ class WizardApp(tk.Tk):
     def show_about(self) -> None:
         messagebox.showinfo(
             "About nbs2func",
-            "nbs2func v0.1.0-preview\nPreview wizard GUI for config-driven generation.",
+            f"nbs2func v{__version__}\nPreview wizard GUI for config-driven generation.",
+        )
+
+    def request_close(self) -> None:
+        if self.generation_running and not messagebox.askyesno(
+            "Generation is still running",
+            "Generation is still running.\n"
+            "Closing now may leave incomplete output files.\n\n"
+            "Exit anyway?",
+            icon="warning",
+            default=messagebox.NO,
+        ):
+            return
+        self.destroy()
+
+    def _confirm_datapack_overwrite(self) -> bool:
+        config = self.state_data.config
+        if config.output_format not in {"datapack", "both"}:
+            return True
+        datapack_path = resolve_datapack_output_path(config)
+        if not datapack_path.exists():
+            return True
+        return messagebox.askyesno(
+            "Replace existing datapack output?",
+            "The datapack folder already exists:\n\n"
+            f"{datapack_path}\n\n"
+            "nbs2func will replace its generated build function files.\n"
+            "Continue?",
+            icon="warning",
+            default=messagebox.NO,
         )
 
     def set_generation_running(self, running: bool) -> None:

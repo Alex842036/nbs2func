@@ -157,22 +157,14 @@ class BasicMcfunctionWriter:
         command_count = _command_count(lines)
 
         if not self.config.split_functions:
-            if command_count > SIMPLE_CHAIN_MAX_COMMANDS:
-                raise ValueError(
-                    "Simple function chain output would contain "
-                    f"{command_count} commands, exceeding the safe single-function "
-                    f"limit of {SIMPLE_CHAIN_MAX_COMMANDS}. Use player-tp "
-                    "segmented build for large structures."
-                )
-            if progress_callback is not None:
-                progress_callback(0, 1, "Writing datapack file")
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_text(_join_lines(lines), encoding="utf-8")
-            if progress_callback is not None:
-                progress_callback(1, 1, "Writing datapack file")
+            part_count = self._write_simple_function_chain_files(
+                lines,
+                output_path,
+                progress_callback=progress_callback,
+            )
             return CommandWriteResult(
                 total_commands=command_count,
-                split_function_parts=1,
+                split_function_parts=part_count,
             )
 
         debug = self._write_player_tp_build_files(
@@ -195,6 +187,46 @@ class BasicMcfunctionWriter:
         lines = self._lines(layout, plan)
         _validate_build_height(lines, self.config)
         return _join_lines(lines)
+
+    def _write_simple_function_chain_files(
+        self,
+        lines: list[str],
+        output_path: Path,
+        progress_callback: Callable[[int, int, str], None] | None = None,
+    ) -> int:
+        parts = _split_simple_chain_lines(lines, SIMPLE_CHAIN_MAX_COMMANDS)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        for old_part in output_path.parent.glob("part_*.mcfunction"):
+            old_part.unlink()
+
+        total_files = len(parts)
+        progress_message = (
+            "Writing datapack file"
+            if total_files == 1
+            else "Writing datapack files"
+        )
+        if progress_callback is not None:
+            progress_callback(0, total_files, progress_message)
+
+        for index, source_lines in enumerate(parts):
+            part_lines = list(source_lines)
+            if index < total_files - 1:
+                part_lines.append(
+                    _function_call(
+                        self.config.function_namespace,
+                        self.config.build_function_dir,
+                        f"part_{index + 1:03d}",
+                    )
+                )
+            part_path = (
+                output_path
+                if index == 0
+                else output_path.parent / f"part_{index:03d}.mcfunction"
+            )
+            part_path.write_text(_join_lines(part_lines), encoding="utf-8")
+            if progress_callback is not None:
+                progress_callback(index + 1, total_files, progress_message)
+        return total_files
 
     def _validate_config_capabilities(self, player_tp_build: bool | None = None) -> None:
         profile = self.config.minecraft_version_profile
@@ -539,6 +571,49 @@ def _is_command(line: str) -> bool:
 
 def _command_count(lines: list[str]) -> int:
     return sum(1 for line in lines if _is_command(line))
+
+
+def _split_simple_chain_lines(
+    lines: list[str],
+    max_commands: int = SIMPLE_CHAIN_MAX_COMMANDS,
+) -> list[list[str]]:
+    if max_commands < 2:
+        raise ValueError("Simple function chain command limit must be at least 2.")
+
+    total_commands = _command_count(lines)
+    if total_commands <= max_commands:
+        return [list(lines)]
+
+    non_final_capacity = max_commands - 1
+    additional_commands = total_commands - max_commands
+    non_final_parts = (
+        additional_commands + non_final_capacity - 1
+    ) // non_final_capacity
+    capacities = [non_final_capacity] * non_final_parts + [max_commands]
+
+    parts: list[list[str]] = []
+    current_lines: list[str] = []
+    current_commands = 0
+    capacity_index = 0
+    for line in lines:
+        if _is_command(line) and current_commands >= capacities[capacity_index]:
+            parts.append(current_lines)
+            current_lines = []
+            current_commands = 0
+            capacity_index += 1
+        current_lines.append(line)
+        if _is_command(line):
+            current_commands += 1
+    parts.append(current_lines)
+    return parts
+
+
+def _function_call(
+    namespace: str,
+    build_function_dir: str,
+    function_path: str,
+) -> str:
+    return f"function {namespace}:{build_function_dir}/{function_path}"
 
 
 def _build_command_unit_packets(lines: list[str]) -> list[_BuildCommandPacket]:
