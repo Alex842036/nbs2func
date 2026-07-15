@@ -1,8 +1,13 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from nbs2func.output.command_writer import BasicMcfunctionWriter, CommandWriterConfig
+from nbs2func.output.command_writer import (
+    BasicMcfunctionWriter,
+    CommandWriterConfig,
+    SIMPLE_CHAIN_MAX_COMMANDS,
+)
 from nbs2func.layout import (
     ActivationRail,
     ActivationSlot,
@@ -37,6 +42,29 @@ class CommandWriterSplitTest(unittest.TestCase):
 
             self.assertTrue(output_path.exists())
             self.assertFalse((Path(tmp_dir) / "data").exists())
+            text = output_path.read_text(encoding="utf-8")
+            self.assertNotIn("window_000", text)
+            self.assertNotIn("tp Builder", text)
+            self.assertNotIn("schedule function", text)
+
+    def test_no_split_output_rejects_too_many_simple_chain_commands(self) -> None:
+        layout = LayoutResult(
+            mode="test",
+            cells=(),
+            notes=(),
+            conflicts=(),
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_path = Path(tmp_dir) / "song.mcfunction"
+            writer = BasicMcfunctionWriter(CommandWriterConfig(split_functions=False))
+
+            with patch.object(
+                BasicMcfunctionWriter,
+                "_lines",
+                return_value=["say hi"] * (SIMPLE_CHAIN_MAX_COMMANDS + 1),
+            ), self.assertRaisesRegex(ValueError, "Simple function chain"):
+                writer.write_file(layout, output_path)
 
     def test_player_tp_output_writes_window_functions(self) -> None:
         layout = LayoutResult(

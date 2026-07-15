@@ -6,7 +6,7 @@ import pytest
 
 from nbs2func import cli
 from nbs2func import generation
-from nbs2func.output.command_writer import CommandWriteResult
+from nbs2func.output.command_writer import CommandWriteResult, CommandWriterConfig
 from nbs2func.config import (
     config_from_dict,
     config_to_dict,
@@ -117,6 +117,34 @@ def test_parser_accepts_datapack_name_argument() -> None:
     assert config.datapack_name == "Custom Pack"
 
 
+@pytest.mark.parametrize("style", ("simple_chain", "player_tp"))
+def test_parser_accepts_datapack_build_style_argument(style: str) -> None:
+    parser = cli.build_parser()
+    args = parser.parse_args(["song.nbs", "--datapack-build-style", style])
+    config = cli.resolve_config_from_args(
+        args,
+        cli._explicit_cli_destinations(
+            parser,
+            ["song.nbs", "--datapack-build-style", style],
+        ),
+    )
+
+    assert config.datapack_build_style == style
+    assert config.split_functions is (style == "player_tp")
+
+
+def test_no_split_functions_maps_to_simple_chain_for_compatibility() -> None:
+    parser = cli.build_parser()
+    args = parser.parse_args(["song.nbs", "--no-split-functions"])
+    config = cli.resolve_config_from_args(
+        args,
+        cli._explicit_cli_destinations(parser, ["song.nbs", "--no-split-functions"]),
+    )
+
+    assert config.datapack_build_style == "simple_chain"
+    assert config.split_functions is False
+
+
 def test_cli_parser_covers_gui_exposed_config_fields() -> None:
     parser = cli.build_parser()
     option_strings = {
@@ -134,6 +162,7 @@ def test_cli_parser_covers_gui_exposed_config_fields() -> None:
         "--output-format",
         "--output",
         "--datapack-name",
+        "--datapack-build-style",
         "--schematic-output",
         "--schematic-name",
         "--schematic-origin-mode",
@@ -194,9 +223,22 @@ def test_default_config_returns_current_defaults_and_new_instances() -> None:
     assert first.schematic_name is None
     assert first.minecraft_version == "1.16.5"
     assert first.layout_mode == "note_based_stereo"
+    assert first.datapack_build_style == "player_tp"
     assert first.split_functions is True
     assert first.function_namespace == "nbs"
     assert first.max_commands_per_build_part == 500
+    assert first.schedule_delay_ticks_between_parts == 10
+    assert first.player_tp_chunk_load_wait_ticks == 100
+    writer_defaults = CommandWriterConfig()
+    assert first.max_commands_per_build_part == writer_defaults.max_commands_per_build_part
+    assert (
+        first.schedule_delay_ticks_between_parts
+        == writer_defaults.schedule_delay_ticks_between_parts
+    )
+    assert (
+        first.player_tp_chunk_load_wait_ticks
+        == writer_defaults.player_tp_chunk_load_wait_ticks
+    )
     assert first.preview_time_limit_seconds == 1200
 
 
@@ -221,6 +263,16 @@ def test_missing_config_fields_use_defaults() -> None:
     assert config.origin_y == 64
     assert config.input_path == "examples/demo.nbs"
     assert config.layout_mode == "note_based_stereo"
+
+
+def test_legacy_split_functions_config_maps_to_datapack_build_style() -> None:
+    simple = config_from_dict({"split_functions": False})
+    player_tp = config_from_dict({"split_functions": True})
+
+    assert simple.datapack_build_style == "simple_chain"
+    assert simple.split_functions is False
+    assert player_tp.datapack_build_style == "player_tp"
+    assert player_tp.split_functions is True
 
 
 def test_unknown_config_field_raises_clear_error() -> None:
@@ -458,6 +510,53 @@ def test_output_format_both_mcfunction_contains_only_runtime_logic(
     assert "summon minecraft:armor_stand" in text
     assert "contains all blocks including command blocks" in stdout
     assert "contains runtime logic" in stdout
+
+
+def test_output_format_both_simple_chain_style_contains_only_runtime_logic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    nbs_path = _write_placeholder_nbs(tmp_path)
+    output_path = tmp_path / "out"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            str(nbs_path),
+            "--output",
+            str(output_path),
+            "--output-format",
+            "both",
+            "--datapack-build-style",
+            "simple_chain",
+            "--layout-mode",
+            "basic_linear",
+            "--enable-starter-module",
+            "--enable-playback-assist",
+        ],
+    )
+    _patch_small_generation(monkeypatch)
+
+    result = cli.main()
+
+    capsys.readouterr()
+    mcfunction = (
+        output_path
+        / "song"
+        / "data"
+        / "nbs"
+        / "functions"
+        / "build"
+        / "start.mcfunction"
+    )
+    text = mcfunction.read_text(encoding="utf-8")
+    assert result == 0
+    assert "setblock" not in text
+    assert "command_block" not in text
+    assert "scoreboard objectives add" in text
+    assert "summon minecraft:armor_stand" in text
 
 
 def test_output_format_both_split_runtime_output_omits_structure_and_cleans_old_build(

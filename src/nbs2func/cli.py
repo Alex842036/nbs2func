@@ -106,6 +106,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--datapack-build-style",
+        choices=("simple_chain", "player_tp"),
+        default="player_tp",
+        help=(
+            "Datapack build style. simple_chain writes a simple single function "
+            "chain without player teleport; player_tp uses segmented player-tp "
+            "build output. Defaults to player_tp."
+        ),
+    )
+    parser.add_argument(
         "--output-format",
         choices=("datapack", "schem", "both"),
         default="datapack",
@@ -829,6 +839,10 @@ def resolve_config_from_args(
         updates["generate_playback_buttons"] = not args.no_playback_buttons
     if "no_split_functions" in explicit_destinations:
         updates["split_functions"] = not args.no_split_functions
+        if "datapack_build_style" not in explicit_destinations:
+            updates["datapack_build_style"] = (
+                "player_tp" if updates["split_functions"] else "simple_chain"
+            )
     if "no_reset_tick_rate_after_playback" in explicit_destinations:
         updates["reset_tick_rate_after_playback"] = (
             not args.no_reset_tick_rate_after_playback
@@ -843,6 +857,12 @@ def config_from_updates(
 ) -> Nbs2FuncConfig:
     if not updates:
         return config
+    if "datapack_build_style" in updates:
+        updates["split_functions"] = updates["datapack_build_style"] == "player_tp"
+    elif "split_functions" in updates:
+        updates["datapack_build_style"] = (
+            "player_tp" if updates["split_functions"] else "simple_chain"
+        )
     data = config_to_dict(config)
     for key, value in updates.items():
         data[key] = value
@@ -903,6 +923,7 @@ def _args_namespace_from_config(config: Nbs2FuncConfig) -> argparse.Namespace:
         file=config.input_path,
         output=config.output,
         datapack_name=config.datapack_name,
+        datapack_build_style=config.datapack_build_style,
         output_format=config.output_format,
         schematic_origin_mode=config.schematic_origin_mode,
         schematic_output=config.schematic_output,
@@ -1006,7 +1027,7 @@ def _args_namespace_from_config(config: Nbs2FuncConfig) -> argparse.Namespace:
         start_button_x=config.start_button_x,
         start_button_y=config.start_button_y,
         start_button_z=config.start_button_z,
-        no_split_functions=not config.split_functions,
+        no_split_functions=config.datapack_build_style == "simple_chain",
         max_commands_per_build_part=config.max_commands_per_build_part,
         schedule_delay_ticks_between_parts=(
             config.schedule_delay_ticks_between_parts

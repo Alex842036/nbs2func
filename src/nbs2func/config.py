@@ -119,12 +119,13 @@ class Nbs2FuncConfig:
     start_button_y: int | None = None
     start_button_z: int | None = None
 
+    datapack_build_style: str = "player_tp"
     split_functions: bool = True
-    max_commands_per_build_part: int = 65535
-    schedule_delay_ticks_between_parts: int = 4
+    max_commands_per_build_part: int = 500
+    schedule_delay_ticks_between_parts: int = 10
     build_player_name: str = "Alex842036"
     player_load_radius_chunks: int = 6
-    player_tp_chunk_load_wait_ticks: int = 20
+    player_tp_chunk_load_wait_ticks: int = 100
     player_tp_after_build_wait_ticks: int = 20
     player_tp_window_length_blocks: int = 192
     player_tp_window_lateral_width_blocks: int = 192
@@ -206,6 +207,13 @@ def config_from_dict(data: dict[str, Any]) -> Nbs2FuncConfig:
         _validate_choice(field.name, value)
         values[field.name] = value
 
+    if "datapack_build_style" not in data and "split_functions" in data:
+        values["datapack_build_style"] = (
+            "player_tp" if data["split_functions"] else "simple_chain"
+        )
+    if "datapack_build_style" in values:
+        values["split_functions"] = values["datapack_build_style"] == "player_tp"
+
     return replace(defaults, **values)
 
 
@@ -240,6 +248,7 @@ def _validate_choice(field_name: str, value: Any) -> None:
         "tempo_control_backend": {"auto", "carpet", "vanilla"},
         "output_format": {"datapack", "schem", "both"},
         "schematic_origin_mode": {"generation_origin", "min_corner"},
+        "datapack_build_style": {"simple_chain", "player_tp"},
     }
     choices = choices_by_field.get(field_name)
     if choices is not None and value not in choices:

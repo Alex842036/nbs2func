@@ -30,7 +30,7 @@ from nbs2func.gui.steps.modules_step import (
     normalize_module_toggles,
 )
 from nbs2func.gui.steps.output_step import (
-    DATAPACK_ADVANCED_FIELDS,
+    DATAPACK_BUILD_STYLE_CHOICES,
     output_datapack_controls_enabled,
 )
 from nbs2func.gui.steps.generate_step import (
@@ -470,16 +470,11 @@ def test_datapack_group_enabled_by_output_format() -> None:
     assert datapack_group_enabled("schem") is False
 
 
-def test_output_datapack_advanced_controls_follow_output_format() -> None:
+def test_output_datapack_build_style_controls_follow_output_format() -> None:
     assert output_datapack_controls_enabled("datapack") is True
     assert output_datapack_controls_enabled("both") is True
     assert output_datapack_controls_enabled("schem") is False
-    assert DATAPACK_ADVANCED_FIELDS == (
-        "split_functions",
-        "max_commands_per_build_part",
-        "player_tp_window_length_blocks",
-        "player_tp_window_lateral_width_blocks",
-    )
+    assert DATAPACK_BUILD_STYLE_CHOICES == ("simple_chain", "player_tp")
 
 
 def test_datapack_name_default_and_manual_state() -> None:
@@ -611,7 +606,7 @@ def test_output_step_writes_datapack_name_to_config() -> None:
     assert 'updates["datapack_name"] = self.state.datapack_name' in source
 
 
-def test_output_step_writes_split_player_tp_fields_and_avoids_refresh_loop() -> None:
+def test_output_step_writes_build_style_and_hides_internal_player_tp_fields() -> None:
     source = Path("src/nbs2func/gui/steps/output_step.py").read_text(
         encoding="utf-8"
     )
@@ -620,8 +615,9 @@ def test_output_step_writes_split_player_tp_fields_and_avoids_refresh_loop() -> 
         1,
     )[0]
 
-    assert "max_commands_per_build_part" in source
-    assert "player_tp_window_length_blocks" in source
-    assert "player_tp_window_lateral_width_blocks" in source
+    assert 'updates["datapack_build_style"] = self.build_style_var.get()' in source
+    assert "max_commands_per_build_part" not in source
+    assert "player_tp_window_length_blocks" not in source
+    assert "player_tp_window_lateral_width_blocks" not in source
     assert "self.app.refresh()" not in on_change_source
     assert "self.app._refresh_buttons()" in on_change_source

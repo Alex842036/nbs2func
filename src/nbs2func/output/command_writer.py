@@ -22,6 +22,9 @@ from .models import GeneratedBuildPlan, GeneratedCommand, GeneratedComment, Plac
 from ..core.tempo_control import TempoControlReport
 
 
+SIMPLE_CHAIN_MAX_COMMANDS = 65535
+
+
 @dataclass(frozen=True)
 class CommandWriterConfig:
     """Settings for translating resolved layout cells into commands."""
@@ -154,6 +157,13 @@ class BasicMcfunctionWriter:
         command_count = _command_count(lines)
 
         if not self.config.split_functions:
+            if command_count > SIMPLE_CHAIN_MAX_COMMANDS:
+                raise ValueError(
+                    "Simple function chain output would contain "
+                    f"{command_count} commands, exceeding the safe single-function "
+                    f"limit of {SIMPLE_CHAIN_MAX_COMMANDS}. Use player-tp "
+                    "segmented build for large structures."
+                )
             if progress_callback is not None:
                 progress_callback(0, 1, "Writing datapack file")
             output_path.parent.mkdir(parents=True, exist_ok=True)
