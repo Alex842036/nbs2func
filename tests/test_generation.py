@@ -64,6 +64,8 @@ def test_generation_event_and_result_models() -> None:
         key="note_candidates",
         overall_percent=12.5,
         unit="emitters",
+        i18n_key="generation.progress.candidate_generation",
+        i18n_params={"kind": "note"},
     )
     result = GenerationResult(
         output_format="both",
@@ -80,6 +82,8 @@ def test_generation_event_and_result_models() -> None:
     assert event.key == "note_candidates"
     assert event.overall_percent == 12.5
     assert event.unit == "emitters"
+    assert event.i18n_key == "generation.progress.candidate_generation"
+    assert event.i18n_params == {"kind": "note"}
     assert result.datapack_path == Path("out/song")
     assert result.schematic_path == Path("out/song.schem")
     assert result.warnings == ("careful",)
@@ -151,6 +155,13 @@ def test_generate_from_config_emits_phase_output_and_done_events(
     assert "output" in kinds
     assert "done" not in kinds
     assert any(event.message.startswith("Generated datapack:") for event in events)
+    validating = next(
+        event for event in events
+        if event.kind == "phase" and event.message == "Validating config..."
+    )
+    assert validating.i18n_key == "generation.phase.validate_config"
+    datapack = next(event for event in events if event.i18n_key == "output.datapack")
+    assert datapack.i18n_params == {"path": tmp_path / "out" / "song"}
 
 
 def test_layout_progress_event_and_config_callback() -> None:

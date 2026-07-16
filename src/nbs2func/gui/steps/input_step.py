@@ -28,17 +28,17 @@ def input_path_needs_reload(
 
 
 class InputStep(WizardStep):
-    title = "Input"
-    help_text = "Choose an Open Note Block Studio .nbs file and load its song summary."
+    title_key = "step.input.name"
+    help_key = "step.input.help"
 
     def __init__(self, parent, app) -> None:
         super().__init__(parent, app)
         self.columnconfigure(0, weight=1)
         self.path_var = tk.StringVar()
-        self.summary_var = tk.StringVar(value="No song loaded.")
+        self.summary_var = tk.StringVar(value=self.app.tr("step.input.no_song"))
         self.error_var = tk.StringVar()
 
-        ttk.Label(self, text="Input NBS file").grid(row=0, column=0, sticky="w")
+        ttk.Label(self, text=self.app.tr("step.input.heading")).grid(row=0, column=0, sticky="w")
         row = ttk.Frame(self)
         row.grid(row=1, column=0, sticky="ew", pady=(8, 12))
         row.columnconfigure(0, weight=1)
@@ -46,14 +46,14 @@ class InputStep(WizardStep):
         path_entry.grid(row=0, column=0, sticky="ew")
         self.register_help(
             path_entry,
-            "Full path to the .nbs song file to convert.",
+            self.app.tr("step.input.path_help"),
         )
-        browse_button = ttk.Button(row, text="Browse...", command=self.browse)
+        browse_button = ttk.Button(row, text=self.app.tr("common.browse"), command=self.browse)
         browse_button.grid(row=0, column=1, padx=(8, 0))
-        self.register_help(browse_button, "Open a file picker for .nbs input files.")
-        load_button = ttk.Button(row, text="Load NBS", command=self.load_path)
+        self.register_help(browse_button, self.app.tr("step.input.browse_help"))
+        load_button = ttk.Button(row, text=self.app.tr("step.input.load"), command=self.load_path)
         load_button.grid(row=0, column=2, padx=(8, 0))
-        self.register_help(load_button, "Read the selected .nbs file and show its summary.")
+        self.register_help(load_button, self.app.tr("step.input.load_help"))
 
         ttk.Label(self, textvariable=self.summary_var, justify="left").grid(
             row=2, column=0, sticky="nw"
@@ -67,12 +67,12 @@ class InputStep(WizardStep):
         if self.state.input_song_summary is not None:
             self._render_summary()
         else:
-            self.summary_var.set("No song loaded.")
+            self.summary_var.set(self.app.tr("step.input.no_song"))
 
     def browse(self) -> None:
         path = filedialog.askopenfilename(
-            title="Select NBS file",
-            filetypes=(("Open Note Block Studio", "*.nbs"), ("All files", "*.*")),
+            title=self.app.tr("dialog.select_nbs.title"),
+            filetypes=((self.app.tr("dialog.filetype.nbs"), "*.nbs"), (self.app.tr("dialog.filetype.all"), "*.*")),
         )
         if path:
             self.path_var.set(absolute_path_text(path))
@@ -83,23 +83,23 @@ class InputStep(WizardStep):
         raw_path = self.path_var.get().strip()
         if not raw_path:
             self.state.input_song_summary = None
-            self.summary_var.set("No song loaded.")
-            self.error_var.set("Choose an .nbs file before loading.")
+            self.summary_var.set(self.app.tr("step.input.no_song"))
+            self.error_var.set(self.app.tr("step.input.choose_first"))
             self.app._refresh_buttons()
             self.app._refresh_status()
             return False
         path = Path(raw_path).expanduser().resolve()
         if not path.exists():
             self.state.input_song_summary = None
-            self.summary_var.set("No song loaded.")
-            self.error_var.set(f"NBS file does not exist: {path}")
+            self.summary_var.set(self.app.tr("step.input.no_song"))
+            self.error_var.set(self.app.tr("step.input.not_exists", path=path))
             self.app._refresh_buttons()
             self.app._refresh_status()
             return False
         if not path.is_file():
             self.state.input_song_summary = None
-            self.summary_var.set("No song loaded.")
-            self.error_var.set(f"NBS path is not a file: {path}")
+            self.summary_var.set(self.app.tr("step.input.no_song"))
+            self.error_var.set(self.app.tr("step.input.not_file", path=path))
             self.app._refresh_buttons()
             self.app._refresh_status()
             return False
@@ -107,8 +107,8 @@ class InputStep(WizardStep):
             load_input_song(self.state, path)
         except Exception as exc:  # Keep GUI alive for malformed preview inputs.
             self.state.input_song_summary = None
-            self.error_var.set(f"Could not read NBS file: {exc}")
-            self.summary_var.set("No song loaded.")
+            self.error_var.set(self.app.tr("step.input.read_error", error=exc))
+            self.summary_var.set(self.app.tr("step.input.no_song"))
             self.app._refresh_buttons()
             self.app._refresh_status()
             return False
@@ -125,18 +125,19 @@ class InputStep(WizardStep):
                 f"{instrument}: {count}" for instrument, count in instruments.items()
             )
         else:
-            instrument_text = "n/a"
+            instrument_text = self.app.tr("common.not_available")
+        na = self.app.tr("common.not_available")
         self.summary_var.set(
             "\n".join(
                 [
-                    f"NBS file path: {summary.get('path', '')}",
-                    f"Song name: {summary.get('name', '')}",
-                    f"Author: {summary.get('author', '')}",
-                    f"Song length / ticks: {summary.get('length', 'n/a')}",
-                    f"Tempo: {summary.get('tempo', 'n/a')}",
-                    f"Layer count: {summary.get('layer_count', 'n/a')}",
-                    f"Note count: {summary.get('note_count', 'n/a')}",
-                    f"Instrument summary: {instrument_text or 'none'}",
+                    self.app.tr("step.input.summary.path", value=summary.get("path", "")),
+                    self.app.tr("step.input.summary.name", value=summary.get("name", "")),
+                    self.app.tr("step.input.summary.author", value=summary.get("author", "")),
+                    self.app.tr("step.input.summary.length", value=summary.get("length", na)),
+                    self.app.tr("step.input.summary.tempo", value=summary.get("tempo", na)),
+                    self.app.tr("step.input.summary.layers", value=summary.get("layer_count", na)),
+                    self.app.tr("step.input.summary.notes", value=summary.get("note_count", na)),
+                    self.app.tr("step.input.summary.instruments", value=instrument_text or self.app.tr("common.none")),
                 ]
             )
         )
@@ -148,7 +149,10 @@ class InputStep(WizardStep):
         ):
             self.load_path()
         if not self.is_complete():
-            messagebox.showerror("Input required", "Select a readable .nbs file first.")
+            messagebox.showerror(
+                self.app.tr("dialog.input_required.title"),
+                self.app.tr("dialog.input_required.message"),
+            )
             return False
         return True
 
@@ -156,4 +160,4 @@ class InputStep(WizardStep):
         return self.state.input_song_summary is not None
 
     def status_text(self) -> str:
-        return self.help_text
+        return self.app.tr(self.help_key)

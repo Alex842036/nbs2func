@@ -9,8 +9,8 @@ if TYPE_CHECKING:
 
 
 class WizardStep(ttk.Frame):
-    title = ""
-    help_text = ""
+    title_key = ""
+    help_key = ""
 
     def __init__(self, parent: tk.Widget, app: WizardApp) -> None:
         super().__init__(parent)
@@ -30,7 +30,7 @@ class WizardStep(ttk.Frame):
         return True
 
     def status_text(self) -> str:
-        return self.help_text
+        return self.app.tr(self.help_key) if self.help_key else ""
 
     def register_help(self, widget: tk.Widget, text: str) -> None:
         widget.bind("<FocusIn>", lambda _event: self.app.set_help_text(text))

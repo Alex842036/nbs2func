@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from typing import Callable
 
 from nbs2func.config import (
     Nbs2FuncConfig,
@@ -19,7 +20,12 @@ from nbs2func.gui.helpers import (
     validate_layout_options,
     validate_module_coordinates,
 )
-from nbs2func.generation import function_path_errors
+from nbs2func.generation import (
+    GenerationEvent,
+    GenerationResult,
+    function_path_error_keys,
+    function_path_errors,
+)
 
 
 @dataclass
@@ -28,6 +34,8 @@ class WizardState:
     input_song_summary: dict[str, object] | None = None
     warnings: list[str] = field(default_factory=list)
     output_log: list[str] = field(default_factory=list)
+    generation_events: list[GenerationEvent] = field(default_factory=list)
+    generation_result: GenerationResult | None = None
     config_path: str | None = None
     note_based_profile: str = "balanced"
     datapack_name: str = "demo"
@@ -125,70 +133,107 @@ def append_log(state: WizardState, line: str) -> None:
     state.output_log.append(line)
 
 
+def append_generation_event(state: WizardState, event: GenerationEvent) -> None:
+    state.generation_events.append(event)
+
+
 def clear_log(state: WizardState) -> None:
     state.output_log.clear()
+    state.generation_events.clear()
 
 
-def validate_ready_to_generate(state: WizardState) -> list[str]:
+def validate_ready_to_generate(
+    state: WizardState,
+    translate: Callable[..., str] | None = None,
+) -> list[str]:
+    def text(key: str, english: str) -> str:
+        return translate(key) if translate is not None else english
+
     errors: list[str] = []
     if not Path(state.config.input_path).is_file():
-        errors.append("Select a valid .nbs input file.")
+        errors.append(text("validation.valid_input", "Select a valid .nbs input file."))
     if state.config.output_format not in {"datapack", "schem", "both"}:
-        errors.append("Select a valid output format.")
+        errors.append(text("validation.valid_output_format", "Select a valid output format."))
     if state.config.output_format == "schem" and modules_require_runtime_logic(
         state.config
     ):
-        errors.append(
-            "Schem-only output is not compatible with starter or playback assist."
-        )
+        errors.append(text(
+            "validation.schem_runtime_conflict",
+            "Schem-only output is not compatible with starter or playback assist.",
+        ))
     if state.config.enable_playback_assist and not state.config.enable_starter_module:
-        errors.append("Playback assist requires starter module to be enabled.")
+        errors.append(text(
+            "validation.playback_requires_starter",
+            "Playback assist requires starter module to be enabled.",
+        ))
     if (
         state.config.tempo_control_mode == "command"
         and not state.config.enable_playback_assist
     ):
-        errors.append("Tempo command mode requires playback assist.")
-    errors.extend(validate_module_coordinates(state.config))
-    errors.extend(validate_layout_options(state.config))
-    errors.extend(
-        function_path_errors(
+        errors.append(text(
+            "validation.tempo_requires_playback",
+            "Tempo command mode requires playback assist.",
+        ))
+    errors.extend(validate_module_coordinates(state.config, translate))
+    errors.extend(validate_layout_options(state.config, translate))
+    if translate is None:
+        errors.extend(function_path_errors(
             state.config.function_namespace,
             state.config.build_function_dir,
+        ))
+    else:
+        errors.extend(
+            translate(key)
+            for key in function_path_error_keys(
+                state.config.function_namespace,
+                state.config.build_function_dir,
+            )
         )
-    )
     return errors
 
 
-def summary_lines(state: WizardState) -> list[str]:
+def summary_lines(
+    state: WizardState,
+    translate: Callable[..., str] | None = None,
+) -> list[str]:
+    def tr(key: str, english: str, **params: object) -> str:
+        return translate(key, **params) if translate is not None else english.format(**params)
+
     config = state.config
     song = state.input_song_summary or {}
     modules = []
-    modules.append("starter" if config.enable_starter_module else "starter off")
     modules.append(
-        "playback assist" if config.enable_playback_assist else "playback assist off"
+        tr("step.summary.module.starter", "starter")
+        if config.enable_starter_module
+        else tr("step.summary.module.starter_off", "starter off")
     )
+    modules.append(
+        tr("step.summary.module.playback", "playback assist")
+        if config.enable_playback_assist
+        else tr("step.summary.module.playback_off", "playback assist off")
+    )
+    na = tr("common.not_available", "n/a")
+    not_loaded = tr("common.not_loaded", "(not loaded)")
+    default = tr("common.default", "(default)")
     lines = [
-        f"Input file: {config.input_path}",
-        f"Song: {song.get('name', '(not loaded)')}",
-        f"Length: {song.get('length', 'n/a')} ticks",
-        f"Notes: {song.get('note_count', 'n/a')}",
-        f"Layout mode: {config.layout_mode}",
-        f"Direction: {config.direction}",
-        f"Origin: {config.origin_x}, {config.origin_y}, {config.origin_z}",
-        f"Minecraft version: {config.minecraft_version}",
-        f"Output format: {config.output_format}",
-        f"Output folder: {config.output}",
-        f"Namespace: {config.function_namespace}",
-        f"Schematic output: {config.schematic_output or '(default)'}",
-        f"Schematic name: {config.schematic_name or '(default)'}",
-        f"Modules: {', '.join(modules)}",
-        (
-            "Tempo control: "
-            f"{config.tempo_control_mode} / {config.tempo_control_backend}"
-        ),
+        tr("step.summary.input_file", "Input file: {value}", value=config.input_path),
+        tr("step.summary.song", "Song: {value}", value=song.get("name", not_loaded)),
+        tr("step.summary.length", "Length: {value} ticks", value=song.get("length", na)),
+        tr("step.summary.notes", "Notes: {value}", value=song.get("note_count", na)),
+        tr("step.summary.layout_mode", "Layout mode: {value}", value=config.layout_mode),
+        tr("step.summary.direction", "Direction: {value}", value=config.direction),
+        tr("step.summary.origin", "Origin: {x}, {y}, {z}", x=config.origin_x, y=config.origin_y, z=config.origin_z),
+        tr("step.summary.minecraft_version", "Minecraft version: {value}", value=config.minecraft_version),
+        tr("step.summary.output_format", "Output format: {value}", value=config.output_format),
+        tr("step.summary.output_folder", "Output folder: {value}", value=config.output),
+        tr("step.summary.namespace", "Namespace: {value}", value=config.function_namespace),
+        tr("step.summary.schematic_output", "Schematic output: {value}", value=config.schematic_output or default),
+        tr("step.summary.schematic_name", "Schematic name: {value}", value=config.schematic_name or default),
+        tr("step.summary.modules", "Modules: {value}", value=", ".join(modules)),
+        tr("step.summary.tempo", "Tempo control: {mode} / {backend}", mode=config.tempo_control_mode, backend=config.tempo_control_backend),
     ]
     if state.warnings:
-        lines.append("Warnings:")
+        lines.append(tr("step.summary.warnings", "Warnings:"))
         lines.extend(f"- {warning}" for warning in state.warnings)
     return lines
 

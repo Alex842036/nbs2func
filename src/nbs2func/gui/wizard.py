@@ -8,6 +8,13 @@ from typing import TYPE_CHECKING
 from nbs2func import __version__
 from nbs2func.config import load_config, save_config
 from nbs2func.generation import resolve_datapack_output_path
+from nbs2func.gui.i18n import Translator
+from nbs2func.gui.settings import (
+    GuiSettings,
+    load_gui_settings,
+    save_gui_settings,
+    settings_path,
+)
 from nbs2func.gui.state import (
     WizardState,
     create_default_state,
@@ -21,20 +28,37 @@ if TYPE_CHECKING:
 
 
 STEP_MODULES = (
-    ("Input", "nbs2func.gui.steps.input_step", "InputStep"),
-    ("Layout", "nbs2func.gui.steps.layout_step", "LayoutStep"),
-    ("Layout Options", "nbs2func.gui.steps.layout_options_step", "LayoutOptionsStep"),
-    ("Modules", "nbs2func.gui.steps.modules_step", "ModulesStep"),
-    ("Output", "nbs2func.gui.steps.output_step", "OutputStep"),
-    ("Summary", "nbs2func.gui.steps.summary_step", "SummaryStep"),
-    ("Generate", "nbs2func.gui.steps.generate_step", "GenerateStep"),
+    ("step.input.name", "nbs2func.gui.steps.input_step", "InputStep"),
+    ("step.layout.name", "nbs2func.gui.steps.layout_step", "LayoutStep"),
+    ("step.layout_options.name", "nbs2func.gui.steps.layout_options_step", "LayoutOptionsStep"),
+    ("step.modules.name", "nbs2func.gui.steps.modules_step", "ModulesStep"),
+    ("step.output.name", "nbs2func.gui.steps.output_step", "OutputStep"),
+    ("step.summary.name", "nbs2func.gui.steps.summary_step", "SummaryStep"),
+    ("step.generate.name", "nbs2func.gui.steps.generate_step", "GenerateStep"),
 )
 
 
+def _tr(app: object, key: str, **params: object) -> str:
+    translate = getattr(app, "tr", None)
+    if callable(translate):
+        return translate(key, **params)
+    return Translator("en").gettext(key, **params)
+
+
 class WizardApp(tk.Tk):
-    def __init__(self, state: WizardState | None = None) -> None:
+    def __init__(
+        self,
+        state: WizardState | None = None,
+        *,
+        gui_settings_path: str | Path | None = None,
+    ) -> None:
         super().__init__()
-        self.title("nbs2func Preview Wizard")
+        self.gui_settings_path = (
+            Path(gui_settings_path) if gui_settings_path is not None else settings_path()
+        )
+        self.gui_settings = load_gui_settings(self.gui_settings_path)
+        self.translator = Translator(self.gui_settings.language)
+        self.title(self.tr("app.title"))
         self.geometry("980x720")
         self.minsize(820, 560)
 
@@ -43,7 +67,7 @@ class WizardApp(tk.Tk):
         self.max_unlocked_index = 0
         self.step_buttons: list[ttk.Button] = []
         self.steps: list[WizardStep] = []
-        self.status_var = tk.StringVar(value="Select an NBS file to begin.")
+        self.status_var = tk.StringVar(value=self.tr("app.status.select_input"))
         self.generate_unlocked = False
         self.generation_running = False
         self.protocol("WM_DELETE_WINDOW", self.request_close)
@@ -54,6 +78,9 @@ class WizardApp(tk.Tk):
         self._load_steps()
         self._display_step(0)
 
+    def tr(self, key: str, **params: object) -> str:
+        return self.translator.gettext(key, **params)
+
     def _configure_styles(self) -> None:
         style = ttk.Style(self)
         style.configure("Step.TButton", padding=(10, 6))
@@ -62,18 +89,64 @@ class WizardApp(tk.Tk):
     def _build_menu(self) -> None:
         menu = tk.Menu(self)
         self.file_menu = tk.Menu(menu, tearoff=False)
-        self.file_menu.add_command(label="New", command=self.new_config)
-        self.file_menu.add_command(label="Load Config", command=self.load_config_file)
-        self.file_menu.add_command(label="Save Config", command=self.save_config_file)
-        self.file_menu.add_command(label="Save Config As", command=self.save_config_as)
+        self.file_menu.add_command(label=self.tr("menu.file.new"), command=self.new_config)
+        self.file_menu.add_command(label=self.tr("menu.file.load"), command=self.load_config_file)
+        self.file_menu.add_command(label=self.tr("menu.file.save"), command=self.save_config_file)
+        self.file_menu.add_command(label=self.tr("menu.file.save_as"), command=self.save_config_as)
         self.file_menu.add_separator()
-        self.file_menu.add_command(label="Exit", command=self.request_close)
-        menu.add_cascade(label="File", menu=self.file_menu)
+        self.file_menu.add_command(label=self.tr("menu.file.exit"), command=self.request_close)
+        menu.add_cascade(label=self.tr("menu.file"), menu=self.file_menu)
+
+        self.language_var = tk.StringVar(value=self.translator.language)
+        self.language_menu = tk.Menu(menu, tearoff=False)
+        self.language_menu.add_radiobutton(
+            label=self.tr("menu.language.english"),
+            value="en",
+            variable=self.language_var,
+            command=lambda: self.set_language("en"),
+        )
+        self.language_menu.add_radiobutton(
+            label=self.tr("menu.language.chinese"),
+            value="zh_CN",
+            variable=self.language_var,
+            command=lambda: self.set_language("zh_CN"),
+        )
+        menu.add_cascade(label=self.tr("menu.language"), menu=self.language_menu)
 
         help_menu = tk.Menu(menu, tearoff=False)
-        help_menu.add_command(label="About", command=self.show_about)
-        menu.add_cascade(label="Help", menu=help_menu)
+        help_menu.add_command(label=self.tr("menu.help.about"), command=self.show_about)
+        menu.add_cascade(label=self.tr("menu.help"), menu=help_menu)
         self.config(menu=menu)
+
+    def set_language(self, language: str) -> None:
+        if self.generation_running:
+            self.language_var.set(self.translator.language)
+            return
+        normalized = Translator.normalize_language(language)
+        if normalized == self.translator.language:
+            return
+        current_index = self.current_index
+        self.translator.set_language(normalized)
+        self.gui_settings = GuiSettings(language=normalized)
+        try:
+            save_gui_settings(self.gui_settings, self.gui_settings_path)
+        except OSError as exc:
+            messagebox.showerror(
+                self.tr("dialog.save_config.error_title"),
+                self.tr("dialog.save_config.error", error=exc),
+            )
+        self.title(self.tr("app.title"))
+        self.back_button.configure(text=self.tr("common.back"))
+        self._build_menu()
+        for step in self.steps:
+            step.destroy()
+        for button in self.step_buttons:
+            button.destroy()
+        self.steps.clear()
+        self.step_buttons.clear()
+        self._load_steps()
+        self.current_index = min(current_index, len(self.steps) - 1)
+        self._display_step(self.current_index)
 
     def _build_shell(self) -> None:
         self.columnconfigure(0, weight=1)
@@ -97,15 +170,16 @@ class WizardApp(tk.Tk):
         nav = ttk.Frame(self, padding=(16, 8, 16, 14))
         nav.grid(row=3, column=0, sticky="ew")
         nav.columnconfigure(1, weight=1)
-        self.back_button = ttk.Button(nav, text="< Back", command=self.back)
+        self.back_button = ttk.Button(nav, text=self.tr("common.back"), command=self.back)
         self.back_button.grid(row=0, column=0, sticky="w")
-        self.next_button = ttk.Button(nav, text="Next >", command=self.next)
+        self.next_button = ttk.Button(nav, text=self.tr("common.next"), command=self.next)
         self.next_button.grid(row=0, column=2, sticky="e")
 
     def _load_steps(self) -> None:
         from importlib import import_module
 
-        for index, (title, module_name, class_name) in enumerate(STEP_MODULES):
+        for index, (title_key, module_name, class_name) in enumerate(STEP_MODULES):
+            title = self.tr(title_key)
             button = ttk.Button(
                 self.step_bar,
                 text=f"{index + 1} {title}",
@@ -133,7 +207,7 @@ class WizardApp(tk.Tk):
         try:
             ok = current.apply()
         except ValueError as exc:
-            messagebox.showerror("Invalid value", str(exc))
+            messagebox.showerror(self.tr("dialog.invalid_value.title"), str(exc))
             ok = False
         if not ok:
             self._refresh_status()
@@ -143,12 +217,15 @@ class WizardApp(tk.Tk):
         if index < 0 or index >= len(self.steps):
             return
         if self.generation_running:
-            messagebox.showinfo("Generation running", "Wait for generation to finish.")
+            messagebox.showinfo(
+                self.tr("dialog.generation_running.title"),
+                self.tr("dialog.generation_running.message"),
+            )
             return
         if index > self.max_unlocked_index and not self._can_unlock_to(index):
             messagebox.showwarning(
-                "Step locked",
-                "Complete the previous required steps before opening this step.",
+                self.tr("dialog.step_locked.title"),
+                self.tr("dialog.step_locked.previous"),
             )
             return
         if apply_current and index != self.current_index and not self.leave_current_step():
@@ -170,16 +247,16 @@ class WizardApp(tk.Tk):
             return
         if index == len(self.steps) - 1 and not self.generate_unlocked:
             messagebox.showinfo(
-                "Step locked",
-                "Open Generate from the Summary step after reviewing the config.",
+                self.tr("dialog.step_locked.title"),
+                self.tr("dialog.step_locked.summary"),
             )
             return
         if index <= self.max_unlocked_index or self._can_unlock_to(index):
             self.show_step(index)
         else:
             messagebox.showinfo(
-                "Step locked",
-                "This step is not available until the earlier steps are complete.",
+                self.tr("dialog.step_locked.title"),
+                self.tr("dialog.step_locked.earlier"),
             )
 
     def _can_unlock_to(self, target_index: int) -> bool:
@@ -189,7 +266,7 @@ class WizardApp(tk.Tk):
 
     def _refresh_buttons(self) -> None:
         for index, button in enumerate(self.step_buttons):
-            title = STEP_MODULES[index][0]
+            title = self.tr(STEP_MODULES[index][0])
             if index == self.current_index:
                 button.configure(text=f"> {index + 1} {title}")
                 button.configure(style="Current.Step.TButton")
@@ -215,14 +292,14 @@ class WizardApp(tk.Tk):
         )
         current = self.steps[self.current_index]
         if self.current_index == len(self.steps) - 2:
-            self.next_button.configure(text="Generate", command=self.go_generate)
+            self.next_button.configure(text=self.tr("common.generate"), command=self.go_generate)
         elif self.current_index == len(self.steps) - 1:
             self.next_button.configure(
-                text="Finish",
+                text=self.tr("common.finish"),
                 command=self.request_close,
             )
         else:
-            self.next_button.configure(text="Next >", command=self.next)
+            self.next_button.configure(text=self.tr("common.next"), command=self.next)
         self.next_button.state(
             ["!disabled"]
             if current.is_complete() and not self.generation_running
@@ -247,9 +324,9 @@ class WizardApp(tk.Tk):
             return
         if not self.leave_current_step():
             return
-        errors = validate_ready_to_generate(self.state_data)
+        errors = validate_ready_to_generate(self.state_data, self.tr)
         if errors:
-            messagebox.showerror("Cannot generate", "\n".join(errors))
+            messagebox.showerror(self.tr("dialog.cannot_generate.title"), "\n".join(errors))
             return
         if not self._confirm_datapack_overwrite():
             return
@@ -271,8 +348,8 @@ class WizardApp(tk.Tk):
         if self.generation_running:
             return
         path = filedialog.askopenfilename(
-            title="Load nbs2func config",
-            filetypes=(("JSON config", "*.json"), ("All files", "*.*")),
+            title=self.tr("dialog.load_config.title"),
+            filetypes=((self.tr("dialog.filetype.json"), "*.json"), (self.tr("dialog.filetype.all"), "*.*")),
         )
         if not path:
             return
@@ -284,10 +361,16 @@ class WizardApp(tk.Tk):
                     load_input_song(new_state, input_path)
                 except Exception as exc:
                     new_state.input_song_summary = None
-                    messagebox.showerror("Load Config", f"Could not read input: {exc}")
+                    messagebox.showerror(
+                        self.tr("dialog.load_config.error_title"),
+                        self.tr("dialog.load_config.input_error", error=exc),
+                    )
             self.state_data = new_state
         except (OSError, ValueError) as exc:
-            messagebox.showerror("Load Config", str(exc))
+            messagebox.showerror(
+                self.tr("dialog.load_config.error_title"),
+                self.tr("dialog.load_config.error", error=exc),
+            )
             return
         self.max_unlocked_index = 1 if self.state_data.input_song_summary else 0
         self.generate_unlocked = False
@@ -305,9 +388,9 @@ class WizardApp(tk.Tk):
         if not self.leave_current_step():
             return
         path = filedialog.asksaveasfilename(
-            title="Save nbs2func config",
+            title=self.tr("dialog.save_config.title"),
             defaultextension=".json",
-            filetypes=(("JSON config", "*.json"), ("All files", "*.*")),
+            filetypes=((self.tr("dialog.filetype.json"), "*.json"), (self.tr("dialog.filetype.all"), "*.*")),
         )
         if not path:
             return
@@ -318,22 +401,23 @@ class WizardApp(tk.Tk):
         try:
             save_config(self.state_data.config, path)
         except OSError as exc:
-            messagebox.showerror("Save Config", str(exc))
+            messagebox.showerror(
+                self.tr("dialog.save_config.error_title"),
+                self.tr("dialog.save_config.error", error=exc),
+            )
             return
-        self.status_var.set(f"Saved config: {path}")
+        self.status_var.set(self.tr("output.saved_config", path=path))
 
     def show_about(self) -> None:
         messagebox.showinfo(
-            "About nbs2func",
-            f"nbs2func v{__version__}\nPreview wizard GUI for config-driven generation.",
+            self.tr("about.title"),
+            self.tr("about.body", version=__version__),
         )
 
     def request_close(self) -> None:
         if self.generation_running and not messagebox.askyesno(
-            "Generation is still running",
-            "Generation is still running.\n"
-            "Closing now may leave incomplete output files.\n\n"
-            "Exit anyway?",
+            _tr(self, "dialog.close_running.title"),
+            _tr(self, "dialog.close_running.message"),
             icon="warning",
             default=messagebox.NO,
         ):
@@ -348,11 +432,8 @@ class WizardApp(tk.Tk):
         if not datapack_path.exists():
             return True
         return messagebox.askyesno(
-            "Replace existing datapack output?",
-            "The datapack folder already exists:\n\n"
-            f"{datapack_path}\n\n"
-            "nbs2func will replace its generated build function files.\n"
-            "Continue?",
+            _tr(self, "dialog.overwrite.title"),
+            _tr(self, "dialog.overwrite.message", path=datapack_path),
             icon="warning",
             default=messagebox.NO,
         )
@@ -375,3 +456,6 @@ class WizardApp(tk.Tk):
         state = "disabled" if self.generation_running else "normal"
         for index in range(4):
             self.file_menu.entryconfigure(index, state=state)
+        if hasattr(self, "language_menu"):
+            for index in range(2):
+                self.language_menu.entryconfigure(index, state=state)

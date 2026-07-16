@@ -17,28 +17,7 @@ from nbs2func.gui.state import set_output_format, update_config
 from nbs2func.gui.steps.base import WizardStep, labeled_entry, labeled_option
 
 
-OUTPUT_FORMAT_HELP = (
-    "datapack generates mcfunction build logic; schem generates a WorldEdit "
-    "schematic; both combines schematic blocks with mcfunction runtime logic."
-)
-
 DATAPACK_BUILD_STYLE_CHOICES = ("simple_chain", "player_tp")
-BUILD_STYLE_LABELS = {
-    "simple_chain": "Simple function chain",
-    "player_tp": "Player-tp segmented build",
-}
-BUILD_STYLE_HELP = {
-    "simple_chain": (
-        "Splits large builds into directly connected function files. It does "
-        "not teleport the player, wait for chunk loading, or delay between "
-        "parts. Use it when the target area is already loaded or the build is "
-        "relatively small."
-    ),
-    "player_tp": (
-        "Teleports the player between build windows and waits for chunks to "
-        "load. Recommended for large structures."
-    ),
-}
 
 
 def output_datapack_controls_enabled(output_format: str) -> bool:
@@ -46,8 +25,8 @@ def output_datapack_controls_enabled(output_format: str) -> bool:
 
 
 class OutputStep(WizardStep):
-    title = "Output"
-    help_text = "Choose output backends and where generated files should be written."
+    title_key = "step.output.name"
+    help_key = "step.output.help"
 
     def __init__(self, parent, app) -> None:
         super().__init__(parent, app)
@@ -61,20 +40,21 @@ class OutputStep(WizardStep):
         self.datapack_name_entry: ttk.Entry | None = None
         self.datapack_widgets: list[tk.Widget] = []
         self.schematic_widgets: list[tk.Widget] = []
+        self.origin_mode_choices: dict[str, str] = {}
 
-        ttk.Label(self, text="Output format").grid(row=0, column=0, sticky="w")
+        ttk.Label(self, text=self.app.tr("step.output.heading")).grid(row=0, column=0, sticky="w")
         choices = ttk.Frame(self)
         choices.grid(row=1, column=0, sticky="ew", pady=(8, 8))
         for index, value in enumerate(OUTPUT_FORMAT_CHOICES):
             button = ttk.Radiobutton(
                 choices,
-                text=value,
+                text=self.app.tr(f"step.output.format.{value}"),
                 value=value,
                 variable=self.format_var,
                 command=self._on_format_change,
             )
             button.grid(row=0, column=index, sticky="w", padx=(0, 20))
-            self.register_help(button, OUTPUT_FORMAT_HELP)
+            self.register_help(button, self.app.tr("step.output.format_help"))
             self.format_buttons[value] = button
         ttk.Label(self, textvariable=self.notice_var, foreground="#8a5a00").grid(
             row=2, column=0, sticky="w"
@@ -99,6 +79,11 @@ class OutputStep(WizardStep):
         kind: type[tk.Variable] = tk.StringVar,
     ) -> tk.Variable:
         value = getattr(self.state.config, field)
+        if field == "schematic_origin_mode" and self.origin_mode_choices:
+            value = next(
+                (label for label, canonical in self.origin_mode_choices.items() if canonical == value),
+                value,
+            )
         if kind is tk.BooleanVar:
             variable = tk.BooleanVar(value=bool(value))
         else:
@@ -115,11 +100,7 @@ class OutputStep(WizardStep):
             )
             button.configure(state=state)
         if modules_require_runtime_logic(self.state.config):
-            self.notice_var.set(
-                "Schem-only is disabled because starter/playback assist requires "
-                "mcfunction runtime logic. Use \"both\" if you want schematic blocks "
-                "plus runtime commands."
-            )
+            self.notice_var.set(self.app.tr("step.output.schem_disabled"))
         else:
             self.notice_var.set("")
 
@@ -143,6 +124,10 @@ class OutputStep(WizardStep):
         self.vars.clear()
         self.datapack_widgets.clear()
         self.schematic_widgets.clear()
+        self.origin_mode_choices = {
+            self.app.tr(f"step.output.origin_mode.{value}"): value
+            for value in ("generation_origin", "min_corner")
+        }
         if (
             not self.state.datapack_name_user_modified
             and self.state.datapack_name in {"", default_datapack_folder_name(self.state.config)}
@@ -152,7 +137,7 @@ class OutputStep(WizardStep):
 
         datapack = ttk.LabelFrame(
             self.form,
-            text="Datapack / mcfunction output",
+            text=self.app.tr("step.output.datapack_group"),
             padding=10,
         )
         datapack.grid(row=0, column=0, sticky="ew", pady=(0, 8))
@@ -160,30 +145,26 @@ class OutputStep(WizardStep):
         output_entry = labeled_entry(
             datapack,
             0,
-            "Datapack output path",
+            self.app.tr("step.output.field.datapack_path"),
             self._var("output"),
-            help_text=(
-                "Parent folder where the generated datapack folder will be written."
-            ),
+            help_text=self.app.tr("step.output.help.datapack_path"),
             step=self,
         )
         self.datapack_widgets.append(output_entry)
         output_button = ttk.Button(
             datapack,
-            text="Browse...",
+            text=self.app.tr("common.browse"),
             command=self._browse_output,
         )
         output_button.grid(row=0, column=2, padx=(8, 0))
-        self.register_help(output_button, "Choose the parent output folder.")
+        self.register_help(output_button, self.app.tr("step.output.help.browse_datapack"))
         self.datapack_widgets.append(output_button)
         name_entry = labeled_entry(
             datapack,
             1,
-            "Datapack file/folder name",
+            self.app.tr("step.output.field.datapack_name"),
             self.datapack_name_var,
-            help_text=(
-                "Datapack folder name is derived from the input NBS file name."
-            ),
+            help_text=self.app.tr("step.output.help.datapack_name"),
             step=self,
         )
         self.datapack_name_entry = name_entry
@@ -191,16 +172,16 @@ class OutputStep(WizardStep):
         namespace = labeled_entry(
             datapack,
             2,
-            "Namespace",
+            self.app.tr("step.output.field.namespace"),
             self._var("function_namespace"),
-            help_text="Function namespace used for generated mcfunction commands.",
+            help_text=self.app.tr("step.output.help.namespace"),
             step=self,
         )
         self.datapack_widgets.append(namespace)
 
         build_style = ttk.LabelFrame(
             datapack,
-            text="Datapack build style",
+            text=self.app.tr("step.output.build_style"),
             padding=8,
         )
         build_style.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(8, 0))
@@ -209,69 +190,63 @@ class OutputStep(WizardStep):
         for row, value in enumerate(DATAPACK_BUILD_STYLE_CHOICES):
             radio = ttk.Radiobutton(
                 build_style,
-                text=BUILD_STYLE_LABELS[value],
+                text=self.app.tr(f"step.output.build_style.{value}"),
                 value=value,
                 variable=self.build_style_var,
             )
             radio.grid(row=row * 2, column=1, sticky="w", pady=(3, 0))
-            self.register_help(radio, BUILD_STYLE_HELP[value])
+            self.register_help(radio, self.app.tr(f"step.output.build_help.{value}"))
             self.datapack_widgets.append(radio)
             label = ttk.Label(
                 build_style,
-                text=BUILD_STYLE_HELP[value],
+                text=self.app.tr(f"step.output.build_help.{value}"),
                 wraplength=600,
             )
             label.grid(row=row * 2 + 1, column=1, sticky="w", pady=(0, 8))
             self.datapack_widgets.append(label)
 
-        schematic = ttk.LabelFrame(self.form, text="Schematic output", padding=10)
+        schematic = ttk.LabelFrame(self.form, text=self.app.tr("step.output.schematic_group"), padding=10)
         schematic.grid(row=1, column=0, sticky="ew")
         schematic.columnconfigure(1, weight=1)
         schematic_output = labeled_entry(
             schematic,
             0,
-            "Schematic output path",
+            self.app.tr("step.output.field.schematic_path"),
             self._var("schematic_output"),
-            help_text="Folder where the .schem file will be written.",
+            help_text=self.app.tr("step.output.help.schematic_path"),
             step=self,
         )
         self.schematic_widgets.append(schematic_output)
         schematic_button = ttk.Button(
             schematic,
-            text="Browse...",
+            text=self.app.tr("common.browse"),
             command=self._browse_schematic,
         )
         schematic_button.grid(row=0, column=2, padx=(8, 0))
-        self.register_help(schematic_button, "Choose the schematic output folder.")
+        self.register_help(schematic_button, self.app.tr("step.output.help.browse_schematic"))
         self.schematic_widgets.append(schematic_button)
         schematic_name = labeled_entry(
             schematic,
             1,
-            "Schematic file name",
+            self.app.tr("step.output.field.schematic_name"),
             self._var("schematic_name"),
-            help_text=(
-                "Schematic file name defaults to the input NBS file name without "
-                "the .nbs suffix."
-            ),
+            help_text=self.app.tr("step.output.help.schematic_name"),
             step=self,
         )
         self.schematic_widgets.append(schematic_name)
         origin_mode = labeled_option(
             schematic,
             2,
-            "Schematic origin mode",
+            self.app.tr("step.output.field.origin_mode"),
             self._var("schematic_origin_mode"),
-            ("generation_origin", "min_corner"),
-            help_text="Controls how world coordinates are converted into schematic coordinates.",
+            tuple(self.origin_mode_choices),
+            help_text=self.app.tr("step.output.help.origin_mode"),
             step=self,
         )
         self.schematic_widgets.append(origin_mode)
         ttk.Label(
             schematic,
-            text=(
-                "For WorldEdit, place .schem files in: "
-                ".minecraft/config/worldedit/schematics/"
-            ),
+            text=self.app.tr("step.output.worldedit_hint"),
         ).grid(row=3, column=1, sticky="w", pady=(8, 0))
         if preserved_values:
             for field, value in preserved_values.items():
@@ -293,12 +268,12 @@ class OutputStep(WizardStep):
             self.datapack_name_entry.configure(state=datapack_state)
 
     def _browse_output(self) -> None:
-        path = filedialog.askdirectory(title="Select datapack output folder")
+        path = filedialog.askdirectory(title=self.app.tr("dialog.select_datapack_folder.title"))
         if path and "output" in self.vars:
             self.vars["output"].set(absolute_path_text(path))
 
     def _browse_schematic(self) -> None:
-        path = filedialog.askdirectory(title="Select schematic output folder")
+        path = filedialog.askdirectory(title=self.app.tr("dialog.select_schematic_folder.title"))
         if path and "schematic_output" in self.vars:
             self.vars["schematic_output"].set(absolute_path_text(path))
 
@@ -328,6 +303,8 @@ class OutputStep(WizardStep):
                 name = value or default_name
                 updates[field] = name[:-6] if name.lower().endswith(".schem") else name
                 self.state.schematic_name_user_modified = updates[field] != default_name
+            elif field == "schematic_origin_mode":
+                updates[field] = self.origin_mode_choices.get(value, value)
             else:
                 updates[field] = value
         set_output_format(self.state, output_format)
@@ -339,4 +316,4 @@ class OutputStep(WizardStep):
         return is_output_format_selectable(self.state.config, self.format_var.get())
 
     def status_text(self) -> str:
-        return self.help_text
+        return self.app.tr(self.help_key)

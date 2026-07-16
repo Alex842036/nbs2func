@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from typing import Callable
 
 from nbs2func.config import Nbs2FuncConfig, config_from_dict, config_to_dict
 from nbs2func.core.minecraft_version import (
@@ -12,6 +13,7 @@ from nbs2func.core.minecraft_version import (
 
 
 GUI_MINECRAFT_VERSION_CHOICES = supported_minecraft_versions()
+Translate = Callable[..., str]
 
 DIRECTION_DISPLAY_TO_VALUE = {
     "east (+x)": "east",
@@ -71,6 +73,18 @@ def direction_value_to_display(value: str) -> str:
     return DIRECTION_VALUE_TO_DISPLAY.get(value, "east (+x)")
 
 
+def localized_direction_choices(translate: Translate) -> dict[str, str]:
+    return {
+        translate(f"step.layout_options.direction.{value}"): value
+        for value in ("east", "west", "south", "north")
+    }
+
+
+def localized_direction_value_to_display(value: str, translate: Translate) -> str:
+    choices = localized_direction_choices(translate)
+    return next((label for label, canonical in choices.items() if canonical == value), value)
+
+
 def modules_require_runtime_logic(config: Nbs2FuncConfig) -> bool:
     return config.enable_starter_module or config.enable_playback_assist
 
@@ -119,17 +133,31 @@ def parse_int(
     allow_empty: bool = False,
     min_value: int | None = None,
     max_value: int | None = None,
+    translate: Translate | None = None,
 ) -> int | None:
     if value == "" and allow_empty:
         return None
     try:
         parsed = int(value)
     except ValueError as exc:
-        raise ValueError(f"{label} must be an integer.") from exc
+        message = (
+            translate("validation.integer_required", field=label)
+            if translate is not None
+            else f"{label} must be an integer."
+        )
+        raise ValueError(message) from exc
     if min_value is not None and parsed < min_value:
-        raise ValueError(f"{label} must be at least {min_value}.")
+        raise ValueError(
+            translate("validation.minimum", field=label, minimum=min_value)
+            if translate is not None
+            else f"{label} must be at least {min_value}."
+        )
     if max_value is not None and parsed > max_value:
-        raise ValueError(f"{label} must be at most {max_value}.")
+        raise ValueError(
+            translate("validation.maximum", field=label, maximum=max_value)
+            if translate is not None
+            else f"{label} must be at most {max_value}."
+        )
     return parsed
 
 
@@ -139,21 +167,42 @@ def parse_float(
     *,
     min_value: float | None = None,
     max_value: float | None = None,
+    translate: Translate | None = None,
 ) -> float:
     try:
         parsed = float(value)
     except ValueError as exc:
-        raise ValueError(f"{label} must be a number.") from exc
+        message = (
+            translate("validation.number_required", field=label)
+            if translate is not None
+            else f"{label} must be a number."
+        )
+        raise ValueError(message) from exc
     if not math.isfinite(parsed):
-        raise ValueError(f"{label} must be a finite number.")
+        raise ValueError(
+            translate("validation.finite_required", field=label)
+            if translate is not None
+            else f"{label} must be a finite number."
+        )
     if min_value is not None and parsed < min_value:
-        raise ValueError(f"{label} must be at least {min_value}.")
+        raise ValueError(
+            translate("validation.minimum", field=label, minimum=min_value)
+            if translate is not None
+            else f"{label} must be at least {min_value}."
+        )
     if max_value is not None and parsed > max_value:
-        raise ValueError(f"{label} must be at most {max_value}.")
+        raise ValueError(
+            translate("validation.maximum", field=label, maximum=max_value)
+            if translate is not None
+            else f"{label} must be at most {max_value}."
+        )
     return parsed
 
 
-def origin_y_range_error(config: Nbs2FuncConfig) -> str | None:
+def origin_y_range_error(
+    config: Nbs2FuncConfig,
+    translate: Translate | None = None,
+) -> str | None:
     try:
         profile = get_minecraft_version_profile(config.minecraft_version)
     except MinecraftVersionError as exc:
@@ -163,16 +212,27 @@ def origin_y_range_error(config: Nbs2FuncConfig) -> str | None:
     max_origin_y = profile.max_build_y - sound_range
     if min_origin_y <= config.origin_y <= max_origin_y:
         return None
-    return (
+    english = (
         f"For Minecraft {profile.version_id}, origin Y must be chosen so that "
         f"[origin_y - 48, origin_y + 48] stays within "
         f"{profile.min_build_y}..{profile.max_build_y}."
     )
+    if translate is None:
+        return english
+    return translate(
+        "validation.origin_y_range",
+        version=profile.version_id,
+        minimum=profile.min_build_y,
+        maximum=profile.max_build_y,
+    )
 
 
-def validate_layout_options(config: Nbs2FuncConfig) -> list[str]:
+def validate_layout_options(
+    config: Nbs2FuncConfig,
+    translate: Translate | None = None,
+) -> list[str]:
     errors: list[str] = []
-    origin_error = origin_y_range_error(config)
+    origin_error = origin_y_range_error(config, translate)
     if origin_error is not None:
         errors.append(origin_error)
     return errors
@@ -274,12 +334,17 @@ def is_behind(
     ) * dz < 0
 
 
-def starter_origin_error(config: Nbs2FuncConfig) -> str | None:
+def starter_origin_error(
+    config: Nbs2FuncConfig,
+    translate: Translate | None = None,
+) -> str | None:
     if not config.enable_starter_module:
         return None
     if is_behind(starter_origin(config), layout_origin(config), config.direction):
         return None
     display = direction_value_to_display(config.direction)
+    if translate is not None and config.direction in {"east", "west", "south", "north"}:
+        return translate(f"validation.starter.{config.direction}")
     if config.direction == "east":
         return (
             "For east (+x), starter origin X must be smaller than layout origin X "
@@ -300,6 +365,8 @@ def starter_origin_error(config: Nbs2FuncConfig) -> str | None:
             "For north (-z), starter origin Z must be greater than layout origin Z "
             "so the starter is placed before the track."
         )
+    if translate is not None:
+        return translate("validation.starter.generic", direction=display)
     return f"For {display}, starter origin must be behind the layout origin."
 
 
@@ -321,13 +388,18 @@ def resolved_command_module_origin(
     return offset_behind(starter_origin(config), config.direction, 5)
 
 
-def command_module_origin_error(config: Nbs2FuncConfig) -> str | None:
+def command_module_origin_error(
+    config: Nbs2FuncConfig,
+    translate: Translate | None = None,
+) -> str | None:
     if not config.enable_playback_assist:
         return None
     command_origin = resolved_command_module_origin(config)
     reference = starter_origin(config)
     if is_behind(command_origin, reference, config.direction):
         return None
+    if translate is not None and config.direction in {"east", "west", "south", "north"}:
+        return translate(f"validation.command.{config.direction}")
     if config.direction == "east":
         return (
             "For east (+x), command module origin X must be smaller than starter "
@@ -348,6 +420,8 @@ def command_module_origin_error(config: Nbs2FuncConfig) -> str | None:
             "For north (-z), command module origin Z must be greater than starter "
             "origin Z."
         )
+    if translate is not None:
+        return translate("validation.command.generic")
     return "Command module origin must be behind starter origin."
 
 
@@ -382,12 +456,15 @@ def resolve_gui_generation_config(config: Nbs2FuncConfig) -> Nbs2FuncConfig:
     return config_from_dict(data)
 
 
-def validate_module_coordinates(config: Nbs2FuncConfig) -> list[str]:
+def validate_module_coordinates(
+    config: Nbs2FuncConfig,
+    translate: Translate | None = None,
+) -> list[str]:
     errors: list[str] = []
-    starter_error = starter_origin_error(config)
+    starter_error = starter_origin_error(config, translate)
     if starter_error is not None:
         errors.append(starter_error)
-    command_error = command_module_origin_error(config)
+    command_error = command_module_origin_error(config, translate)
     if command_error is not None:
         errors.append(command_error)
     return errors

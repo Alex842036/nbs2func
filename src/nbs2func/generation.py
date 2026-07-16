@@ -8,7 +8,7 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Mapping
 
 from .config import Nbs2FuncConfig
 from .core.instrument_mapping import validate_song_instruments_for_version
@@ -58,6 +58,8 @@ class GenerationEvent:
     overall_total: int | None = None
     overall_percent: float | None = None
     unit: str | None = None
+    i18n_key: str | None = None
+    i18n_params: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -107,6 +109,8 @@ def emit(
     overall_total: int | None = None,
     overall_percent: float | None = None,
     unit: str | None = None,
+    i18n_key: str | None = None,
+    i18n_params: Mapping[str, object] | None = None,
 ) -> None:
     if callback is not None:
         callback(
@@ -121,6 +125,8 @@ def emit(
                 overall_total=overall_total,
                 overall_percent=overall_percent,
                 unit=unit,
+                i18n_key=i18n_key,
+                i18n_params=i18n_params,
             )
         )
 
@@ -190,6 +196,8 @@ def generate_from_config(
             unit: str | None = None,
             key: str | None = None,
             detail: str | None = None,
+            i18n_key: str | None = None,
+            i18n_params: Mapping[str, object] | None = None,
         ) -> None:
             nonlocal overall_percent
             incoming = overall_percent_for_stage(stage_key, current, total)
@@ -204,9 +212,16 @@ def generate_from_config(
                 key=key or stage_key,
                 overall_percent=overall_percent,
                 unit=unit,
+                i18n_key=i18n_key or f"generation.progress.{stage_key}",
+                i18n_params=i18n_params,
             )
 
-        emit(progress_callback, "phase", "Validating config...")
+        emit(
+            progress_callback,
+            "phase",
+            "Validating config...",
+            i18n_key="generation.phase.validate_config",
+        )
         emit_progress("validate_config", "Validating config", current=0, total=1)
         version_profile = get_minecraft_version_profile(args.minecraft_version)
         validate_function_paths(args.function_namespace, args.build_function_dir)
@@ -224,7 +239,12 @@ def generate_from_config(
             raise ValueError(f"path is not a file: {path}")
         emit_progress("validate_config", "Validating config", current=1, total=1)
 
-        emit(progress_callback, "phase", "Reading NBS file...")
+        emit(
+            progress_callback,
+            "phase",
+            "Reading NBS file...",
+            i18n_key="generation.phase.read_nbs",
+        )
         emit_progress("read_nbs", "Reading NBS file", current=0, total=1)
         song = read_nbs(path)
         emit_progress("read_nbs", "Reading NBS file", current=1, total=1)
@@ -238,24 +258,58 @@ def generate_from_config(
                 rate_decimals=args.tempo_rate_decimals,
                 game_ticks_per_song_tick=args.game_ticks_per_song_tick,
             )
-            for line in tempo_report_lines(tempo_report):
-                emit(progress_callback, "notice", line)
+            tempo_lines = tempo_report_lines(tempo_report)
+            tempo_events = (
+                ("generation.notice.tempo.heading", {}),
+                ("generation.notice.tempo.nbs", {"value": tempo_report.nbs_tempo_tps}),
+                ("generation.notice.tempo.bpm", {"value": tempo_report.display_bpm}),
+                (
+                    "generation.notice.tempo.timing",
+                    {"value": tempo_report.game_ticks_per_song_tick},
+                ),
+                (
+                    "generation.notice.tempo.rate",
+                    {"value": tempo_report.target_minecraft_tps},
+                ),
+                ("generation.notice.tempo.backend", {"value": tempo_report.backend_label}),
+                ("generation.notice.tempo.command", {"value": tempo_report.command}),
+                ("generation.notice.tempo.reset", {"value": tempo_report.reset_command}),
+            )
+            for index, line in enumerate(tempo_lines):
+                if index < len(tempo_events):
+                    i18n_key, i18n_params = tempo_events[index]
+                    emit(
+                        progress_callback,
+                        "notice",
+                        line,
+                        i18n_key=i18n_key,
+                        i18n_params=i18n_params,
+                    )
+                else:
+                    emit(progress_callback, "notice", line)
             if args.tempo_control_mode == "report":
                 emit(
                     progress_callback,
                     "notice",
                     "Mode: report only; no tick rate command will be generated.",
+                    i18n_key="generation.notice.tempo.report_mode",
                 )
             elif args.tempo_control_mode == "command":
                 emit(
                     progress_callback,
                     "notice",
                     "Mode: command; playback assist will set the tick rate on start.",
+                    i18n_key="generation.notice.tempo.command_mode",
                 )
 
         validate_song_instruments_for_version(song, version_profile)
 
-        emit(progress_callback, "phase", "Building layout...")
+        emit(
+            progress_callback,
+            "phase",
+            "Building layout...",
+            i18n_key="generation.phase.build_layout",
+        )
         emit_progress("build_layout", "Building layout", current=0, total=1)
         def layout_progress(event: LayoutProgressEvent) -> None:
             emit_progress(
@@ -306,7 +360,12 @@ def generate_from_config(
             )
         emit_progress("build_layout", "Building layout", current=1, total=1)
 
-        emit(progress_callback, "phase", "Building block plan...")
+        emit(
+            progress_callback,
+            "phase",
+            "Building block plan...",
+            i18n_key="generation.phase.build_block_plan",
+        )
         block_plan_total = _block_plan_progress_total(layout)
         emit_progress(
             "build_block_plan",
@@ -364,9 +423,15 @@ def generate_from_config(
         schematic_origin: BlockPosition | None = None
         write_result = None
         warnings: list[str] = []
+        warning_events: list[tuple[str, str | None]] = []
 
         if args.output_format in {"datapack", "both"}:
-            emit(progress_callback, "phase", "Writing datapack...")
+            emit(
+                progress_callback,
+                "phase",
+                "Writing datapack...",
+                i18n_key="generation.phase.write_datapack",
+            )
             emit_progress(
                 "write_datapack",
                 "Writing datapack",
@@ -404,16 +469,29 @@ def generate_from_config(
                 else None,
             )
             datapack_path = datapack_root
-            emit(progress_callback, "output", f"Generated datapack: {datapack_root}")
+            emit(
+                progress_callback,
+                "output",
+                f"Generated datapack: {datapack_root}",
+                i18n_key="output.datapack",
+                i18n_params={"path": datapack_root},
+            )
             if args.no_split_functions:
                 emit(
                     progress_callback,
                     "output",
                     f"Generated mcfunction: {writer_output_path}",
+                    i18n_key="output.mcfunction",
+                    i18n_params={"path": writer_output_path},
                 )
 
         if args.output_format in {"schem", "both"}:
-            emit(progress_callback, "phase", "Writing schematic...")
+            emit(
+                progress_callback,
+                "phase",
+                "Writing schematic...",
+                i18n_key="generation.phase.write_schematic",
+            )
             emit_progress(
                 "write_schematic",
                 "Writing schematic",
@@ -450,20 +528,34 @@ def generate_from_config(
                 total=max(1, len(schematic_plan.blocks)),
                 unit="blocks",
             )
-            emit(progress_callback, "output", f"Generated schematic: {schematic_path}")
+            emit(
+                progress_callback,
+                "output",
+                f"Generated schematic: {schematic_path}",
+                i18n_key="output.schematic",
+                i18n_params={"path": schematic_path},
+            )
             emit(
                 progress_callback,
                 "output",
                 f"  schematic origin: {_format_position(schematic_origin)}",
+                i18n_key="output.schematic_origin",
+                i18n_params={"position": _format_position(schematic_origin)},
             )
             if args.output_format == "schem" and (
                 args.enable_starter_module or args.enable_playback_assist
             ):
-                warnings.extend(
+                module_warning = (
+                    "Schematic output does not include starter or playback assist modules."
+                )
+                runtime_warning = (
+                    "These modules require mcfunction support to execute runtime logic."
+                )
+                warnings.extend((module_warning, runtime_warning))
+                warning_events.extend(
                     (
-                        "Schematic output does not include starter or playback "
-                        "assist modules.",
-                        "These modules require mcfunction support to execute runtime logic.",
+                        (module_warning, "generation.warning.schem_modules"),
+                        (runtime_warning, "generation.warning.runtime_required"),
                     )
                 )
             if args.output_format == "both":
@@ -471,17 +563,21 @@ def generate_from_config(
                     progress_callback,
                     "notice",
                     "The .schem file contains all blocks including command blocks.",
+                    i18n_key="generation.notice.schem_blocks",
                 )
                 emit(
                     progress_callback,
                     "notice",
                     "The .mcfunction output contains runtime logic such as scoreboard, "
                     "summon, and execute.",
+                    i18n_key="generation.notice.mcfunction_runtime",
                 )
-            warnings.extend(schematic_warnings(schematic_plan))
+            for warning in schematic_warnings(schematic_plan):
+                warnings.append(warning)
+                warning_events.append((warning, None))
 
-        for warning in warnings:
-            emit(progress_callback, "warning", warning)
+        for warning, i18n_key in warning_events:
+            emit(progress_callback, "warning", warning, i18n_key=i18n_key)
 
         diagnostics = None
         if include_diagnostics:
@@ -540,23 +636,36 @@ def function_path_errors(
     function_namespace: str,
     build_function_dir: str,
 ) -> list[str]:
+    messages = {
+        "validation.namespace": (
+            "function_namespace must contain only lowercase letters, digits, '.', "
+            "'_', or '-'."
+        ),
+        "validation.build_function_dir": (
+            "build_function_dir must contain only lowercase letters, digits, '.', "
+            "'_', '-', or '/'."
+        ),
+    }
+    return [messages[key] for key in function_path_error_keys(
+        function_namespace, build_function_dir
+    )]
+
+
+def function_path_error_keys(
+    function_namespace: str,
+    build_function_dir: str,
+) -> list[str]:
     errors: list[str] = []
     if (
         not function_namespace
         or FUNCTION_NAMESPACE_RE.fullmatch(function_namespace) is None
     ):
-        errors.append(
-            "function_namespace must contain only lowercase letters, digits, '.', "
-            "'_', or '-'."
-        )
+        errors.append("validation.namespace")
     if (
         not build_function_dir
         or BUILD_FUNCTION_DIR_RE.fullmatch(build_function_dir) is None
     ):
-        errors.append(
-            "build_function_dir must contain only lowercase letters, digits, '.', "
-            "'_', '-', or '/'."
-        )
+        errors.append("validation.build_function_dir")
     return errors
 
 

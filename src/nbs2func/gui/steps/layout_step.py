@@ -7,25 +7,12 @@ from nbs2func.gui.state import set_layout_mode
 from nbs2func.gui.steps.base import WizardStep
 
 
-LAYOUT_DESCRIPTIONS = {
-    "basic_linear": (
-        "Simple and stable single-track linear layout.\n"
-        "Recommended for quick tests and simple songs."
-    ),
-    "track_based_stereo": (
-        "Places each track/layer according to volume and panning.\n"
-        "Recommended for stable multi-track stereo generation."
-    ),
-    "note_based_stereo": (
-        "Places individual note emitters according to note-level stereo information.\n"
-        "More spatialized but more complex and slower for large songs."
-    ),
-}
+LAYOUT_MODES = ("basic_linear", "track_based_stereo", "note_based_stereo")
 
 
 class LayoutStep(WizardStep):
-    title = "Layout"
-    help_text = "Select how nbs2func places note blocks and redstone tracks."
+    title_key = "step.layout.name"
+    help_key = "step.layout.help"
 
     def __init__(self, parent, app) -> None:
         super().__init__(parent, app)
@@ -33,13 +20,13 @@ class LayoutStep(WizardStep):
         self.mode_var = tk.StringVar()
         self.description_var = tk.StringVar()
 
-        ttk.Label(self, text="Layout mode").grid(row=0, column=0, sticky="w")
+        ttk.Label(self, text=self.app.tr("step.layout.heading")).grid(row=0, column=0, sticky="w")
         modes = ttk.Frame(self)
         modes.grid(row=1, column=0, sticky="ew", pady=(8, 12))
-        for index, mode in enumerate(LAYOUT_DESCRIPTIONS):
+        for index, mode in enumerate(LAYOUT_MODES):
             button = ttk.Radiobutton(
                 modes,
-                text=mode,
+                text=self.app.tr(f"step.layout.mode.{mode}"),
                 value=mode,
                 variable=self.mode_var,
                 command=self._on_change,
@@ -47,7 +34,7 @@ class LayoutStep(WizardStep):
             button.grid(row=index, column=0, sticky="w", pady=3)
             self.register_help(
                 button,
-                "Select how nbs2func places note blocks and redstone tracks.",
+                self.app.tr(self.help_key),
             )
         ttk.Label(self, textvariable=self.description_var, justify="left").grid(
             row=2, column=0, sticky="nw"
@@ -63,14 +50,17 @@ class LayoutStep(WizardStep):
         self.app.refresh()
 
     def _render_description(self) -> None:
-        self.description_var.set(LAYOUT_DESCRIPTIONS.get(self.mode_var.get(), ""))
+        mode = self.mode_var.get()
+        self.description_var.set(
+            self.app.tr(f"step.layout.description.{mode}") if mode in LAYOUT_MODES else ""
+        )
 
     def apply(self) -> bool:
         set_layout_mode(self.state, self.mode_var.get())
         return True
 
     def is_complete(self) -> bool:
-        return self.mode_var.get() in LAYOUT_DESCRIPTIONS
+        return self.mode_var.get() in LAYOUT_MODES
 
     def status_text(self) -> str:
-        return self.help_text
+        return self.app.tr(self.help_key)

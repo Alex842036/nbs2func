@@ -8,7 +8,7 @@ from nbs2func.gui.steps.base import WizardStep
 
 
 class SummaryStep(WizardStep):
-    title = "Summary"
+    title_key = "step.summary.name"
 
     def __init__(self, parent, app) -> None:
         super().__init__(parent, app)
@@ -18,17 +18,17 @@ class SummaryStep(WizardStep):
         self.text.grid(row=0, column=0, sticky="nsew")
         actions = ttk.Frame(self)
         actions.grid(row=1, column=0, sticky="ew", pady=(8, 0))
-        ttk.Button(actions, text="Save Config", command=self.save_config).grid(
+        ttk.Button(actions, text=self.app.tr("common.save_config"), command=self.save_config).grid(
             row=0, column=0, sticky="w"
         )
 
     def on_show(self) -> None:
         self.text.configure(state="normal")
         self.text.delete("1.0", "end")
-        self.text.insert("end", "\n".join(summary_lines(self.state)))
-        errors = validate_ready_to_generate(self.state)
+        self.text.insert("end", "\n".join(summary_lines(self.state, self.app.tr)))
+        errors = validate_ready_to_generate(self.state, self.app.tr)
         if errors:
-            self.text.insert("end", "\n\nErrors:\n")
+            self.text.insert("end", f"\n\n{self.app.tr('step.summary.errors')}\n")
             self.text.insert("end", "\n".join(f"- {error}" for error in errors))
         self.text.configure(state="disabled")
 
@@ -36,10 +36,10 @@ class SummaryStep(WizardStep):
         self.app.save_config_file()
 
     def is_complete(self) -> bool:
-        return not validate_ready_to_generate(self.state)
+        return not validate_ready_to_generate(self.state, self.app.tr)
 
     def status_text(self) -> str:
-        errors = validate_ready_to_generate(self.state)
+        errors = validate_ready_to_generate(self.state, self.app.tr)
         if errors:
             return errors[0]
-        return "Review the configuration, then generate."
+        return self.app.tr("step.summary.review")

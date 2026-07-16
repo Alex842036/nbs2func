@@ -592,7 +592,7 @@ def test_generate_step_no_longer_uses_subprocess_cli_stdout() -> None:
     assert "--config" not in source
     assert "include_diagnostics=False" in source
     assert "event.kind == \"progress\"" in source
-    assert "Current stage: Finished" in source
+    assert 'self.app.tr("step.generate.finished_stage")' in source
 
 
 def test_wizard_save_config_applies_current_step_before_writing() -> None:
@@ -656,7 +656,7 @@ def test_wizard_exit_routes_use_one_close_handler() -> None:
     source = Path("src/nbs2func/gui/wizard.py").read_text(encoding="utf-8")
 
     assert 'self.protocol("WM_DELETE_WINDOW", self.request_close)' in source
-    assert 'label="Exit", command=self.request_close' in source
+    assert 'label=self.tr("menu.file.exit"), command=self.request_close' in source
 
 
 def test_summary_and_generate_navigation_buttons_are_not_duplicated() -> None:
@@ -665,10 +665,10 @@ def test_summary_and_generate_navigation_buttons_are_not_duplicated() -> None:
     )
     wizard_source = Path("src/nbs2func/gui/wizard.py").read_text(encoding="utf-8")
 
-    assert 'text="Save Config"' in summary_source
-    assert 'text="Generate"' not in summary_source
-    assert 'text="Generate", command=self.go_generate' in wizard_source
-    assert 'text="Finish"' in wizard_source
+    assert 'text=self.app.tr("common.save_config")' in summary_source
+    assert 'common.generate' not in summary_source
+    assert 'text=self.tr("common.generate"), command=self.go_generate' in wizard_source
+    assert 'text=self.tr("common.finish")' in wizard_source
     assert "command=self.request_close" in wizard_source
     assert "Back to Summary" not in wizard_source
     assert "def back_to_summary" not in wizard_source

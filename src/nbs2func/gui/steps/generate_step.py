@@ -14,11 +14,15 @@ from nbs2func.generation import (
     monotonic_overall_progress,
 )
 from nbs2func.gui.helpers import resolve_gui_generation_config
-from nbs2func.gui.state import append_log, clear_log
+from nbs2func.gui.i18n import Translator
+from nbs2func.gui.state import append_generation_event, append_log, clear_log
 from nbs2func.gui.steps.base import WizardStep
 
 
-def format_generation_event(event: GenerationEvent) -> str:
+def format_generation_event(
+    event: GenerationEvent,
+    translator: Translator | None = None,
+) -> str:
     labels = {
         "phase": "Phase",
         "notice": "Notice",
@@ -27,22 +31,55 @@ def format_generation_event(event: GenerationEvent) -> str:
         "error": "Error",
         "done": "Done",
     }
-    label = labels.get(event.kind, event.kind.title())
+    if translator is None:
+        label = labels.get(event.kind, event.kind.title())
+        message = event.message
+    else:
+        label = translator.gettext(f"generation.kind.{event.kind}")
+        message = translator.event_message(
+            event.message, event.i18n_key, event.i18n_params
+        )
     if event.detail:
-        return f"[{label}] {event.message} {event.detail}"
-    return f"[{label}] {event.message}"
+        return f"[{label}] {message} {event.detail}"
+    return f"[{label}] {message}"
 
 
-def format_progress_event(event: GenerationEvent) -> str:
+def format_progress_event(
+    event: GenerationEvent,
+    translator: Translator | None = None,
+) -> str:
+    message = (
+        event.message
+        if translator is None
+        else translator.event_message(event.message, event.i18n_key, event.i18n_params)
+    )
     if event.total == 0:
-        return f"Skipped: {event.message}"
+        if translator is not None:
+            return translator.gettext("generation.skipped", message=message)
+        return f"Skipped: {message}"
     if event.current is not None and event.total is not None:
-        suffix = f" {event.unit}" if event.unit else ""
-        return f"{event.message}: {event.current} / {event.total}{suffix}"
-    return event.message
+        unit = event.unit
+        if translator is not None and unit and translator.has_key(f"unit.{unit}"):
+            unit = translator.gettext(f"unit.{unit}")
+        suffix = f" {unit}" if unit else ""
+        if translator is not None:
+            return translator.gettext(
+                "generation.progress",
+                message=message,
+                current=event.current,
+                total=event.total,
+                unit=suffix,
+            )
+        return f"{message}: {event.current} / {event.total}{suffix}"
+    return message
 
 
-def format_overall_progress(percent: float) -> str:
+def format_overall_progress(
+    percent: float,
+    translator: Translator | None = None,
+) -> str:
+    if translator is not None:
+        return translator.gettext("step.generate.overall", percent=percent)
     return f"Overall progress: {percent:.0f}%"
 
 
@@ -51,20 +88,22 @@ def should_continue_polling(thread_alive: bool, queue_empty: bool) -> bool:
 
 
 class GenerateStep(WizardStep):
-    title = "Generate"
+    title_key = "step.generate.name"
 
     def __init__(self, parent, app) -> None:
         super().__init__(parent, app)
         self.columnconfigure(0, weight=1)
         self.rowconfigure(6, weight=1)
-        self.status_var = tk.StringVar(value="Ready to generate.")
-        self.overall_progress_var = tk.StringVar(value="Overall progress: 0%")
-        self.current_stage_var = tk.StringVar(value="Current stage")
+        self.status_var = tk.StringVar(value=self.app.tr("step.generate.ready"))
+        self.overall_progress_var = tk.StringVar(
+            value=format_overall_progress(0, self.app.translator)
+        )
+        self.current_stage_var = tk.StringVar(value=self.app.tr("step.generate.current_stage"))
         self.progress_detail_var = tk.StringVar(value="")
         self._overall_percent = 0.0
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.thread: threading.Thread | None = None
-        self.result: GenerationResult | None = None
+        self.result: GenerationResult | None = self.state.generation_result
         self._saw_error_event = False
 
         ttk.Label(self, textvariable=self.status_var).grid(row=0, column=0, sticky="w")
@@ -105,27 +144,28 @@ class GenerateStep(WizardStep):
         buttons.grid(row=7, column=0, sticky="ew")
         self.open_datapack_button = ttk.Button(
             buttons,
-            text="Open datapack/mcfunction folder",
+            text=self.app.tr("step.generate.open_datapack"),
             command=self.open_datapack_folder,
             state="disabled",
         )
         self.open_datapack_button.grid(row=0, column=0, sticky="w")
         self.open_schematic_button = ttk.Button(
             buttons,
-            text="Open schematic folder",
+            text=self.app.tr("step.generate.open_schematic"),
             command=self.open_schematic_folder,
             state="disabled",
         )
         self.open_schematic_button.grid(row=0, column=1, sticky="w", padx=(8, 0))
         ttk.Button(
             buttons,
-            text="Generate another",
+            text=self.app.tr("step.generate.another"),
             command=self.generate_another,
         ).grid(row=0, column=2, sticky="w", padx=(8, 0))
 
     def on_show(self) -> None:
         if self.thread is not None and self.thread.is_alive():
             return
+        self.result = self.state.generation_result
         self._render_log()
         self._sync_open_buttons()
 
@@ -135,14 +175,15 @@ class GenerateStep(WizardStep):
         self.state.config = resolve_gui_generation_config(self.state.config)
         clear_log(self.state)
         self.result = None
+        self.state.generation_result = None
         self._saw_error_event = False
         self._overall_percent = 0.0
-        self.overall_progress_var.set(format_overall_progress(0.0))
+        self.overall_progress_var.set(format_overall_progress(0.0, self.app.translator))
         self.overall_progress.configure(value=0)
-        self.current_stage_var.set("Current stage")
+        self.current_stage_var.set(self.app.tr("step.generate.current_stage"))
         self.progress_detail_var.set("")
         self._set_open_buttons(False, False)
-        self.status_var.set("Generating...")
+        self.status_var.set(self.app.tr("step.generate.generating"))
         self._render_log()
         self.current_progress.configure(mode="indeterminate")
         self.current_progress.start()
@@ -162,7 +203,9 @@ class GenerateStep(WizardStep):
                 include_diagnostics=False,
             )
             self.events.put(("result", result))
-            self.events.put(("event", GenerationEvent("done", "Generation finished.")))
+            self.events.put(("event", GenerationEvent(
+                "done", "Generation finished.", i18n_key="generation.done"
+            )))
         except Exception as exc:
             self.events.put(("exception", exc))
 
@@ -194,14 +237,16 @@ class GenerateStep(WizardStep):
                     terminal_event = True
                     self._set_overall_percent(100.0)
                     self._set_finished_progress()
-                line = format_generation_event(event)
+                line = format_generation_event(event, self.app.translator)
+                append_generation_event(self.state, event)
                 append_log(self.state, line)
                 lines.append(line)
             elif kind == "result":
                 result = payload
                 assert isinstance(result, GenerationResult)
                 self.result = result
-                self.status_var.set("Generation succeeded.")
+                self.state.generation_result = result
+                self.status_var.set(self.app.tr("step.generate.succeeded"))
                 terminal_event = True
                 self._set_finished_progress()
                 self.app.set_generation_running(False)
@@ -210,17 +255,17 @@ class GenerateStep(WizardStep):
                 exc = payload
                 assert isinstance(exc, Exception)
                 if not self._saw_error_event:
-                    line = format_generation_event(
-                        GenerationEvent("error", str(exc))
-                    )
+                    error_event = GenerationEvent("error", str(exc))
+                    line = format_generation_event(error_event, self.app.translator)
+                    append_generation_event(self.state, error_event)
                     append_log(self.state, line)
                     lines.append(line)
-                self.status_var.set("Generation failed.")
+                self.status_var.set(self.app.tr("step.generate.failed"))
                 terminal_event = True
                 self._reset_current_progress()
                 self.app.set_generation_running(False)
                 self._sync_open_buttons()
-                messagebox.showerror("Generate", str(exc))
+                messagebox.showerror(self.app.tr("dialog.generate.title"), str(exc))
 
         if lines:
             self._append_lines(lines)
@@ -236,8 +281,11 @@ class GenerateStep(WizardStep):
             return
         if event.overall_percent is not None:
             self._set_overall_percent(event.overall_percent)
-        self.current_stage_var.set("Current stage")
-        self.progress_detail_var.set(f"Current: {format_progress_event(event)}")
+        self.current_stage_var.set(self.app.tr("step.generate.current_stage"))
+        self.progress_detail_var.set(self.app.tr(
+            "step.generate.current",
+            detail=format_progress_event(event, self.app.translator),
+        ))
         if event.current is not None and event.total is not None and event.total > 0:
             self.current_progress.stop()
             self.current_progress.configure(
@@ -251,14 +299,14 @@ class GenerateStep(WizardStep):
                 self.current_progress.start()
 
     def _reset_current_progress(self) -> None:
-        self.current_stage_var.set("Current stage")
+        self.current_stage_var.set(self.app.tr("step.generate.current_stage"))
         self.progress_detail_var.set("")
         self.current_progress.stop()
         self.current_progress.configure(mode="indeterminate", value=0)
 
     def _set_finished_progress(self) -> None:
-        self.current_stage_var.set("Current stage: Finished")
-        self.progress_detail_var.set("Finished")
+        self.current_stage_var.set(self.app.tr("step.generate.finished_stage"))
+        self.progress_detail_var.set(self.app.tr("step.generate.finished"))
         self.current_progress.stop()
         self.current_progress.configure(
             mode="determinate",
@@ -271,13 +319,22 @@ class GenerateStep(WizardStep):
             self._overall_percent,
             percent,
         )
-        self.overall_progress_var.set(format_overall_progress(self._overall_percent))
+        self.overall_progress_var.set(
+            format_overall_progress(self._overall_percent, self.app.translator)
+        )
         self.overall_progress.configure(value=self._overall_percent)
 
     def _render_log(self) -> None:
         self.log.configure(state="normal")
         self.log.delete("1.0", "end")
-        if self.state.output_log:
+        if self.state.generation_events:
+            lines = [
+                format_generation_event(event, self.app.translator)
+                for event in self.state.generation_events
+            ]
+            self.log.insert("end", "\n".join(lines) + "\n")
+            self.log.see("end")
+        elif self.state.output_log:
             self.log.insert("end", "\n".join(self.state.output_log) + "\n")
             self.log.see("end")
         self.log.configure(state="disabled")
@@ -311,23 +368,31 @@ class GenerateStep(WizardStep):
 
     def _open_folder(self, path: Path | None) -> None:
         if path is None:
-            messagebox.showerror("Open folder", "No output path is available yet.")
+            messagebox.showerror(
+                self.app.tr("dialog.open_folder.title"),
+                self.app.tr("dialog.open_folder.no_path"),
+            )
             return
         path = self._absolute_path(path)
         folder = path.parent if path.is_file() else path
         if not folder.exists():
-            messagebox.showerror("Open folder", f"Folder does not exist: {folder}")
+            messagebox.showerror(
+                self.app.tr("dialog.open_folder.title"),
+                self.app.tr("dialog.open_folder.missing", path=folder),
+            )
             return
         try:
             os.startfile(folder)  # type: ignore[attr-defined]
         except AttributeError:
             messagebox.showerror(
-                "Open folder",
-                "Opening output folders is currently supported only on Windows "
-                "in this preview.",
+                self.app.tr("dialog.open_folder.title"),
+                self.app.tr("dialog.open_folder.platform"),
             )
         except OSError as exc:
-            messagebox.showerror("Open folder", str(exc))
+            messagebox.showerror(
+                self.app.tr("dialog.open_folder.title"),
+                self.app.tr("dialog.open_folder.error", error=exc),
+            )
 
     def open_datapack_folder(self) -> None:
         path = self.result.datapack_path if self.result is not None else None
