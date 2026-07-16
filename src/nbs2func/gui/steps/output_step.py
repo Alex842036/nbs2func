@@ -313,7 +313,10 @@ class OutputStep(WizardStep):
         return True
 
     def is_complete(self) -> bool:
-        return is_output_format_selectable(self.state.config, self.format_var.get())
+        return is_output_format_selectable(
+            self.state.config,
+            self.state.config.output_format,
+        )
 
     def status_text(self) -> str:
         return self.app.tr(self.help_key)

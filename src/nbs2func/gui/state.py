@@ -20,6 +20,7 @@ from nbs2func.gui.helpers import (
     validate_layout_options,
     validate_module_coordinates,
 )
+from nbs2func.gui.i18n import Translator
 from nbs2func.generation import (
     GenerationEvent,
     GenerationResult,
@@ -196,8 +197,15 @@ def summary_lines(
     state: WizardState,
     translate: Callable[..., str] | None = None,
 ) -> list[str]:
+    effective_translate = translate or Translator("en").gettext
+
     def tr(key: str, english: str, **params: object) -> str:
         return translate(key, **params) if translate is not None else english.format(**params)
+
+    def enum_text(prefix: str, value: str) -> str:
+        key = f"{prefix}.{value}"
+        translated = effective_translate(key)
+        return value if translated.startswith("[") else translated
 
     config = state.config
     song = state.input_song_summary or {}
@@ -215,23 +223,52 @@ def summary_lines(
     na = tr("common.not_available", "n/a")
     not_loaded = tr("common.not_loaded", "(not loaded)")
     default = tr("common.default", "(default)")
+    layout_mode = enum_text("step.layout.mode", config.layout_mode)
+    direction = enum_text("step.layout_options.direction", config.direction)
+    output_format = enum_text("step.output.format", config.output_format)
+    tempo_mode = enum_text("step.modules.mode", config.tempo_control_mode)
+    tempo_backend = enum_text(
+        "step.modules.backend",
+        config.tempo_control_backend,
+    )
     lines = [
         tr("step.summary.input_file", "Input file: {value}", value=config.input_path),
         tr("step.summary.song", "Song: {value}", value=song.get("name", not_loaded)),
         tr("step.summary.length", "Length: {value} ticks", value=song.get("length", na)),
         tr("step.summary.notes", "Notes: {value}", value=song.get("note_count", na)),
-        tr("step.summary.layout_mode", "Layout mode: {value}", value=config.layout_mode),
-        tr("step.summary.direction", "Direction: {value}", value=config.direction),
+        tr("step.summary.layout_mode", "Layout mode: {value}", value=layout_mode),
+        tr("step.summary.direction", "Direction: {value}", value=direction),
         tr("step.summary.origin", "Origin: {x}, {y}, {z}", x=config.origin_x, y=config.origin_y, z=config.origin_z),
         tr("step.summary.minecraft_version", "Minecraft version: {value}", value=config.minecraft_version),
-        tr("step.summary.output_format", "Output format: {value}", value=config.output_format),
-        tr("step.summary.output_folder", "Output folder: {value}", value=config.output),
-        tr("step.summary.namespace", "Namespace: {value}", value=config.function_namespace),
-        tr("step.summary.schematic_output", "Schematic output: {value}", value=config.schematic_output or default),
-        tr("step.summary.schematic_name", "Schematic name: {value}", value=config.schematic_name or default),
-        tr("step.summary.modules", "Modules: {value}", value=", ".join(modules)),
-        tr("step.summary.tempo", "Tempo control: {mode} / {backend}", mode=config.tempo_control_mode, backend=config.tempo_control_backend),
+        tr("step.summary.output_format", "Output format: {value}", value=output_format),
     ]
+    if config.output_format in {"datapack", "both"}:
+        build_style = enum_text(
+            "step.output.build_style",
+            config.datapack_build_style,
+        )
+        lines.append(
+            tr(
+                "step.summary.build_style",
+                "Datapack build style: {value}",
+                value=build_style,
+            )
+        )
+    lines.extend(
+        (
+            tr("step.summary.output_folder", "Output folder: {value}", value=config.output),
+            tr("step.summary.namespace", "Namespace: {value}", value=config.function_namespace),
+            tr("step.summary.schematic_output", "Schematic output: {value}", value=config.schematic_output or default),
+            tr("step.summary.schematic_name", "Schematic name: {value}", value=config.schematic_name or default),
+            tr("step.summary.modules", "Modules: {value}", value=", ".join(modules)),
+            tr(
+                "step.summary.tempo",
+                "Tempo control: {mode} / {backend}",
+                mode=tempo_mode,
+                backend=tempo_backend,
+            ),
+        )
+    )
     if state.warnings:
         lines.append(tr("step.summary.warnings", "Warnings:"))
         lines.extend(f"- {warning}" for warning in state.warnings)

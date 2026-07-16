@@ -216,6 +216,7 @@
   "step.summary.origin": "原点：{x}, {y}, {z}",
   "step.summary.minecraft_version": "Minecraft 版本：{value}",
   "step.summary.output_format": "输出格式：{value}",
+  "step.summary.build_style": "datapack 构建方式：{value}",
   "step.summary.output_folder": "输出文件夹：{value}",
   "step.summary.namespace": "函数命名空间：{value}",
   "step.summary.schematic_output": "原理图输出：{value}",

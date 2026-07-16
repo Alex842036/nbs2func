@@ -1,10 +1,11 @@
 import json
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from nbs2func import __version__
 from nbs2func.config import config_to_dict, load_config, save_config
-from nbs2func.generation import GenerationEvent
+from nbs2func.generation import GenerationEvent, GenerationResult
 from nbs2func.gui.helpers import (
     GUI_MINECRAFT_VERSION_CHOICES,
     TRACK_BASED_GUI_FIELDS,
@@ -33,20 +34,26 @@ from nbs2func.gui.steps.modules_step import (
 )
 from nbs2func.gui.steps.output_step import (
     DATAPACK_BUILD_STYLE_CHOICES,
+    OutputStep,
     output_datapack_controls_enabled,
 )
 from nbs2func.gui.steps.generate_step import (
+    GenerateStep,
     format_overall_progress,
     format_generation_event,
     format_progress_event,
+    generation_display_state,
     should_continue_polling,
 )
+from nbs2func.gui.steps.layout_step import LayoutStep
+from nbs2func.gui.i18n import Translator
 from nbs2func.gui.state import (
     create_state_from_config,
     create_default_state,
     load_input_song,
     set_layout_mode,
     set_output_format,
+    summary_lines,
     update_config,
     validate_ready_to_generate,
 )
@@ -86,6 +93,26 @@ def test_gui_state_writes_output_format_to_config() -> None:
     assert state.config.output_format == "schem"
     assert state.config.enable_starter_module is True
     assert state.config.enable_playback_assist is True
+
+
+def test_layout_completion_uses_config_before_widget_initialization() -> None:
+    state = create_default_state()
+    update_config(state, layout_mode="note_based_stereo")
+    step = LayoutStep.__new__(LayoutStep)
+    step.app = type("App", (), {"state_data": state})()
+
+    assert not hasattr(step, "mode_var")
+    assert step.is_complete() is True
+
+
+def test_output_completion_uses_config_before_widget_initialization() -> None:
+    state = create_default_state()
+    update_config(state, output_format="both")
+    step = OutputStep.__new__(OutputStep)
+    step.app = type("App", (), {"state_data": state})()
+
+    assert not hasattr(step, "format_var")
+    assert step.is_complete() is True
 
 
 def test_gui_version_choices_only_include_exact_supported_versions() -> None:
@@ -576,6 +603,142 @@ def test_generate_step_formats_progress_events() -> None:
     assert format_overall_progress(62.4) == "Overall progress: 62%"
 
 
+def test_generation_display_state_restores_success_and_failure() -> None:
+    state = create_default_state()
+    idle = generation_display_state(state)
+    assert (idle.phase, idle.overall_percent, idle.finished) == ("idle", 0.0, False)
+
+    state.generation_result = GenerationResult(output_format="datapack")
+    succeeded = generation_display_state(state)
+    assert (succeeded.phase, succeeded.overall_percent, succeeded.finished) == (
+        "succeeded",
+        100.0,
+        True,
+    )
+
+    state.generation_result = None
+    state.generation_events.append(GenerationEvent("error", "boom"))
+    failed = generation_display_state(state)
+    assert (failed.phase, failed.overall_percent, failed.finished) == (
+        "failed",
+        0.0,
+        False,
+    )
+
+
+def test_generate_step_on_show_restores_localized_terminal_state() -> None:
+    translator = Translator("zh_CN")
+    app = SimpleNamespace(
+        translator=translator,
+        tr=translator.gettext,
+    )
+
+    success_state = create_default_state()
+    success_result = GenerationResult(output_format="datapack")
+    success_state.generation_result = success_result
+    succeeded = SimpleNamespace(
+        thread=None,
+        state=success_state,
+        result=None,
+        app=app,
+        _overall_percent=0.0,
+        overall_progress_var=Mock(),
+        overall_progress=Mock(),
+        status_var=Mock(),
+        _set_finished_progress=Mock(),
+        _reset_current_progress=Mock(),
+        _render_log=Mock(),
+        _sync_open_buttons=Mock(),
+    )
+    GenerateStep.on_show(succeeded)  # type: ignore[arg-type]
+
+    assert succeeded.result is success_result
+    succeeded.status_var.set.assert_called_once_with(
+        translator.gettext("step.generate.succeeded")
+    )
+    succeeded.overall_progress_var.set.assert_called_once_with(
+        translator.gettext("step.generate.overall", percent=100.0)
+    )
+    succeeded._set_finished_progress.assert_called_once_with()
+    succeeded._reset_current_progress.assert_not_called()
+
+    failed_state = create_default_state()
+    failed_state.generation_events.append(GenerationEvent("error", "boom"))
+    failed = SimpleNamespace(
+        thread=None,
+        state=failed_state,
+        result=None,
+        app=app,
+        _overall_percent=100.0,
+        overall_progress_var=Mock(),
+        overall_progress=Mock(),
+        status_var=Mock(),
+        _set_finished_progress=Mock(),
+        _reset_current_progress=Mock(),
+        _render_log=Mock(),
+        _sync_open_buttons=Mock(),
+    )
+    GenerateStep.on_show(failed)  # type: ignore[arg-type]
+
+    failed.status_var.set.assert_called_once_with(
+        translator.gettext("step.generate.failed")
+    )
+    failed.overall_progress_var.set.assert_called_once_with(
+        translator.gettext("step.generate.overall", percent=0.0)
+    )
+    failed._reset_current_progress.assert_called_once_with()
+    failed._set_finished_progress.assert_not_called()
+
+
+def test_summary_localizes_internal_enum_values_without_changing_config() -> None:
+    state = create_default_state()
+    update_config(
+        state,
+        layout_mode="note_based_stereo",
+        direction="east",
+        output_format="both",
+        datapack_build_style="player_tp",
+        tempo_control_mode="command",
+        tempo_control_backend="auto",
+    )
+    config_before = config_to_dict(state.config)
+
+    expected_keys = (
+        "step.layout.mode.note_based_stereo",
+        "step.layout_options.direction.east",
+        "step.output.format.both",
+        "step.output.build_style.player_tp",
+        "step.modules.mode.command",
+        "step.modules.backend.auto",
+    )
+    raw_english_lines = (
+        "Layout mode: note_based_stereo",
+        "Direction: east",
+        "Output format: both",
+        "Datapack build style: player_tp",
+        "Tempo control: command / auto",
+    )
+
+    for language in ("en", "zh_CN"):
+        translator = Translator(language)
+        lines = summary_lines(state, translator.gettext)
+        text = "\n".join(lines)
+        for key in expected_keys:
+            assert translator.gettext(key) in text
+        build_style = translator.gettext("step.output.build_style.player_tp")
+        assert translator.gettext(
+            "step.summary.build_style",
+            value=build_style,
+        ) in text
+        for raw_line in raw_english_lines:
+            assert raw_line not in lines
+        if language == "zh_CN":
+            for internal in ("note_based_stereo", "player_tp", "east", "both"):
+                assert internal not in text
+
+    assert config_to_dict(state.config) == config_before
+
+
 def test_generate_step_polling_continues_until_thread_done_and_queue_empty() -> None:
     assert should_continue_polling(thread_alive=False, queue_empty=False) is True
     assert should_continue_polling(thread_alive=False, queue_empty=True) is False
@@ -680,6 +843,12 @@ def test_generate_navigation_buttons_follow_generation_running_state() -> None:
 
     assert "self.current_index > 0 and not self.generation_running" in source
     assert "current.is_complete() and not self.generation_running" in source
+
+
+def test_completed_step_marker_is_language_neutral() -> None:
+    source = Path("src/nbs2func/gui/wizard.py").read_text(encoding="utf-8")
+    assert 'text=f"✓ {index + 1} {title}"' in source
+    assert 'text=f"OK {index + 1} {title}"' not in source
 
 
 def test_existing_datapack_confirmation_follows_output_format(tmp_path: Path) -> None:

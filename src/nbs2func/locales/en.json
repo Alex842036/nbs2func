@@ -216,6 +216,7 @@
   "step.summary.origin": "Origin: {x}, {y}, {z}",
   "step.summary.minecraft_version": "Minecraft version: {value}",
   "step.summary.output_format": "Output format: {value}",
+  "step.summary.build_style": "Datapack build style: {value}",
   "step.summary.output_folder": "Output folder: {value}",
   "step.summary.namespace": "Namespace: {value}",
   "step.summary.schematic_output": "Schematic output: {value}",

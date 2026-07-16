@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import tkinter as tk
+from copy import deepcopy
+from dataclasses import dataclass, fields
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import TYPE_CHECKING
@@ -43,6 +45,30 @@ def _tr(app: object, key: str, **params: object) -> str:
     if callable(translate):
         return translate(key, **params)
     return Translator("en").gettext(key, **params)
+
+
+@dataclass(frozen=True)
+class WizardNavigationState:
+    current_index: int
+    max_unlocked_index: int
+    generate_unlocked: bool
+
+
+def restored_navigation_state(
+    navigation: WizardNavigationState,
+    step_count: int,
+) -> WizardNavigationState:
+    last_index = max(0, step_count - 1)
+    return WizardNavigationState(
+        current_index=min(navigation.current_index, last_index),
+        max_unlocked_index=min(navigation.max_unlocked_index, last_index),
+        generate_unlocked=navigation.generate_unlocked,
+    )
+
+
+def _restore_wizard_state(target: WizardState, snapshot: WizardState) -> None:
+    for state_field in fields(WizardState):
+        setattr(target, state_field.name, getattr(snapshot, state_field.name))
 
 
 class WizardApp(tk.Tk):
@@ -125,7 +151,17 @@ class WizardApp(tk.Tk):
         normalized = Translator.normalize_language(language)
         if normalized == self.translator.language:
             return
-        current_index = self.current_index
+        previous_language = self.translator.language
+        navigation = WizardNavigationState(
+            current_index=self.current_index,
+            max_unlocked_index=self.max_unlocked_index,
+            generate_unlocked=self.generate_unlocked,
+        )
+        state_snapshot = deepcopy(self.state_data)
+        if not self.leave_current_step():
+            _restore_wizard_state(self.state_data, state_snapshot)
+            self.language_var.set(previous_language)
+            return
         self.translator.set_language(normalized)
         self.gui_settings = GuiSettings(language=normalized)
         try:
@@ -145,7 +181,10 @@ class WizardApp(tk.Tk):
         self.steps.clear()
         self.step_buttons.clear()
         self._load_steps()
-        self.current_index = min(current_index, len(self.steps) - 1)
+        restored = restored_navigation_state(navigation, len(self.steps))
+        self.max_unlocked_index = restored.max_unlocked_index
+        self.generate_unlocked = restored.generate_unlocked
+        self.current_index = restored.current_index
         self._display_step(self.current_index)
 
     def _build_shell(self) -> None:
@@ -271,7 +310,7 @@ class WizardApp(tk.Tk):
                 button.configure(text=f"> {index + 1} {title}")
                 button.configure(style="Current.Step.TButton")
             elif index < self.current_index and self.steps[index].is_complete():
-                button.configure(text=f"OK {index + 1} {title}")
+                button.configure(text=f"✓ {index + 1} {title}")
                 button.configure(style="Step.TButton")
             else:
                 button.configure(text=f"{index + 1} {title}")

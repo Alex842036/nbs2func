@@ -4,6 +4,7 @@ import os
 import queue
 import threading
 import tkinter as tk
+from dataclasses import dataclass
 from pathlib import Path
 from tkinter import messagebox, ttk
 
@@ -15,7 +16,12 @@ from nbs2func.generation import (
 )
 from nbs2func.gui.helpers import resolve_gui_generation_config
 from nbs2func.gui.i18n import Translator
-from nbs2func.gui.state import append_generation_event, append_log, clear_log
+from nbs2func.gui.state import (
+    WizardState,
+    append_generation_event,
+    append_log,
+    clear_log,
+)
 from nbs2func.gui.steps.base import WizardStep
 
 
@@ -85,6 +91,21 @@ def format_overall_progress(
 
 def should_continue_polling(thread_alive: bool, queue_empty: bool) -> bool:
     return thread_alive or not queue_empty
+
+
+@dataclass(frozen=True)
+class GenerationDisplayState:
+    phase: str
+    overall_percent: float
+    finished: bool
+
+
+def generation_display_state(state: WizardState) -> GenerationDisplayState:
+    if state.generation_result is not None:
+        return GenerationDisplayState("succeeded", 100.0, True)
+    if state.generation_events and state.generation_events[-1].kind == "error":
+        return GenerationDisplayState("failed", 0.0, False)
+    return GenerationDisplayState("idle", 0.0, False)
 
 
 class GenerateStep(WizardStep):
@@ -166,6 +187,22 @@ class GenerateStep(WizardStep):
         if self.thread is not None and self.thread.is_alive():
             return
         self.result = self.state.generation_result
+        display = generation_display_state(self.state)
+        self._overall_percent = display.overall_percent
+        self.overall_progress_var.set(
+            format_overall_progress(display.overall_percent, self.app.translator)
+        )
+        self.overall_progress.configure(value=display.overall_percent)
+        if display.phase == "succeeded":
+            self.status_var.set(self.app.tr("step.generate.succeeded"))
+        elif display.phase == "failed":
+            self.status_var.set(self.app.tr("step.generate.failed"))
+        else:
+            self.status_var.set(self.app.tr("step.generate.ready"))
+        if display.finished:
+            self._set_finished_progress()
+        else:
+            self._reset_current_progress()
         self._render_log()
         self._sync_open_buttons()
 

@@ -60,7 +60,7 @@ class LayoutStep(WizardStep):
         return True
 
     def is_complete(self) -> bool:
-        return self.mode_var.get() in LAYOUT_MODES
+        return self.state.config.layout_mode in LAYOUT_MODES
 
     def status_text(self) -> str:
         return self.app.tr(self.help_key)
