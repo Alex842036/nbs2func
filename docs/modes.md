@@ -1,7 +1,9 @@
 # Generation Modes
 
+[English](modes.md) | [简体中文](zh-CN/modes.md)
+
 This document describes the user-selectable generation modes in
-`v0.1.0-gui-preview`. CLI-only advanced controls are listed where useful; the
+`v0.1.1`. CLI-only advanced controls are listed where useful; the
 GUI intentionally presents a smaller, safer set.
 
 ## Layout Modes

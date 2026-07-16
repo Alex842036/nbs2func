@@ -1,6 +1,8 @@
 # Wizard GUI Guide
 
-The `v0.1.0-gui-preview` wizard is a config-driven Tkinter interface for the
+[English](gui.md) | [简体中文](zh-CN/gui.md)
+
+The `v0.1.1` wizard is a config-driven Tkinter interface for the
 same generation pipeline used by the CLI. Windows is the primary tested GUI
 platform.
 
@@ -20,6 +22,23 @@ python -m nbs2func.gui.app
 The step bar shows completed, current, and locked steps. Completed steps can be
 clicked without losing config values. Every navigation action applies and
 validates the current step first.
+
+## Language
+
+The GUI supports English and Simplified Chinese. On the first launch it uses
+the operating-system language when supported and otherwise falls back to
+English. A language selected from the Language menu is saved in
+`~/.nbs2func/gui_settings.json` for later sessions.
+
+Switching languages rebuilds visible wizard text without replacing
+`WizardState`, re-reading the NBS file, or restarting generation. The current
+page, previously unlocked steps, Generate unlock state, song summary, config,
+and completed generation output remain available. Valid edits on the current
+page are applied before the rebuild. If those edits are invalid, the language
+switch is cancelled, the menu returns to the previous language, and the page
+and draft stay intact. The Language menu is disabled while generation runs.
+
+CLI commands, config field names, and internal enum values remain English.
 
 ## 1. Input
 

@@ -1,5 +1,7 @@
 # Examples
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 - `demo.nbs` is the only distributed sample and is used when no input path is
   supplied.
 - Other local `.nbs` files in this directory are ignored by Git.

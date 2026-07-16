@@ -1,5 +1,37 @@
 # Changelog
 
+[English](CHANGELOG.md) | [简体中文](CHANGELOG.zh-CN.md)
+
+## 0.1.1
+
+### Added
+
+- Complete Simplified Chinese localization for the seven-step wizard GUI.
+- Persistent English/Simplified Chinese language selection with system-language
+  detection on first launch and English fallback.
+- Parallel English and Simplified Chinese public documentation, including the
+  README, changelog, GUI guide, generation modes, architecture, known issues,
+  and examples guide.
+- Documentation localization tests for paired files, language links, version
+  consistency, Chinese README links, and stale wording.
+
+### Fixed
+
+- Language switching now preserves the current page, unlocked-step range,
+  Generate unlock state, config, song summary, profile selections, output names,
+  user-modified flags, config path, generation result, events, and output log.
+- Valid page drafts are applied before a language switch; invalid drafts cancel
+  the switch without destroying widgets or losing input.
+- Layout and Output completion checks now use persistent `WizardState` config
+  instead of uninitialized Tk variables in rebuilt hidden steps.
+- Generate now restores succeeded or failed status, progress, localized logs,
+  results, and output-folder buttons after a language switch.
+- Summary displays localized labels for layout, direction, output format,
+  datapack build style, tempo mode, and tempo backend while keeping internal
+  enum values unchanged.
+- Completed steps use a language-independent check mark instead of a hard-coded
+  English `OK` marker.
+
 ## 0.1.0-gui-preview
 
 ### Added

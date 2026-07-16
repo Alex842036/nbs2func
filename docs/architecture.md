@@ -1,5 +1,7 @@
 # Architecture
 
+[English](architecture.md) | [简体中文](zh-CN/architecture.md)
+
 `nbs2func` uses one config-driven generation pipeline for the CLI and GUI:
 
 ```text
@@ -133,6 +135,24 @@ queue. Tk's `after()` loop drains the queue and updates local widgets:
 
 The GUI does not run a CLI subprocess and does not parse stdout. It has no
 independent layout, build-plan, or writer implementation.
+
+### GUI Internationalization
+
+GUI text is resolved through `gui/i18n.py`'s `Translator` and the matching
+`locales/en.json` or `locales/zh_CN.json` resource. The selected GUI language is
+stored separately from generation config in `~/.nbs2func/gui_settings.json`.
+
+```text
+GUI text -> Translator -> en.json / zh_CN.json
+GUI language preference -> ~/.nbs2func/gui_settings.json
+GUI or CLI config -> generate_from_config()
+```
+
+Config field names, internal enum values, and CLI behavior are language-neutral
+stability boundaries and remain English. `GenerationEvent.message` remains an
+English fallback for the CLI and missing translations; the GUI renders an
+event's translation key and parameters when available. Missing GUI locale keys
+fall back to English.
 
 ## CLI And Analysis
 

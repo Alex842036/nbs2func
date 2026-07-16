@@ -884,8 +884,8 @@ def test_existing_datapack_confirmation_follows_output_format(tmp_path: Path) ->
     confirm.assert_not_called()
 
 
-def test_gui_preview_version_and_windows_launchers_are_consistent() -> None:
-    assert __version__ == "0.1.0-gui-preview"
+def test_gui_version_and_windows_launchers_are_consistent() -> None:
+    assert __version__ == "0.1.1"
     wizard_source = Path("src/nbs2func/gui/wizard.py").read_text(encoding="utf-8")
     assert "from nbs2func import __version__" in wizard_source
     assert "v0.1.0-" + "preview" not in wizard_source

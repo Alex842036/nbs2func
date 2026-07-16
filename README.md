@@ -1,6 +1,8 @@
 # nbs2func
 
-**Current version: v0.1.0-gui-preview**
+[English](README.md) | [简体中文](README.zh-CN.md)
+
+**Current version: v0.1.1**
 
 `nbs2func` converts Open Note Block Studio `.nbs` songs into Minecraft Java
 Edition redstone note-block structures. It provides a Windows-focused Tkinter
@@ -101,6 +103,13 @@ Back, and Finish.
 
 The GUI calls the same `generate_from_config()` entry point as the CLI. It does
 not launch the CLI as a subprocess or parse CLI output.
+
+The GUI supports English and Simplified Chinese. Use Language in the menu bar
+to switch; the choice is saved in `~/.nbs2func/gui_settings.json` and restored
+the next time the GUI starts. Switching languages preserves the current config,
+unlocked steps, valid in-progress edits, and completed generation results. If
+the current page contains invalid input, the switch is cancelled so the draft
+can be corrected without losing it. The CLI remains English-only.
 
 ## Output Formats
 
@@ -293,7 +302,11 @@ wizard.
 ## Known Limitations
 
 - `note_based_stereo` remains heuristic.
-- Very large songs may use significant CPU time and memory.
+- Very large songs may require substantial processing time and memory. The
+  current layout generator is largely single-threaded, so total CPU utilization
+  may appear low on multi-core systems.
+- CPU-bound generation shares CPython's GIL with the Tkinter main thread, so the
+  GUI may briefly appear unresponsive even when overall CPU utilization is low.
 - There is no safe cancellation operation during generation.
 - Simple-chain builds do not load chunks or wait between function files.
 - Player-tp builds depend on a valid online build player and can be interrupted.
@@ -311,6 +324,7 @@ See [docs/known_issues.md](docs/known_issues.md) before using generated output.
 - [Known issues](docs/known_issues.md)
 - [Changelog](CHANGELOG.md)
 - [Example files](examples/README.md)
+- [简体中文 README](README.zh-CN.md)
 
 ## Development And Testing
 

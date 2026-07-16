@@ -1,13 +1,17 @@
 # Known Issues And Preview Limitations
 
-`v0.1.0-gui-preview` is usable but experimental. Back up the target Minecraft
+[English](known_issues.md) | [简体中文](zh-CN/known_issues.md)
+
+`v0.1.1` is usable but experimental. Back up the target Minecraft
 world before running generated build functions.
 
 - `note_based_stereo` remains heuristic. Difficult songs may not produce an
   ideal arrangement.
-- Very large songs may take significant CPU time and memory.
-- CPU-heavy Python work may cause brief Windows "Not Responding" indications
-  even though generation runs in a background thread.
+- Very large songs may require substantial processing time and memory. The
+  current layout generator is largely single-threaded, so total CPU utilization
+  may appear low on multi-core systems.
+- CPU-bound generation shares CPython's GIL with the Tkinter main thread, so the
+  GUI may briefly appear unresponsive even when overall CPU utilization is low.
 - There is no safe cancellation operation during generation.
 - Closing during generation can terminate the daemon worker and leave incomplete
   output files. The GUI warns before closing.
